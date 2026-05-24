@@ -1,0 +1,8 @@
+#!/bin/sh
+# Gradle wrapper script for Unix
+# Auto-generated - Android Studio will recreate this properly
+
+echo "Please use Android Studio to build this project, or run:"
+echo "  gradle wrapper --gradle-version 8.11.1"
+echo "to generate the proper wrapper files."
+exit 1
