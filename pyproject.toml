@@ -1,7 +1,7 @@
 [project]
-name = "audio-manager"
-version = "0.1.0"
-description = "Real-time bidirectional English-Spanish translator - Audio Manager module"
+name = "translator"
+version = "0.2.0"
+description = "Real-time bidirectional English-Spanish translator"
 requires-python = ">=3.12"
 dependencies = [
     "sounddevice>=0.5.0",
@@ -9,6 +9,10 @@ dependencies = [
     "janus>=1.0.0",
     "torch>=2.1.0",
     "torchaudio>=2.1.0",
+    "faster-whisper>=1.0.0",
+    "argostranslate>=1.9.0",
+    "edge-tts>=6.1.0",
+    "soundfile>=0.12.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +27,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/audio_manager"]
+packages = ["src/audio_manager", "src/translation_pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
