@@ -6,15 +6,19 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
@@ -119,9 +123,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Download model from HuggingFace.
-     *
-     * The LiteRT-LM model format is typically a single .task file or a directory.
-     * We try to download from litert-community/gemma-4-E4B-it-litert-lm on HuggingFace.
      */
     fun downloadModel() {
         if (_state.value.downloading) return
@@ -132,10 +133,8 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             log("NOTE: Gemma 4 E4B is ~2.5GB. This will take a while on mobile data.")
 
             try {
-                // Create model directory
                 modelDir.mkdirs()
 
-                // HuggingFace API to list repo files
                 val repoUrl = "https://huggingface.co/api/models/litert-community/gemma-4-E4B-it-litert-lm"
                 log("Checking model repo: $repoUrl")
 
@@ -154,8 +153,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                 log("Repo info received. Parsing file list...")
                 log("Raw response (first 500 chars): ${repoInfo.take(500)}")
 
-                // For POC: try to download the main model file
-                // LiteRT-LM models are typically a single .bin or .task file
                 val filesToTry = listOf(
                     "model.bin",
                     "gemma-4-e4b-it.task",
@@ -178,8 +175,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                             val fileSize = fileConn.contentLengthLong
                             log("Found $filename (${fileSize / 1_048_576} MB)")
                             fileConn.disconnect()
-
-                            // Download the file
                             downloadFile(fileUrl, File(modelDir, filename), fileSize)
                             downloaded = true
                             break
@@ -229,7 +224,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                         val progress = bytesRead.toFloat() / totalSize
                         _state.update { it.copy(downloadProgress = progress) }
 
-                        // Log every ~50MB
                         if (bytesRead % (50 * 1_048_576) < 65536) {
                             log("Downloaded: ${bytesRead / 1_048_576} / ${totalSize / 1_048_576} MB (${(progress * 100).toInt()}%)")
                         }
@@ -254,7 +248,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val startTime = System.nanoTime()
 
-                // Find model file in the model directory
                 val modelFile = findModelFile()
                     ?: throw Exception("No model file found in ${modelDir.absolutePath}")
 
@@ -264,10 +257,10 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                 // Try GPU backend first, fall back to CPU
                 val backend = try {
                     log("Attempting GPU backend...")
-                    Backend.GPU
+                    Backend.GPU()
                 } catch (e: Exception) {
                     log("GPU not available, using CPU: ${e.message}")
-                    Backend.CPU
+                    Backend.CPU()
                 }
 
                 val backendName = backend.javaClass.simpleName
@@ -278,12 +271,15 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                     backend = backend,
                 )
 
-                log("Creating engine (this takes ~10s)...")
+                log("Creating engine...")
                 engine = Engine(config)
+
+                log("Initializing engine (this takes ~10s)...")
+                engine!!.initialize()
 
                 val loadTimeMs = (System.nanoTime() - startTime) / 1_000_000
 
-                log("Engine created in ${loadTimeMs}ms")
+                log("Engine ready in ${loadTimeMs}ms")
                 updateMemoryMetrics()
 
                 _state.update {
@@ -295,9 +291,17 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
 
-                // Create a conversation
+                // Create a conversation with low temperature for translation accuracy
                 log("Creating conversation...")
-                conversation = engine!!.createConversation(ConversationConfig())
+                conversation = engine!!.createConversation(
+                    ConversationConfig(
+                        samplerConfig = SamplerConfig(
+                            temperature = 0.1f,
+                            topK = 10,
+                            topP = 0.95f,
+                        ),
+                    )
+                )
                 log("Conversation ready")
 
                 // Check for audio/multimodal support
@@ -313,7 +317,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     private fun findModelFile(): File? {
         if (!modelDir.exists()) return null
 
-        // Look for model files in order of preference
         val extensions = listOf(".litertlm", ".task", ".bin", ".tflite")
         for (ext in extensions) {
             val files = modelDir.listFiles { _, name -> name.endsWith(ext) }
@@ -322,7 +325,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-        // If directory has files, return the largest one (likely the model)
         return modelDir.listFiles()
             ?.filter { it.isFile && it.length() > 1_000_000 }
             ?.maxByOrNull { it.length() }
@@ -337,65 +339,70 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         var audioSupported = false
 
         try {
-            // Check Message class for audio-related methods via reflection
-            val messageClass = Message::class.java
-            val methods = messageClass.declaredMethods.map { it.name }
-            details.appendLine("Message methods: ${methods.joinToString()}")
-            log("Message methods: ${methods.joinToString()}")
+            // Check Content class for AudioBytes / AudioFile subclasses
+            val contentClass = Content::class.java
+            val subclasses = contentClass.declaredClasses.map { it.simpleName }
+            details.appendLine("Content subclasses: ${subclasses.joinToString()}")
+            log("Content subclasses: ${subclasses.joinToString()}")
 
-            // Check for audio-specific factory methods
-            val audioMethods = methods.filter {
-                it.contains("audio", ignoreCase = true) ||
-                it.contains("pcm", ignoreCase = true) ||
-                it.contains("wav", ignoreCase = true) ||
-                it.contains("media", ignoreCase = true) ||
-                it.contains("multimodal", ignoreCase = true)
+            val audioSubclasses = subclasses.filter {
+                it.contains("Audio", ignoreCase = true)
             }
-
-            if (audioMethods.isNotEmpty()) {
-                details.appendLine("Audio-related methods found: ${audioMethods.joinToString()}")
-                log("Audio-related methods found: ${audioMethods.joinToString()}")
+            if (audioSubclasses.isNotEmpty()) {
+                details.appendLine("AUDIO Content types found: ${audioSubclasses.joinToString()}")
+                log("AUDIO Content types found: ${audioSubclasses.joinToString()}")
                 audioSupported = true
-            } else {
-                details.appendLine("No audio-related methods found in Message class")
-                log("No audio-related methods found in Message class")
             }
 
-            // Also check Message.Companion for factory methods
+            // Try to instantiate Content.AudioBytes to confirm it exists
             try {
-                val companionClass = Class.forName("com.google.ai.edge.litertlm.Message\$Companion")
-                val companionMethods = companionClass.declaredMethods.map { it.name }
-                details.appendLine("Message.Companion methods: ${companionMethods.joinToString()}")
-                log("Message.Companion methods: ${companionMethods.joinToString()}")
-
-                val audioCompanionMethods = companionMethods.filter {
-                    it.contains("audio", ignoreCase = true) ||
-                    it.contains("image", ignoreCase = true) ||
-                    it.contains("media", ignoreCase = true)
+                val audioBytesClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioBytes")
+                val constructors = audioBytesClass.declaredConstructors.map {
+                    "${it.name}(${it.parameterTypes.map { p -> p.simpleName }.joinToString()})"
                 }
-                if (audioCompanionMethods.isNotEmpty()) {
-                    details.appendLine("Multimodal factory methods: ${audioCompanionMethods.joinToString()}")
-                    log("Multimodal factory methods found: ${audioCompanionMethods.joinToString()}")
-                    audioSupported = true
-                }
+                details.appendLine("Content.AudioBytes constructors: ${constructors.joinToString()}")
+                log("Content.AudioBytes constructors: ${constructors.joinToString()}")
+                audioSupported = true
             } catch (e: ClassNotFoundException) {
-                details.appendLine("Message.Companion not found")
+                details.appendLine("Content.AudioBytes NOT found")
+                log("Content.AudioBytes NOT found")
             }
 
-            // Check EngineConfig for multimodal options
+            // Try Content.AudioFile
+            try {
+                val audioFileClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioFile")
+                details.appendLine("Content.AudioFile FOUND")
+                log("Content.AudioFile FOUND")
+                audioSupported = true
+            } catch (e: ClassNotFoundException) {
+                details.appendLine("Content.AudioFile NOT found")
+            }
+
+            // Check EngineConfig for audioBackend field
             val configClass = EngineConfig::class.java
             val configFields = configClass.declaredFields.map { it.name }
             details.appendLine("EngineConfig fields: ${configFields.joinToString()}")
             log("EngineConfig fields: ${configFields.joinToString()}")
 
-            // Look for audioBackend field specifically
             val hasAudioBackend = configFields.any { it.contains("audio", ignoreCase = true) }
             if (hasAudioBackend) {
-                details.appendLine("EngineConfig HAS audio-related fields!")
-                log("EngineConfig HAS audio-related fields!")
+                details.appendLine("EngineConfig HAS audioBackend field!")
+                log("EngineConfig HAS audioBackend field!")
             }
 
-            // Check Conversation class
+            // Check Message factory methods
+            val messageClass = Message::class.java
+            val methods = messageClass.declaredMethods.map { it.name }.distinct()
+            details.appendLine("Message methods: ${methods.joinToString()}")
+            log("Message methods: ${methods.joinToString()}")
+
+            // Check Contents class
+            val contentsClass = Contents::class.java
+            val contentsMethods = contentsClass.declaredMethods.map { it.name }.distinct()
+            details.appendLine("Contents methods: ${contentsMethods.joinToString()}")
+            log("Contents methods: ${contentsMethods.joinToString()}")
+
+            // Check Conversation sendMessage overloads
             val convClass = Conversation::class.java
             val convMethods = convClass.declaredMethods.map {
                 "${it.name}(${it.parameterTypes.map { p -> p.simpleName }.joinToString()})"
@@ -403,65 +410,23 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             details.appendLine("Conversation methods: ${convMethods.joinToString()}")
             log("Conversation methods: ${convMethods.joinToString()}")
 
-            // Check ConversationConfig
-            try {
-                val convConfigClass = ConversationConfig::class.java
-                val ccFields = convConfigClass.declaredFields.map { it.name }
-                details.appendLine("ConversationConfig fields: ${ccFields.joinToString()}")
-                log("ConversationConfig fields: ${ccFields.joinToString()}")
-            } catch (e: Exception) {
-                details.appendLine("ConversationConfig: ${e.message}")
-            }
-
-            // Check for audio-related classes in the package
-            val audioClasses = listOf(
-                "com.google.ai.edge.litertlm.AudioInput",
-                "com.google.ai.edge.litertlm.AudioMessage",
-                "com.google.ai.edge.litertlm.MultimodalMessage",
-                "com.google.ai.edge.litertlm.MediaContent",
-                "com.google.ai.edge.litertlm.Content",
-                "com.google.ai.edge.litertlm.Contents",
-            )
-            for (className in audioClasses) {
-                try {
-                    val cls = Class.forName(className)
-                    val clsMethods = cls.declaredMethods.map { it.name }
-                    details.appendLine("FOUND class: $className")
-                    details.appendLine("  methods: ${clsMethods.joinToString()}")
-                    log("FOUND class: $className - methods: ${clsMethods.joinToString()}")
-
-                    // Check for audio-related methods in Content/Contents
-                    val audioContentMethods = clsMethods.filter {
-                        it.contains("audio", ignoreCase = true) ||
-                        it.contains("pcm", ignoreCase = true)
-                    }
-                    if (audioContentMethods.isNotEmpty()) {
-                        details.appendLine("  AUDIO methods: ${audioContentMethods.joinToString()}")
-                        log("  AUDIO methods in $className: ${audioContentMethods.joinToString()}")
-                        audioSupported = true
-                    }
-                } catch (e: ClassNotFoundException) {
-                    // Not found, expected
-                }
-            }
-
         } catch (e: Exception) {
             details.appendLine("Reflection check failed: ${e.message}")
             logError("Audio support check failed", e)
         }
 
-        if (!audioSupported) {
+        if (audioSupported) {
             details.appendLine("")
-            details.appendLine("CONCLUSION: Audio input NOT supported in current Kotlin API")
-            details.appendLine("The LiteRT-LM Kotlin API only accepts text via Message.user(String)")
-            details.appendLine("Gemma 4 E4B supports audio at C++ level but Kotlin wrapper is text-only")
-            details.appendLine("")
-            details.appendLine("FALLBACK: Use STT (Whisper ONNX) for audio->text, then Gemma for text translation")
-            log("CONCLUSION: Audio NOT supported in Kotlin API. Need STT fallback.")
+            details.appendLine("AUDIO SUPPORT DETECTED!")
+            details.appendLine("Content.AudioBytes and/or Content.AudioFile exist.")
+            details.appendLine("Use: Message.user(Contents.of(Content.AudioBytes(pcmData), Content.Text(prompt)))")
+            details.appendLine("EngineConfig supports audioBackend parameter.")
+            log("AUDIO SUPPORT DETECTED in LiteRT-LM API!")
         } else {
             details.appendLine("")
-            details.appendLine("AUDIO SUPPORT DETECTED! Investigate the methods above to build audio input.")
-            log("AUDIO SUPPORT DETECTED! Review methods above.")
+            details.appendLine("CONCLUSION: Audio input NOT supported in current Kotlin API")
+            details.appendLine("FALLBACK: Use STT (Whisper ONNX) for audio->text, then Gemma for translation")
+            log("CONCLUSION: Audio NOT supported. Need STT fallback.")
         }
 
         _state.update {
@@ -496,27 +461,30 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val startTime = System.nanoTime()
 
-                // Build user message
-                val message = Message.user(prompt)
                 val fullResponse = StringBuilder()
                 var tokenCount = 0
 
-                // Try streaming first
+                // Try streaming with Flow first
                 try {
-                    conversation!!.sendMessageAsync(message).collect { responseMsg ->
-                        // Each emission is a Message — extract text content
-                        val text = extractTextFromMessage(responseMsg)
-                        fullResponse.append(text)
-                        tokenCount++
-
-                        // Update UI with partial results
-                        _state.update { it.copy(englishOutput = fullResponse.toString()) }
-                    }
+                    conversation!!.sendMessageAsync(prompt)
+                        .catch { e ->
+                            log("Streaming error: ${e.message}")
+                            throw e
+                        }
+                        .collect { responseMsg: Message ->
+                            val text = responseMsg.toString()
+                            fullResponse.append(text)
+                            tokenCount++
+                            _state.update { it.copy(englishOutput = fullResponse.toString()) }
+                        }
                 } catch (e: Exception) {
-                    // If streaming fails, try synchronous
+                    // Fallback to synchronous
                     log("Streaming failed (${e.message}), trying synchronous...")
-                    val response = conversation!!.sendMessage(message)
-                    val text = extractTextFromMessage(response)
+                    fullResponse.clear()
+                    tokenCount = 0
+
+                    val response: Message = conversation!!.sendMessage(prompt)
+                    val text = response.toString()
                     fullResponse.append(text)
                     tokenCount = text.split(" ").size
                 }
@@ -528,7 +496,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val result = fullResponse.toString().trim()
                 log("Output (EN): $result")
-                log("Time: ${inferenceTimeMs}ms | Tokens: $tokenCount | Speed: ${String.format("%.1f", tokensPerSec)} tok/s")
+                log("Time: ${inferenceTimeMs}ms | Tokens: $tokenCount | Speed: ${"%.1f".format(tokensPerSec)} tok/s")
 
                 updateMemoryMetrics()
 
@@ -547,76 +515,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                 _state.update { it.copy(testRunning = false) }
             }
         }
-    }
-
-    /**
-     * Extract text from a Message object.
-     *
-     * The LiteRT-LM Message class does not have a simple .text property.
-     * We try multiple approaches to extract the text content:
-     * 1. getContents() -> filter for text content
-     * 2. toString() as fallback
-     * 3. Reflection to find any text accessor
-     */
-    private fun extractTextFromMessage(msg: Message): String {
-        // Try 1: Use getContents() API
-        try {
-            val contents = msg.getContents()
-            if (contents != null) {
-                // Contents might have a text representation
-                val text = contents.toString()
-                if (text.isNotBlank() && !text.startsWith("com.google.")) {
-                    return text
-                }
-
-                // Try to get individual content items via reflection
-                try {
-                    val getContentsMethod = contents.javaClass.getMethod("getContents")
-                    val items = getContentsMethod.invoke(contents)
-                    if (items is List<*>) {
-                        return items.mapNotNull { item ->
-                            // Try getText() on each content item
-                            try {
-                                val getTextMethod = item!!.javaClass.getMethod("getText")
-                                getTextMethod.invoke(item) as? String
-                            } catch (e: Exception) {
-                                item?.toString()
-                            }
-                        }.joinToString("")
-                    }
-                } catch (e: Exception) {
-                    // getContents().getContents() not available
-                }
-            }
-        } catch (e: Exception) {
-            log("getContents() failed: ${e.message}")
-        }
-
-        // Try 2: Reflection to find text-related methods
-        try {
-            val methods = msg.javaClass.methods
-            for (method in methods) {
-                if (method.name in listOf("getText", "text", "getContent", "content") &&
-                    method.parameterCount == 0 &&
-                    method.returnType == String::class.java
-                ) {
-                    val result = method.invoke(msg)
-                    if (result is String && result.isNotBlank()) {
-                        return result
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            // Reflection failed
-        }
-
-        // Try 3: toString() as last resort
-        val str = msg.toString()
-        // Clean up common wrapper patterns
-        return str
-            .removePrefix("Message(")
-            .removeSuffix(")")
-            .trim()
     }
 
     private fun buildTranslationPrompt(spanishText: String): String {
