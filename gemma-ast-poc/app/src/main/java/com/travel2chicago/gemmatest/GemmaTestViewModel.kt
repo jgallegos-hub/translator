@@ -296,9 +296,9 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                 conversation = engine!!.createConversation(
                     ConversationConfig(
                         samplerConfig = SamplerConfig(
-                            temperature = 0.1f,
+                            temperature = 0.1,
                             topK = 10,
-                            topP = 0.95f,
+                            topP = 0.95,
                         ),
                     )
                 )
