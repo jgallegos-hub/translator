@@ -5,11 +5,13 @@
     <!-- Internet for model download -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Storage for model files -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- Storage for model files on /sdcard/Download/ -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
+        android:requestLegacyExternalStorage="true"
         android:name=".GemmaTestApp"
         android:allowBackup="false"
         android:label="@string/app_name"

@@ -2,6 +2,7 @@ package com.travel2chicago.gemmatest
 
 import android.app.Application
 import android.os.Debug
+import android.os.Environment
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,9 +23,6 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 private const val TAG = "GemmaTest"
 
@@ -75,9 +73,9 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     @Volatile private var engine: Engine? = null
     @Volatile private var conversation: Conversation? = null
 
-    // Default model directory
+    // Model directory — /sdcard/Download/ where the model was manually placed
     private val modelDir: File
-        get() = File(getApplication<Application>().filesDir, "models")
+        get() = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
 
     init {
         checkModelExists()
@@ -102,9 +100,15 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- Model management ---
 
-    private fun checkModelExists() {
+    fun checkModelExists() {
         val dir = modelDir
-        val exists = dir.exists() && (dir.listFiles()?.any { it.length() > 1_000_000 } == true)
+        log("Checking for model in: ${dir.absolutePath}")
+        log("Directory exists: ${dir.exists()}")
+        log("Directory readable: ${dir.canRead()}")
+
+        val modelFile = findModelFile()
+        val exists = modelFile != null
+
         _state.update {
             it.copy(
                 modelPath = dir.absolutePath,
@@ -112,127 +116,70 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
         if (exists) {
-            log("Model found at: ${dir.absolutePath}")
-            dir.listFiles()?.forEach { f ->
-                log("  ${f.name} (${f.length() / 1_048_576} MB)")
-            }
+            log("Model found: ${modelFile!!.absolutePath} (${modelFile.length() / 1_048_576} MB)")
         } else {
-            log("No model found at: ${dir.absolutePath}")
+            log("No model file found in: ${dir.absolutePath}")
+            // List what IS in the directory to help debug
+            try {
+                val files = dir.listFiles()
+                if (files != null) {
+                    val modelCandidates = files.filter {
+                        it.name.contains("gemma", ignoreCase = true) ||
+                        it.name.endsWith(".litertlm") ||
+                        it.name.endsWith(".task") ||
+                        it.name.endsWith(".bin")
+                    }
+                    if (modelCandidates.isNotEmpty()) {
+                        log("Possible model files found:")
+                        modelCandidates.forEach { f ->
+                            log("  ${f.name} (${f.length() / 1_048_576} MB)")
+                        }
+                    } else {
+                        log("No model-like files found. Total files in Downloads: ${files.size}")
+                    }
+                } else {
+                    log("Cannot list directory — permission denied?")
+                    log("Grant 'All files access' in Settings > Apps > GemmaTest > Permissions")
+                }
+            } catch (e: Exception) {
+                log("Error listing directory: ${e.message}")
+            }
         }
     }
 
     /**
-     * Download model from HuggingFace.
+     * Re-scan /sdcard/Download/ for the model file.
+     * The model must be placed there manually (too large for in-app download).
+     *
+     * To place the model:
+     *   adb push gemma_model.litertlm /sdcard/Download/
+     *
+     * Or download it from a browser on the device directly to Downloads.
      */
     fun downloadModel() {
-        if (_state.value.downloading) return
-
+        // Not actually downloading — just re-checking after user places the file
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(downloading = true, downloadProgress = 0f, downloadError = null) }
-            log("Starting model download from HuggingFace...")
-            log("NOTE: Gemma 4 E4B is ~2.5GB. This will take a while on mobile data.")
 
-            try {
-                modelDir.mkdirs()
+            log("Scanning ${modelDir.absolutePath} for model file...")
+            log("Expected: gemma_model.litertlm (~2.5GB)")
 
-                val repoUrl = "https://huggingface.co/api/models/litert-community/gemma-4-E4B-it-litert-lm"
-                log("Checking model repo: $repoUrl")
+            // Give time for any pending writes
+            kotlinx.coroutines.delay(500)
 
-                val connection = URL(repoUrl).openConnection() as HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 15000
+            checkModelExists()
 
-                val responseCode = connection.responseCode
-                if (responseCode != 200) {
-                    throw Exception("HuggingFace API returned $responseCode. Model may not exist or may require authentication.")
-                }
-
-                val repoInfo = connection.inputStream.bufferedReader().readText()
-                connection.disconnect()
-
-                log("Repo info received. Parsing file list...")
-                log("Raw response (first 500 chars): ${repoInfo.take(500)}")
-
-                val filesToTry = listOf(
-                    "model.bin",
-                    "gemma-4-e4b-it.task",
-                    "gemma-4-e4b-it.litertlm",
-                    "model.litertlm",
-                )
-
-                var downloaded = false
-                for (filename in filesToTry) {
-                    val fileUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/$filename"
-                    log("Trying: $fileUrl")
-
-                    try {
-                        val fileConn = URL(fileUrl).openConnection() as HttpURLConnection
-                        fileConn.requestMethod = "HEAD"
-                        fileConn.connectTimeout = 10000
-                        fileConn.instanceFollowRedirects = true
-
-                        if (fileConn.responseCode == 200) {
-                            val fileSize = fileConn.contentLengthLong
-                            log("Found $filename (${fileSize / 1_048_576} MB)")
-                            fileConn.disconnect()
-                            downloadFile(fileUrl, File(modelDir, filename), fileSize)
-                            downloaded = true
-                            break
-                        }
-                        fileConn.disconnect()
-                    } catch (e: Exception) {
-                        log("  Not found or error: ${e.message}")
-                    }
-                }
-
-                if (!downloaded) {
-                    log("Could not find model files automatically.")
-                    log("Manual download instructions:")
-                    log("1. Visit: https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm")
-                    log("2. Download model files")
-                    log("3. Push to device: adb push <files> ${modelDir.absolutePath}/")
-                    _state.update { it.copy(downloadError = "Auto-download failed. See logs for manual instructions.") }
-                }
-
-                checkModelExists()
-            } catch (e: Exception) {
-                logError("Download failed", e)
-                _state.update { it.copy(downloadError = e.message) }
-            } finally {
-                _state.update { it.copy(downloading = false) }
-            }
-        }
-    }
-
-    private suspend fun downloadFile(url: String, dest: File, totalSize: Long) {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 30000
-        conn.readTimeout = 60000
-        conn.instanceFollowRedirects = true
-
-        conn.inputStream.use { input ->
-            FileOutputStream(dest).use { output ->
-                val buffer = ByteArray(65536)
-                var bytesRead: Long = 0
-                var len: Int
-
-                while (input.read(buffer).also { len = it } != -1) {
-                    output.write(buffer, 0, len)
-                    bytesRead += len
-
-                    if (totalSize > 0) {
-                        val progress = bytesRead.toFloat() / totalSize
-                        _state.update { it.copy(downloadProgress = progress) }
-
-                        if (bytesRead % (50 * 1_048_576) < 65536) {
-                            log("Downloaded: ${bytesRead / 1_048_576} / ${totalSize / 1_048_576} MB (${(progress * 100).toInt()}%)")
-                        }
-                    }
+            if (!_state.value.modelExists) {
+                _state.update {
+                    it.copy(
+                        downloadError = "Model not found. Place it in /sdcard/Download/\n" +
+                            "adb push gemma_model.litertlm /sdcard/Download/",
+                    )
                 }
             }
+
+            _state.update { it.copy(downloading = false) }
         }
-        conn.disconnect()
-        log("Download complete: ${dest.name} (${dest.length() / 1_048_576} MB)")
     }
 
     // --- Load model ---
@@ -315,18 +262,38 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun findModelFile(): File? {
-        if (!modelDir.exists()) return null
+        val dir = modelDir
+        if (!dir.exists() || !dir.canRead()) return null
 
+        // 1. Check for the exact known filename first
+        val knownFile = File(dir, "gemma_model.litertlm")
+        if (knownFile.exists() && knownFile.length() > 1_000_000) {
+            return knownFile
+        }
+
+        // 2. Search by known extensions
         val extensions = listOf(".litertlm", ".task", ".bin", ".tflite")
         for (ext in extensions) {
-            val files = modelDir.listFiles { _, name -> name.endsWith(ext) }
+            val files = dir.listFiles { _, name ->
+                name.endsWith(ext, ignoreCase = true) &&
+                name.contains("gemma", ignoreCase = true)
+            }
             if (files != null && files.isNotEmpty()) {
-                return files.first()
+                return files.maxByOrNull { it.length() }
             }
         }
 
-        return modelDir.listFiles()
-            ?.filter { it.isFile && it.length() > 1_000_000 }
+        // 3. Any file with model extensions
+        for (ext in extensions) {
+            val files = dir.listFiles { _, name -> name.endsWith(ext, ignoreCase = true) }
+            if (files != null && files.isNotEmpty()) {
+                return files.maxByOrNull { it.length() }
+            }
+        }
+
+        // 4. Last resort: any large file with "gemma" in name
+        return dir.listFiles()
+            ?.filter { it.isFile && it.length() > 100_000_000 && it.name.contains("gemma", ignoreCase = true) }
             ?.maxByOrNull { it.length() }
     }
 

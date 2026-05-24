@@ -1,6 +1,11 @@
 package com.travel2chicago.gemmatest
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -25,8 +30,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.travel2chicago.gemmatest.ui.theme.GemmaTestTheme
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestStoragePermission()
         enableEdgeToEdge()
         setContent {
             GemmaTestTheme {
@@ -35,6 +42,41 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background,
                 ) {
                     GemmaTestScreen()
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-check after user returns from Settings (where they grant permission)
+        if (hasStoragePermission()) {
+            // Trigger model re-scan now that we have permission
+            // ViewModel will be initialized by Compose, so this is safe
+        }
+    }
+
+    private fun hasStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true // Pre-Android 11, requestLegacyExternalStorage=true in manifest is enough
+        }
+    }
+
+    private fun requestStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                // Open Settings screen where user grants "All files access"
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    // Fallback: open general storage settings
+                    val fallbackIntent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    startActivity(fallbackIntent)
                 }
             }
         }
@@ -76,6 +118,15 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
                 if (!state.modelExists) {
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    Text(
+                        text = "Place model file in /sdcard/Download/:\nadb push gemma_model.litertlm /sdcard/Download/",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     Button(
                         onClick = { viewModel.downloadModel() },
                         enabled = !state.downloading,
@@ -88,17 +139,10 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
                                 color = MaterialTheme.colorScheme.onPrimary,
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Downloading... ${(state.downloadProgress * 100).toInt()}%")
+                            Text("Scanning...")
                         } else {
-                            Text("Download Model (~2.5GB)")
+                            Text("Re-scan /sdcard/Download/")
                         }
-                    }
-
-                    if (state.downloading) {
-                        LinearProgressIndicator(
-                            progress = { state.downloadProgress },
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        )
                     }
 
                     state.downloadError?.let {
@@ -109,14 +153,6 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
                             modifier = Modifier.padding(top = 4.dp),
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Or push manually:\nadb push <model-file> ${state.modelPath}/",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
 
                 if (state.modelExists && !state.modelLoaded) {
