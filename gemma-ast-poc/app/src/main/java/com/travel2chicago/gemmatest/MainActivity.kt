@@ -220,9 +220,75 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
             }
         }
 
-        // --- Section 3: Translation Test ---
+        // --- Section 3: Audio AST Test ---
         item {
-            SectionCard(title = "3. TRANSLATION TEST (Text-to-Text)") {
+            SectionCard(title = "3. AUDIO AST TEST (Audio→English)") {
+                if (!state.modelLoaded) {
+                    Text(
+                        "Load model first",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (state.audioSupported != true) {
+                    Text(
+                        "Audio support not detected",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "Test sending audio to Gemma for translation.\n" +
+                            "Uses test_audio_es.wav from /sdcard/Download/\n" +
+                            "or generates a synthetic 440Hz tone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+
+                    Button(
+                        onClick = { viewModel.runAudioASTTest() },
+                        enabled = !state.audioTestRunning,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (state.audioTestRunning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Testing audio...")
+                        } else {
+                            Text("Run Audio AST Test")
+                        }
+                    }
+
+                    // Results
+                    if (state.audioTestOutput.isNotEmpty() || state.audioTestTimeMs > 0) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider()
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text("Audio AST Results", fontWeight = FontWeight.Bold)
+                        InfoRow("Source", state.audioTestSource)
+                        InfoRow("Strategy", state.audioTestStrategy)
+                        InfoRow("EN output", state.audioTestOutput.ifEmpty { "(empty)" })
+                        InfoRow("Time", "${state.audioTestTimeMs} ms")
+                        StatusChip(text = "AUDIO AST WORKS!", color = Color(0xFF4CAF50))
+                    }
+
+                    state.audioTestError?.let { error ->
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- Section 4: Translation Test ---
+        item {
+            SectionCard(title = "4. TRANSLATION TEST (Text-to-Text)") {
                 if (!state.modelLoaded) {
                     Text(
                         "Load model first",
@@ -284,9 +350,9 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
             }
         }
 
-        // --- Section 4: System Metrics ---
+        // --- Section 5: System Metrics ---
         item {
-            SectionCard(title = "4. SYSTEM METRICS") {
+            SectionCard(title = "5. SYSTEM METRICS") {
                 InfoRow("Java Heap", "${state.javaHeapMB} MB")
                 InfoRow("Native Heap", "${state.nativeHeapMB} MB")
                 InfoRow("Total Memory", "${state.totalMemoryMB} MB")
@@ -294,9 +360,9 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
             }
         }
 
-        // --- Section 5: Logs ---
+        // --- Section 6: Logs ---
         item {
-            SectionCard(title = "5. LOGS") {
+            SectionCard(title = "6. LOGS") {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

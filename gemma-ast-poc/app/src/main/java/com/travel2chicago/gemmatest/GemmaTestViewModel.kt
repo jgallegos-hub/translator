@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.sin
 
 private const val TAG = "GemmaTest"
 
@@ -54,6 +57,14 @@ data class TestState(
     val tokensGenerated: Int = 0,
     val tokensPerSecond: Float = 0f,
 
+    // Audio AST test
+    val audioTestRunning: Boolean = false,
+    val audioTestSource: String = "",
+    val audioTestOutput: String = "",
+    val audioTestTimeMs: Long = -1,
+    val audioTestError: String? = null,
+    val audioTestStrategy: String = "",
+
     // System metrics
     val javaHeapMB: Long = 0,
     val nativeHeapMB: Long = 0,
@@ -83,9 +94,11 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             File("/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E4B_it/20260325"),
             // 2. Parent dir in case date folder differs
             File("/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E4B_it"),
-            // 3. Manual placement in Downloads
+            // 3. Dedicated subdirectory with all companion files (from copy script)
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "gemma_model"),
+            // 4. Direct placement in Downloads
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            // 4. App-internal fallback
+            // 5. App-internal fallback
             File(getApplication<Application>().filesDir, "models"),
         )
 
@@ -272,10 +285,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                             continue
                         }
 
-                        val config = EngineConfig(
-                            modelPath = modelFile.absolutePath,
-                            backend = backend,
-                        )
+                        val config = buildEngineConfig(modelFile.absolutePath, backend, backendName)
 
                         log("Creating engine with $backendName...")
                         val eng = Engine(config)
@@ -378,6 +388,456 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         return null
+    }
+
+    /**
+     * Build EngineConfig, attempting to set audioBackend via reflection.
+     * The audioBackend field exists in EngineConfig but we don't know its
+     * exact constructor signature, so we try reflection.
+     */
+    private fun buildEngineConfig(modelPath: String, backend: Any, backendName: String): EngineConfig {
+        // First try: construct with audioBackend via reflection
+        try {
+            val configClass = EngineConfig::class.java
+            val constructors = configClass.declaredConstructors
+
+            // Find constructor that takes 3+ params (modelPath, backend, audioBackend, ...)
+            for (constructor in constructors) {
+                val paramTypes = constructor.parameterTypes
+                log("EngineConfig constructor: (${paramTypes.map { it.simpleName }.joinToString()})")
+
+                // Look for constructor with String, Backend, Backend pattern
+                if (paramTypes.size >= 3 &&
+                    paramTypes[0] == String::class.java &&
+                    paramTypes[1].simpleName.contains("Backend") &&
+                    paramTypes[2].simpleName.contains("Backend")
+                ) {
+                    constructor.isAccessible = true
+                    val audioBackend = Backend.CPU() // Audio processing on CPU is fine
+                    // Fill remaining params with defaults
+                    val args = Array(paramTypes.size) { i ->
+                        when (i) {
+                            0 -> modelPath
+                            1 -> backend
+                            2 -> audioBackend
+                            else -> getDefaultValue(paramTypes[i])
+                        }
+                    }
+                    val config = constructor.newInstance(*args) as EngineConfig
+                    log("EngineConfig created WITH audioBackend=CPU")
+                    return config
+                }
+            }
+        } catch (e: Exception) {
+            log("Reflection EngineConfig failed: ${e.message}")
+        }
+
+        // Fallback: standard 2-param construction
+        log("Using standard EngineConfig (no audioBackend)")
+        return EngineConfig(
+            modelPath = modelPath,
+            backend = backend as Backend,
+        )
+    }
+
+    private fun getDefaultValue(type: Class<*>): Any? {
+        return when {
+            type == Int::class.java || type == Integer::class.java -> 0
+            type == Long::class.java || type == java.lang.Long::class.java -> 0L
+            type == Float::class.java || type == java.lang.Float::class.java -> 0f
+            type == Double::class.java || type == java.lang.Double::class.java -> 0.0
+            type == Boolean::class.java || type == java.lang.Boolean::class.java -> false
+            type == String::class.java -> ""
+            else -> null
+        }
+    }
+
+    // --- Audio AST Test ---
+
+    /**
+     * Test Audio Speech Translation: send audio to Gemma and get English text.
+     * Tries multiple strategies:
+     * 1. Content.AudioFile with WAV file path
+     * 2. Content.AudioBytes with WAV file bytes
+     * 3. Content.AudioBytes with raw PCM bytes
+     */
+    fun runAudioASTTest() {
+        if (_state.value.audioTestRunning || !_state.value.modelLoaded) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update {
+                it.copy(
+                    audioTestRunning = true,
+                    audioTestOutput = "",
+                    audioTestError = null,
+                    audioTestStrategy = "",
+                )
+            }
+
+            log("=== AUDIO AST TEST ===")
+
+            try {
+                // Find or generate audio file
+                val audioFile = findTestAudioFile() ?: run {
+                    log("No test audio found, generating synthetic 440Hz tone...")
+                    val syntheticFile = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        "test_audio_synthetic.wav",
+                    )
+                    generateSyntheticWav(syntheticFile, durationMs = 3000)
+                    syntheticFile
+                }
+
+                log("Audio file: ${audioFile.absolutePath}")
+                log("Audio size: ${audioFile.length()} bytes (${audioFile.length() / 1024} KB)")
+
+                _state.update { it.copy(audioTestSource = audioFile.name) }
+
+                val prompt = "Translate the following Spanish speech to English. " +
+                    "Output ONLY the English translation, nothing else."
+
+                // Strategy 1: Content.AudioFile with file path
+                var success = tryAudioFileStrategy(audioFile.absolutePath, prompt)
+
+                // Strategy 2: Content.AudioBytes with WAV bytes
+                if (!success) {
+                    val wavBytes = audioFile.readBytes()
+                    success = tryAudioBytesStrategy(wavBytes, "WAV bytes", prompt)
+                }
+
+                // Strategy 3: Content.AudioBytes with raw PCM (strip WAV header)
+                if (!success) {
+                    val pcmBytes = extractPcmFromWav(audioFile)
+                    if (pcmBytes != null) {
+                        success = tryAudioBytesStrategy(pcmBytes, "raw PCM bytes", prompt)
+                    }
+                }
+
+                if (!success) {
+                    log("ALL audio strategies failed.")
+                    log("CONCLUSION: Audio AST may need different API approach or model configuration.")
+                    _state.update {
+                        it.copy(
+                            audioTestError = "All audio input strategies failed. See logs.",
+                            audioTestRunning = false,
+                        )
+                    }
+                }
+
+                updateMemoryMetrics()
+
+            } catch (e: Exception) {
+                logError("Audio AST test failed", e)
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestError = e.message,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Try sending audio via Content.AudioFile(path) using reflection
+     * to call sendMessage with Message or Contents.
+     */
+    private fun tryAudioFileStrategy(filePath: String, prompt: String): Boolean {
+        log("--- Strategy 1: Content.AudioFile ---")
+        try {
+            // Construct Content.AudioFile
+            val audioFileClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioFile")
+            val audioConstructor = audioFileClass.declaredConstructors.firstOrNull()
+                ?: throw Exception("No constructor for Content.AudioFile")
+
+            log("AudioFile constructor params: ${audioConstructor.parameterTypes.map { it.simpleName }}")
+            audioConstructor.isAccessible = true
+
+            val audioContent = audioConstructor.newInstance(filePath)
+            log("Content.AudioFile created with path: $filePath")
+
+            return trySendAudioMessage(audioContent as Content, prompt, "AudioFile")
+        } catch (e: Exception) {
+            log("Strategy 1 FAILED: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+            return false
+        }
+    }
+
+    /**
+     * Try sending audio via Content.AudioBytes(byteArray) using reflection.
+     */
+    private fun tryAudioBytesStrategy(audioBytes: ByteArray, description: String, prompt: String): Boolean {
+        log("--- Strategy: Content.AudioBytes ($description, ${audioBytes.size} bytes) ---")
+        try {
+            val audioBytesClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioBytes")
+            val audioConstructor = audioBytesClass.declaredConstructors.firstOrNull()
+                ?: throw Exception("No constructor for Content.AudioBytes")
+
+            log("AudioBytes constructor params: ${audioConstructor.parameterTypes.map { it.simpleName }}")
+            audioConstructor.isAccessible = true
+
+            val audioContent = audioConstructor.newInstance(audioBytes)
+            log("Content.AudioBytes created ($description)")
+
+            return trySendAudioMessage(audioContent as Content, prompt, "AudioBytes($description)")
+        } catch (e: Exception) {
+            log("Strategy AudioBytes($description) FAILED: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+            return false
+        }
+    }
+
+    /**
+     * Try to send a multi-modal message (audio + text) to the conversation.
+     * Tries multiple sendMessage overloads via reflection.
+     */
+    private fun trySendAudioMessage(audioContent: Content, prompt: String, strategyName: String): Boolean {
+        val conv = conversation ?: throw Exception("No conversation")
+
+        // Build Contents with audio + text
+        val textContent = Content.Text(prompt)
+        val contents = Contents.of(audioContent, textContent)
+        val userMsg = Message.user(contents)
+
+        log("Message built: ${userMsg.javaClass.simpleName}")
+        log("Contents: audio(${audioContent.javaClass.simpleName}) + text")
+
+        val startTime = System.nanoTime()
+
+        // Try 1: sendMessage(Message)
+        try {
+            val sendMethod = conv.javaClass.methods.find { m ->
+                m.name == "sendMessage" &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0].isAssignableFrom(Message::class.java)
+            }
+            if (sendMethod != null) {
+                log("Found sendMessage(Message) overload, calling...")
+                val result = sendMethod.invoke(conv, userMsg) as Message
+                val responseText = result.toString().trim()
+                val timeMs = (System.nanoTime() - startTime) / 1_000_000
+
+                log("SUCCESS with sendMessage(Message)!")
+                log("Response: $responseText")
+                log("Time: ${timeMs}ms")
+
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestOutput = responseText,
+                        audioTestTimeMs = timeMs,
+                        audioTestStrategy = strategyName,
+                    )
+                }
+                return true
+            }
+        } catch (e: Exception) {
+            log("sendMessage(Message) failed: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+        }
+
+        // Try 2: sendMessage(Contents)
+        try {
+            val sendMethod = conv.javaClass.methods.find { m ->
+                m.name == "sendMessage" &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0].isAssignableFrom(Contents::class.java)
+            }
+            if (sendMethod != null) {
+                log("Found sendMessage(Contents) overload, calling...")
+                val result = sendMethod.invoke(conv, contents) as Message
+                val responseText = result.toString().trim()
+                val timeMs = (System.nanoTime() - startTime) / 1_000_000
+
+                log("SUCCESS with sendMessage(Contents)!")
+                log("Response: $responseText")
+                log("Time: ${timeMs}ms")
+
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestOutput = responseText,
+                        audioTestTimeMs = timeMs,
+                        audioTestStrategy = strategyName,
+                    )
+                }
+                return true
+            }
+        } catch (e: Exception) {
+            log("sendMessage(Contents) failed: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+        }
+
+        // Try 3: sendMessageAsync(Message) → collect Flow
+        try {
+            val sendAsyncMethod = conv.javaClass.methods.find { m ->
+                m.name == "sendMessageAsync" &&
+                m.parameterTypes.size == 1 &&
+                m.parameterTypes[0].isAssignableFrom(Message::class.java)
+            }
+            if (sendAsyncMethod != null) {
+                log("Found sendMessageAsync(Message) overload, calling...")
+                @Suppress("UNCHECKED_CAST")
+                val flow = sendAsyncMethod.invoke(conv, userMsg) as kotlinx.coroutines.flow.Flow<Message>
+
+                val fullResponse = StringBuilder()
+                var tokenCount = 0
+                kotlinx.coroutines.runBlocking {
+                    flow.collect { msg ->
+                        fullResponse.append(msg.toString())
+                        tokenCount++
+                    }
+                }
+
+                val responseText = fullResponse.toString().trim()
+                val timeMs = (System.nanoTime() - startTime) / 1_000_000
+
+                log("SUCCESS with sendMessageAsync(Message)!")
+                log("Response: $responseText")
+                log("Time: ${timeMs}ms | Tokens: $tokenCount")
+
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestOutput = responseText,
+                        audioTestTimeMs = timeMs,
+                        audioTestStrategy = strategyName,
+                    )
+                }
+                return true
+            }
+        } catch (e: Exception) {
+            log("sendMessageAsync(Message) failed: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+        }
+
+        // Log all available methods for debugging
+        log("Available Conversation methods:")
+        conv.javaClass.methods
+            .filter { it.name.contains("send", ignoreCase = true) }
+            .forEach { m ->
+                log("  ${m.name}(${m.parameterTypes.map { it.simpleName }.joinToString()})")
+            }
+
+        return false
+    }
+
+    // --- Audio file utilities ---
+
+    /**
+     * Look for a real Spanish audio WAV file on the device.
+     */
+    private fun findTestAudioFile(): File? {
+        val candidates = listOf(
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "test_audio_es.wav"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "test_audio.wav"),
+            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "audio_test.wav"),
+        )
+
+        for (f in candidates) {
+            if (f.exists() && f.length() > 1000) {
+                log("Found test audio: ${f.absolutePath} (${f.length() / 1024} KB)")
+                return f
+            }
+        }
+
+        // Check assets
+        try {
+            val assets = getApplication<Application>().assets
+            if (assets.list("")?.contains("test_audio_es.wav") == true) {
+                val outFile = File(getApplication<Application>().cacheDir, "test_audio_es.wav")
+                if (!outFile.exists()) {
+                    assets.open("test_audio_es.wav").use { input ->
+                        outFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                }
+                log("Extracted test audio from assets: ${outFile.absolutePath}")
+                return outFile
+            }
+        } catch (_: Exception) { }
+
+        return null
+    }
+
+    /**
+     * Generate a synthetic WAV file with a 440Hz sine tone.
+     * 16kHz, mono, 16-bit PCM — matches our pipeline audio format.
+     * This is for API acceptance testing only (not real translation).
+     */
+    private fun generateSyntheticWav(file: File, durationMs: Int = 3000) {
+        val sampleRate = 16000
+        val numSamples = sampleRate * durationMs / 1000
+        val pcmData = ShortArray(numSamples) { i ->
+            (Short.MAX_VALUE * 0.5 * sin(2.0 * Math.PI * 440.0 * i / sampleRate)).toInt().toShort()
+        }
+
+        val dataSize = numSamples * 2  // 16-bit = 2 bytes per sample
+        val buffer = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+
+        // WAV header
+        buffer.put("RIFF".toByteArray())
+        buffer.putInt(36 + dataSize)         // chunk size
+        buffer.put("WAVE".toByteArray())
+        buffer.put("fmt ".toByteArray())
+        buffer.putInt(16)                     // subchunk1 size (PCM)
+        buffer.putShort(1)                    // audio format (1 = PCM)
+        buffer.putShort(1)                    // num channels (mono)
+        buffer.putInt(sampleRate)             // sample rate
+        buffer.putInt(sampleRate * 2)         // byte rate
+        buffer.putShort(2)                    // block align
+        buffer.putShort(16)                   // bits per sample
+        buffer.put("data".toByteArray())
+        buffer.putInt(dataSize)               // subchunk2 size
+
+        // PCM data
+        pcmData.forEach { buffer.putShort(it) }
+
+        file.writeBytes(buffer.array())
+        log("Generated synthetic WAV: ${file.name} (${file.length()} bytes, ${durationMs}ms, 16kHz mono)")
+    }
+
+    /**
+     * Extract raw PCM data from a WAV file (skip the 44-byte header).
+     */
+    private fun extractPcmFromWav(wavFile: File): ByteArray? {
+        try {
+            val bytes = wavFile.readBytes()
+            if (bytes.size < 44) return null
+
+            // Verify RIFF/WAVE header
+            val header = String(bytes, 0, 4)
+            if (header != "RIFF") {
+                log("Not a valid WAV file (header: $header)")
+                return null
+            }
+
+            // Find "data" chunk
+            var offset = 12 // after RIFF header
+            while (offset < bytes.size - 8) {
+                val chunkId = String(bytes, offset, 4)
+                val chunkSize = ByteBuffer.wrap(bytes, offset + 4, 4)
+                    .order(ByteOrder.LITTLE_ENDIAN).int
+
+                if (chunkId == "data") {
+                    val pcmStart = offset + 8
+                    val pcmEnd = minOf(pcmStart + chunkSize, bytes.size)
+                    val pcm = bytes.copyOfRange(pcmStart, pcmEnd)
+                    log("Extracted PCM: ${pcm.size} bytes from WAV (data chunk at offset $offset)")
+                    return pcm
+                }
+                offset += 8 + chunkSize
+            }
+
+            // Fallback: skip 44 bytes
+            log("No 'data' chunk found, using 44-byte header skip")
+            return bytes.copyOfRange(44, bytes.size)
+        } catch (e: Exception) {
+            log("Failed to extract PCM from WAV: ${e.message}")
+            return null
+        }
     }
 
     // --- Check audio/multimodal support ---
