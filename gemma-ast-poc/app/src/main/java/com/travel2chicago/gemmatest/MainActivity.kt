@@ -119,7 +119,9 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "Place model file in /sdcard/Download/:\nadb push gemma_model.litertlm /sdcard/Download/",
+                        text = "Best: Install AI Edge Gallery, download Gemma 4 E4B there.\n" +
+                            "The model + companion files will be at:\n" +
+                            "/sdcard/Android/data/com.google.ai.edge.gallery/files/",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -141,7 +143,7 @@ fun GemmaTestScreen(viewModel: GemmaTestViewModel = viewModel()) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Scanning...")
                         } else {
-                            Text("Re-scan /sdcard/Download/")
+                            Text("Scan for Model")
                         }
                     }
 

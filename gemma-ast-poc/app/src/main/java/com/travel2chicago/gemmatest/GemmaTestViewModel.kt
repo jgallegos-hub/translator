@@ -73,9 +73,24 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     @Volatile private var engine: Engine? = null
     @Volatile private var conversation: Conversation? = null
 
-    // Model directory — /sdcard/Download/ where the model was manually placed
-    private val modelDir: File
-        get() = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    /**
+     * Directories to search for the model, in priority order.
+     * The AI Edge Gallery directory has all companion files intact.
+     */
+    private val searchDirs: List<File>
+        get() = listOf(
+            // 1. AI Edge Gallery's original directory (has companion cache files)
+            File("/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E4B_it/20260325"),
+            // 2. Parent dir in case date folder differs
+            File("/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E4B_it"),
+            // 3. Manual placement in Downloads
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            // 4. App-internal fallback
+            File(getApplication<Application>().filesDir, "models"),
+        )
+
+    /** The resolved model file (set by checkModelExists) */
+    @Volatile private var resolvedModelFile: File? = null
 
     init {
         checkModelExists()
@@ -101,79 +116,108 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     // --- Model management ---
 
     fun checkModelExists() {
-        val dir = modelDir
-        log("Checking for model in: ${dir.absolutePath}")
-        log("Directory exists: ${dir.exists()}")
-        log("Directory readable: ${dir.canRead()}")
+        log("=== SCANNING FOR MODEL ===")
 
-        val modelFile = findModelFile()
-        val exists = modelFile != null
+        resolvedModelFile = null
 
+        for (dir in searchDirs) {
+            log("Checking: ${dir.absolutePath}")
+            log("  exists=${dir.exists()} readable=${dir.canRead()} isDir=${dir.isDirectory}")
+
+            if (!dir.exists() || !dir.canRead()) {
+                // Try sub-directories for the AI Edge Gallery parent
+                if (dir.absolutePath.contains("Gemma_4_E4B_it") && !dir.absolutePath.contains("20260325")) {
+                    try {
+                        val subDirs = dir.listFiles { f -> f.isDirectory }
+                        subDirs?.forEach { sub ->
+                            log("  Sub-dir: ${sub.name}")
+                            val found = findModelFileInDir(sub)
+                            if (found != null) {
+                                resolvedModelFile = found
+                                logModelFound(found)
+                                updateModelState(found)
+                                return
+                            }
+                        }
+                    } catch (_: Exception) { }
+                }
+                continue
+            }
+
+            val found = findModelFileInDir(dir)
+            if (found != null) {
+                resolvedModelFile = found
+                logModelFound(found)
+                updateModelState(found)
+                return
+            }
+        }
+
+        // Not found in any directory
+        log("Model NOT FOUND in any search directory")
+        log("Expected locations:")
+        searchDirs.forEach { log("  ${it.absolutePath}") }
         _state.update {
             it.copy(
-                modelPath = dir.absolutePath,
-                modelExists = exists,
+                modelPath = searchDirs.first().absolutePath,
+                modelExists = false,
             )
         }
-        if (exists) {
-            log("Model found: ${modelFile!!.absolutePath} (${modelFile.length() / 1_048_576} MB)")
-        } else {
-            log("No model file found in: ${dir.absolutePath}")
-            // List what IS in the directory to help debug
-            try {
-                val files = dir.listFiles()
-                if (files != null) {
-                    val modelCandidates = files.filter {
-                        it.name.contains("gemma", ignoreCase = true) ||
-                        it.name.endsWith(".litertlm") ||
-                        it.name.endsWith(".task") ||
-                        it.name.endsWith(".bin")
-                    }
-                    if (modelCandidates.isNotEmpty()) {
-                        log("Possible model files found:")
-                        modelCandidates.forEach { f ->
-                            log("  ${f.name} (${f.length() / 1_048_576} MB)")
-                        }
-                    } else {
-                        log("No model-like files found. Total files in Downloads: ${files.size}")
-                    }
-                } else {
-                    log("Cannot list directory — permission denied?")
-                    log("Grant 'All files access' in Settings > Apps > GemmaTest > Permissions")
-                }
-            } catch (e: Exception) {
-                log("Error listing directory: ${e.message}")
+    }
+
+    private fun logModelFound(modelFile: File) {
+        val dir = modelFile.parentFile!!
+        log("MODEL FOUND: ${modelFile.absolutePath}")
+        log("  Size: ${modelFile.length() / 1_048_576} MB")
+
+        // List companion files
+        val companions = dir.listFiles()?.filter { f ->
+            f.name != modelFile.name && (
+                f.name.contains("litertlm", ignoreCase = true) ||
+                f.name.endsWith(".bin") ||
+                f.name.contains("cache", ignoreCase = true) ||
+                f.name.contains("xnnpack", ignoreCase = true)
+            )
+        } ?: emptyList()
+
+        if (companions.isNotEmpty()) {
+            log("  Companion files (${companions.size}):")
+            companions.forEach { f ->
+                log("    ${f.name} (${f.length() / 1_048_576} MB)")
             }
+        } else {
+            log("  WARNING: No companion files found!")
+            log("  Engine may fail without .xnnpack_cache and .bin files")
+        }
+    }
+
+    private fun updateModelState(modelFile: File) {
+        _state.update {
+            it.copy(
+                modelPath = modelFile.parentFile?.absolutePath ?: modelFile.absolutePath,
+                modelExists = true,
+            )
         }
     }
 
     /**
-     * Re-scan /sdcard/Download/ for the model file.
-     * The model must be placed there manually (too large for in-app download).
-     *
-     * To place the model:
-     *   adb push gemma_model.litertlm /sdcard/Download/
-     *
-     * Or download it from a browser on the device directly to Downloads.
+     * Re-scan all known directories for the model file.
+     * Priority: AI Edge Gallery dir (has companion files) > Downloads > internal.
      */
     fun downloadModel() {
-        // Not actually downloading — just re-checking after user places the file
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(downloading = true, downloadProgress = 0f, downloadError = null) }
 
-            log("Scanning ${modelDir.absolutePath} for model file...")
-            log("Expected: gemma_model.litertlm (~2.5GB)")
-
-            // Give time for any pending writes
-            kotlinx.coroutines.delay(500)
-
+            log("Scanning all known directories for Gemma model...")
+            kotlinx.coroutines.delay(300)
             checkModelExists()
 
             if (!_state.value.modelExists) {
                 _state.update {
                     it.copy(
-                        downloadError = "Model not found. Place it in /sdcard/Download/\n" +
-                            "adb push gemma_model.litertlm /sdcard/Download/",
+                        downloadError = "Model not found.\n" +
+                            "Best option: Install AI Edge Gallery and download Gemma 4 E4B there first.\n" +
+                            "Alt: adb push model + companion files to /sdcard/Download/",
                     )
                 }
             }
@@ -193,66 +237,97 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             updateMemoryMetrics()
 
             try {
-                val startTime = System.nanoTime()
-
-                val modelFile = findModelFile()
-                    ?: throw Exception("No model file found in ${modelDir.absolutePath}")
+                val modelFile = resolvedModelFile ?: run {
+                    checkModelExists()
+                    resolvedModelFile
+                } ?: throw Exception("No model file found. Install AI Edge Gallery and download Gemma 4 E4B first.")
 
                 log("Using model file: ${modelFile.absolutePath}")
                 log("Model size: ${modelFile.length() / 1_048_576} MB")
 
-                // Try GPU backend first, fall back to CPU
-                val backend = try {
-                    log("Attempting GPU backend...")
-                    Backend.GPU()
-                } catch (e: Exception) {
-                    log("GPU not available, using CPU: ${e.message}")
-                    Backend.CPU()
+                // List all files in the model directory for debugging
+                val modelDir = modelFile.parentFile!!
+                val allFiles = modelDir.listFiles()
+                log("Files in model directory (${modelDir.absolutePath}):")
+                allFiles?.sortedBy { it.name }?.forEach { f ->
+                    log("  ${f.name} (${f.length() / 1_048_576} MB)")
                 }
 
-                val backendName = backend.javaClass.simpleName
-                log("Backend: $backendName")
-
-                val config = EngineConfig(
-                    modelPath = modelFile.absolutePath,
-                    backend = backend,
+                // Try backends in order: GPU → CPU
+                val backendsToTry = listOf(
+                    "GPU" to { Backend.GPU() },
+                    "CPU" to { Backend.CPU() },
                 )
 
-                log("Creating engine...")
-                engine = Engine(config)
+                var lastError: Exception? = null
 
-                log("Initializing engine (this takes ~10s)...")
-                engine!!.initialize()
+                for ((backendName, backendFactory) in backendsToTry) {
+                    try {
+                        log("--- Attempting $backendName backend ---")
 
-                val loadTimeMs = (System.nanoTime() - startTime) / 1_000_000
+                        val backend = try {
+                            backendFactory()
+                        } catch (e: Exception) {
+                            log("$backendName backend not available: ${e.message}")
+                            continue
+                        }
 
-                log("Engine ready in ${loadTimeMs}ms")
-                updateMemoryMetrics()
+                        val config = EngineConfig(
+                            modelPath = modelFile.absolutePath,
+                            backend = backend,
+                        )
 
-                _state.update {
-                    it.copy(
-                        modelLoaded = true,
-                        modelLoading = false,
-                        modelLoadTimeMs = loadTimeMs,
-                        backendUsed = backendName,
-                    )
+                        log("Creating engine with $backendName...")
+                        val eng = Engine(config)
+
+                        log("Initializing engine with $backendName (this may take ~10-30s)...")
+                        val startTime = System.nanoTime()
+                        eng.initialize()
+                        val loadTimeMs = (System.nanoTime() - startTime) / 1_000_000
+
+                        // Success!
+                        engine = eng
+                        log("Engine ready with $backendName in ${loadTimeMs}ms")
+                        updateMemoryMetrics()
+
+                        _state.update {
+                            it.copy(
+                                modelLoaded = true,
+                                modelLoading = false,
+                                modelLoadTimeMs = loadTimeMs,
+                                backendUsed = backendName,
+                            )
+                        }
+
+                        // Create conversation
+                        log("Creating conversation...")
+                        conversation = eng.createConversation(
+                            ConversationConfig(
+                                samplerConfig = SamplerConfig(
+                                    temperature = 0.1,
+                                    topK = 10,
+                                    topP = 0.95,
+                                ),
+                            )
+                        )
+                        log("Conversation ready")
+
+                        // Check for audio/multimodal support
+                        checkAudioSupport()
+                        return@launch // success — exit
+
+                    } catch (e: Exception) {
+                        lastError = e
+                        logError("$backendName failed", e)
+                        // Clean up failed engine before trying next backend
+                        try { engine?.close() } catch (_: Exception) { }
+                        engine = null
+                        log("Will try next backend...")
+                    }
                 }
 
-                // Create a conversation with low temperature for translation accuracy
-                log("Creating conversation...")
-                conversation = engine!!.createConversation(
-                    ConversationConfig(
-                        samplerConfig = SamplerConfig(
-                            temperature = 0.1,
-                            topK = 10,
-                            topP = 0.95,
-                        ),
-                    )
-                )
-                log("Conversation ready")
-
-                // Check for audio/multimodal support
-                checkAudioSupport()
+                // All backends failed
+                throw lastError ?: Exception("All backends failed")
 
             } catch (e: Exception) {
                 logError("Failed to load model", e)
@@ -261,40 +336,48 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun findModelFile(): File? {
-        val dir = modelDir
+    /**
+     * Find the main .litertlm model file in a given directory.
+     * The companion files (.xnnpack_cache, .bin) must be in the same dir.
+     */
+    private fun findModelFileInDir(dir: File): File? {
         if (!dir.exists() || !dir.canRead()) return null
 
-        // 1. Check for the exact known filename first
-        val knownFile = File(dir, "gemma_model.litertlm")
-        if (knownFile.exists() && knownFile.length() > 1_000_000) {
-            return knownFile
+        try {
+            val files = dir.listFiles() ?: return null
+
+            // 1. Known AI Edge Gallery filename
+            files.find {
+                it.name == "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm"
+            }?.let { return it }
+
+            // 2. Any .litertlm file with "gemma" in the name (>100MB to skip caches)
+            files.filter {
+                it.name.endsWith(".litertlm", ignoreCase = true) &&
+                it.name.contains("gemma", ignoreCase = true) &&
+                it.length() > 100_000_000
+            }.maxByOrNull { it.length() }?.let { return it }
+
+            // 3. Any large .litertlm file (>100MB)
+            files.filter {
+                it.name.endsWith(".litertlm", ignoreCase = true) &&
+                !it.name.contains("cache", ignoreCase = true) &&
+                it.length() > 100_000_000
+            }.maxByOrNull { it.length() }?.let { return it }
+
+            // 4. Any .task file (alternate LiteRT format)
+            files.filter {
+                it.name.endsWith(".task", ignoreCase = true) &&
+                it.length() > 100_000_000
+            }.maxByOrNull { it.length() }?.let { return it }
+
+        } catch (e: SecurityException) {
+            log("  Permission denied: ${dir.absolutePath}")
+        } catch (e: Exception) {
+            log("  Error scanning: ${e.message}")
         }
 
-        // 2. Search by known extensions
-        val extensions = listOf(".litertlm", ".task", ".bin", ".tflite")
-        for (ext in extensions) {
-            val files = dir.listFiles { _, name ->
-                name.endsWith(ext, ignoreCase = true) &&
-                name.contains("gemma", ignoreCase = true)
-            }
-            if (files != null && files.isNotEmpty()) {
-                return files.maxByOrNull { it.length() }
-            }
-        }
-
-        // 3. Any file with model extensions
-        for (ext in extensions) {
-            val files = dir.listFiles { _, name -> name.endsWith(ext, ignoreCase = true) }
-            if (files != null && files.isNotEmpty()) {
-                return files.maxByOrNull { it.length() }
-            }
-        }
-
-        // 4. Last resort: any large file with "gemma" in name
-        return dir.listFiles()
-            ?.filter { it.isFile && it.length() > 100_000_000 && it.name.contains("gemma", ignoreCase = true) }
-            ?.maxByOrNull { it.length() }
+        return null
     }
 
     // --- Check audio/multimodal support ---
