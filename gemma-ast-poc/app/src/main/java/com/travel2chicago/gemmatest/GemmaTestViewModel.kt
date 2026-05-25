@@ -514,7 +514,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
      *   Contents.of(Content.AudioBytes(wavBytes), Content.Text(prompt))
      *   conversation.sendMessage(contents)
      */
-    private fun tryAudioBytesDirectAPI(audioBytes: ByteArray, prompt: String, label: String): Boolean {
+    private suspend fun tryAudioBytesDirectAPI(audioBytes: ByteArray, prompt: String, label: String): Boolean {
         val conv = conversation ?: return false
 
         try {
@@ -629,7 +629,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     /**
      * Try audio via Content.AudioFile — direct API.
      */
-    private fun tryAudioFileDirectAPI(filePath: String, prompt: String): Boolean {
+    private suspend fun tryAudioFileDirectAPI(filePath: String, prompt: String): Boolean {
         val conv = conversation ?: return false
 
         try {
