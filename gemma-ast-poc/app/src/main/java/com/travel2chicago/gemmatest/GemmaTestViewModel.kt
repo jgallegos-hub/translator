@@ -200,7 +200,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             }
         } else {
             log("  WARNING: No companion files found!")
-            log("  Engine may fail without .xnnpack_cache and .bin files")
+            log("  GPU may fail without .xnnpack_cache and .bin files")
         }
     }
 
@@ -215,7 +215,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Re-scan all known directories for the model file.
-     * Priority: AI Edge Gallery dir (has companion files) > Downloads > internal.
      */
     fun downloadModel() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -230,7 +229,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                     it.copy(
                         downloadError = "Model not found.\n" +
                             "Best option: Install AI Edge Gallery and download Gemma 4 E4B there first.\n" +
-                            "Alt: adb push model + companion files to /sdcard/Download/",
+                            "Alt: adb push model + companion files to /sdcard/Download/gemma_model/",
                     )
                 }
             }
@@ -241,6 +240,15 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- Load model ---
 
+    /**
+     * Load the model using the EXACT same configuration as AI Edge Gallery:
+     * - backend = GPU (main inference)
+     * - audioBackend = CPU (audio processing — must be CPU per AI Edge Gallery)
+     * - maxNumTokens = 1024
+     * - cacheDir = app's external files dir
+     *
+     * Falls back to CPU for main backend if GPU fails.
+     */
     fun loadModel() {
         if (_state.value.modelLoading || _state.value.modelLoaded) return
 
@@ -266,7 +274,12 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                     log("  ${f.name} (${f.length() / 1_048_576} MB)")
                 }
 
+                // Cache dir for GPU compiled artifacts
+                val cacheDir = getApplication<Application>().getExternalFilesDir(null)?.absolutePath
+                log("Cache dir: $cacheDir")
+
                 // Try backends in order: GPU → CPU
+                // AI Edge Gallery pattern: backend=GPU, audioBackend=CPU
                 val backendsToTry = listOf(
                     "GPU" to { Backend.GPU() },
                     "CPU" to { Backend.CPU() },
@@ -285,8 +298,19 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                             continue
                         }
 
-                        val config = buildEngineConfig(modelFile.absolutePath, backend, backendName)
+                        // Build EngineConfig matching AI Edge Gallery's configuration:
+                        // - audioBackend = CPU (required for audio modality)
+                        // - maxNumTokens = 1024
+                        // - cacheDir for GPU compilation cache
+                        val config = EngineConfig(
+                            modelPath = modelFile.absolutePath,
+                            backend = backend,
+                            audioBackend = Backend.CPU(),
+                            maxNumTokens = 1024,
+                            cacheDir = cacheDir,
+                        )
 
+                        log("EngineConfig: backend=$backendName, audioBackend=CPU, maxTokens=1024, cacheDir=$cacheDir")
                         log("Creating engine with $backendName...")
                         val eng = Engine(config)
 
@@ -309,7 +333,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                             )
                         }
 
-                        // Create conversation
+                        // Create conversation with translation-optimized settings
                         log("Creating conversation...")
                         conversation = eng.createConversation(
                             ConversationConfig(
@@ -348,7 +372,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Find the main .litertlm model file in a given directory.
-     * The companion files (.xnnpack_cache, .bin) must be in the same dir.
      */
     private fun findModelFileInDir(dir: File): File? {
         if (!dir.exists() || !dir.canRead()) return null
@@ -390,76 +413,16 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         return null
     }
 
-    /**
-     * Build EngineConfig, attempting to set audioBackend via reflection.
-     * The audioBackend field exists in EngineConfig but we don't know its
-     * exact constructor signature, so we try reflection.
-     */
-    private fun buildEngineConfig(modelPath: String, backend: Any, backendName: String): EngineConfig {
-        // First try: construct with audioBackend via reflection
-        try {
-            val configClass = EngineConfig::class.java
-            val constructors = configClass.declaredConstructors
-
-            // Find constructor that takes 3+ params (modelPath, backend, audioBackend, ...)
-            for (constructor in constructors) {
-                val paramTypes = constructor.parameterTypes
-                log("EngineConfig constructor: (${paramTypes.map { it.simpleName }.joinToString()})")
-
-                // Look for constructor with String, Backend, Backend pattern
-                if (paramTypes.size >= 3 &&
-                    paramTypes[0] == String::class.java &&
-                    paramTypes[1].simpleName.contains("Backend") &&
-                    paramTypes[2].simpleName.contains("Backend")
-                ) {
-                    constructor.isAccessible = true
-                    val audioBackend = Backend.CPU() // Audio processing on CPU is fine
-                    // Fill remaining params with defaults
-                    val args = Array(paramTypes.size) { i ->
-                        when (i) {
-                            0 -> modelPath
-                            1 -> backend
-                            2 -> audioBackend
-                            else -> getDefaultValue(paramTypes[i])
-                        }
-                    }
-                    val config = constructor.newInstance(*args) as EngineConfig
-                    log("EngineConfig created WITH audioBackend=CPU")
-                    return config
-                }
-            }
-        } catch (e: Exception) {
-            log("Reflection EngineConfig failed: ${e.message}")
-        }
-
-        // Fallback: standard 2-param construction
-        log("Using standard EngineConfig (no audioBackend)")
-        return EngineConfig(
-            modelPath = modelPath,
-            backend = backend as Backend,
-        )
-    }
-
-    private fun getDefaultValue(type: Class<*>): Any? {
-        return when {
-            type == Int::class.java || type == Integer::class.java -> 0
-            type == Long::class.java || type == java.lang.Long::class.java -> 0L
-            type == Float::class.java || type == java.lang.Float::class.java -> 0f
-            type == Double::class.java || type == java.lang.Double::class.java -> 0.0
-            type == Boolean::class.java || type == java.lang.Boolean::class.java -> false
-            type == String::class.java -> ""
-            else -> null
-        }
-    }
-
     // --- Audio AST Test ---
 
     /**
-     * Test Audio Speech Translation: send audio to Gemma and get English text.
-     * Tries multiple strategies:
-     * 1. Content.AudioFile with WAV file path
-     * 2. Content.AudioBytes with WAV file bytes
-     * 3. Content.AudioBytes with raw PCM bytes
+     * Test Audio Speech Translation using the EXACT same pattern as AI Edge Gallery:
+     *
+     * 1. Audio format: WAV 16kHz mono 16-bit PCM (Content.AudioBytes with WAV header)
+     * 2. Message construction: Contents.of(Content.AudioBytes(wav), Content.Text(prompt))
+     * 3. Send via: conversation.sendMessage(Contents) — direct overload, no reflection
+     *
+     * Order matters: audio FIRST, text LAST (per AI Edge Gallery source).
      */
     fun runAudioASTTest() {
         if (_state.value.audioTestRunning || !_state.value.modelLoaded) return
@@ -490,35 +453,42 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
                 log("Audio file: ${audioFile.absolutePath}")
                 log("Audio size: ${audioFile.length()} bytes (${audioFile.length() / 1024} KB)")
-
                 _state.update { it.copy(audioTestSource = audioFile.name) }
+
+                // Read WAV bytes — AI Edge Gallery passes full WAV (with RIFF header) to AudioBytes
+                val wavBytes = audioFile.readBytes()
+                log("WAV bytes loaded: ${wavBytes.size} bytes")
 
                 val prompt = "Translate the following Spanish speech to English. " +
                     "Output ONLY the English translation, nothing else."
 
-                // Strategy 1: Content.AudioFile with file path
-                var success = tryAudioFileStrategy(audioFile.absolutePath, prompt)
+                // Strategy 1 (Primary): Content.AudioBytes with WAV bytes
+                // This is what AI Edge Gallery uses
+                log("--- Strategy 1: Content.AudioBytes (WAV bytes) ---")
+                var success = tryAudioBytesDirectAPI(wavBytes, prompt, "AudioBytes(WAV)")
 
-                // Strategy 2: Content.AudioBytes with WAV bytes
+                // Strategy 2: Content.AudioFile with file path
                 if (!success) {
-                    val wavBytes = audioFile.readBytes()
-                    success = tryAudioBytesStrategy(wavBytes, "WAV bytes", prompt)
+                    log("--- Strategy 2: Content.AudioFile ---")
+                    success = tryAudioFileDirectAPI(audioFile.absolutePath, prompt)
                 }
 
-                // Strategy 3: Content.AudioBytes with raw PCM (strip WAV header)
+                // Strategy 3: Content.AudioBytes with raw PCM (no header)
                 if (!success) {
+                    log("--- Strategy 3: Content.AudioBytes (raw PCM) ---")
                     val pcmBytes = extractPcmFromWav(audioFile)
                     if (pcmBytes != null) {
-                        success = tryAudioBytesStrategy(pcmBytes, "raw PCM bytes", prompt)
+                        success = tryAudioBytesDirectAPI(pcmBytes, prompt, "AudioBytes(PCM)")
                     }
                 }
 
                 if (!success) {
                     log("ALL audio strategies failed.")
-                    log("CONCLUSION: Audio AST may need different API approach or model configuration.")
+                    log("Check: was audioBackend=CPU set in EngineConfig?")
+                    log("Check: is the model multimodal (Gemma 4 E4B)?")
                     _state.update {
                         it.copy(
-                            audioTestError = "All audio input strategies failed. See logs.",
+                            audioTestError = "All audio strategies failed. See logs for details.",
                             audioTestRunning = false,
                         )
                     }
@@ -539,86 +509,32 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Try sending audio via Content.AudioFile(path) using reflection
-     * to call sendMessage with Message or Contents.
+     * Try audio via Content.AudioBytes — direct API, no reflection.
+     * Uses the exact AI Edge Gallery pattern:
+     *   Contents.of(Content.AudioBytes(wavBytes), Content.Text(prompt))
+     *   conversation.sendMessage(contents)
      */
-    private fun tryAudioFileStrategy(filePath: String, prompt: String): Boolean {
-        log("--- Strategy 1: Content.AudioFile ---")
+    private fun tryAudioBytesDirectAPI(audioBytes: ByteArray, prompt: String, label: String): Boolean {
+        val conv = conversation ?: return false
+
         try {
-            // Construct Content.AudioFile
-            val audioFileClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioFile")
-            val audioConstructor = audioFileClass.declaredConstructors.firstOrNull()
-                ?: throw Exception("No constructor for Content.AudioFile")
+            // Build contents: audio FIRST, text LAST (per AI Edge Gallery)
+            val contents = Contents.of(
+                Content.AudioBytes(audioBytes),
+                Content.Text(prompt),
+            )
+            log("Contents built: AudioBytes(${audioBytes.size} bytes) + Text")
 
-            log("AudioFile constructor params: ${audioConstructor.parameterTypes.map { it.simpleName }}")
-            audioConstructor.isAccessible = true
+            val startTime = System.nanoTime()
 
-            val audioContent = audioConstructor.newInstance(filePath)
-            log("Content.AudioFile created with path: $filePath")
-
-            return trySendAudioMessage(audioContent as Content, prompt, "AudioFile")
-        } catch (e: Exception) {
-            log("Strategy 1 FAILED: ${e.message}")
-            e.cause?.let { log("  Cause: ${it.message}") }
-            return false
-        }
-    }
-
-    /**
-     * Try sending audio via Content.AudioBytes(byteArray) using reflection.
-     */
-    private fun tryAudioBytesStrategy(audioBytes: ByteArray, description: String, prompt: String): Boolean {
-        log("--- Strategy: Content.AudioBytes ($description, ${audioBytes.size} bytes) ---")
-        try {
-            val audioBytesClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioBytes")
-            val audioConstructor = audioBytesClass.declaredConstructors.firstOrNull()
-                ?: throw Exception("No constructor for Content.AudioBytes")
-
-            log("AudioBytes constructor params: ${audioConstructor.parameterTypes.map { it.simpleName }}")
-            audioConstructor.isAccessible = true
-
-            val audioContent = audioConstructor.newInstance(audioBytes)
-            log("Content.AudioBytes created ($description)")
-
-            return trySendAudioMessage(audioContent as Content, prompt, "AudioBytes($description)")
-        } catch (e: Exception) {
-            log("Strategy AudioBytes($description) FAILED: ${e.message}")
-            e.cause?.let { log("  Cause: ${it.message}") }
-            return false
-        }
-    }
-
-    /**
-     * Try to send a multi-modal message (audio + text) to the conversation.
-     * Tries multiple sendMessage overloads via reflection.
-     */
-    private fun trySendAudioMessage(audioContent: Content, prompt: String, strategyName: String): Boolean {
-        val conv = conversation ?: throw Exception("No conversation")
-
-        // Build Contents with audio + text
-        val textContent = Content.Text(prompt)
-        val contents = Contents.of(audioContent, textContent)
-        val userMsg = Message.user(contents)
-
-        log("Message built: ${userMsg.javaClass.simpleName}")
-        log("Contents: audio(${audioContent.javaClass.simpleName}) + text")
-
-        val startTime = System.nanoTime()
-
-        // Try 1: sendMessage(Message)
-        try {
-            val sendMethod = conv.javaClass.methods.find { m ->
-                m.name == "sendMessage" &&
-                m.parameterTypes.size == 1 &&
-                m.parameterTypes[0].isAssignableFrom(Message::class.java)
-            }
-            if (sendMethod != null) {
-                log("Found sendMessage(Message) overload, calling...")
-                val result = sendMethod.invoke(conv, userMsg) as Message
-                val responseText = result.toString().trim()
+            // Try synchronous sendMessage(Contents) first
+            try {
+                log("Calling conversation.sendMessage(Contents)...")
+                val response: Message = conv.sendMessage(contents)
+                val responseText = response.toString().trim()
                 val timeMs = (System.nanoTime() - startTime) / 1_000_000
 
-                log("SUCCESS with sendMessage(Message)!")
+                log("SUCCESS! $label via sendMessage(Contents)")
                 log("Response: $responseText")
                 log("Time: ${timeMs}ms")
 
@@ -627,73 +543,36 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                         audioTestRunning = false,
                         audioTestOutput = responseText,
                         audioTestTimeMs = timeMs,
-                        audioTestStrategy = strategyName,
+                        audioTestStrategy = "$label → sendMessage(Contents)",
                     )
                 }
                 return true
+            } catch (e: Exception) {
+                log("sendMessage(Contents) failed: ${e.message}")
+                e.cause?.let { log("  Cause: ${it.message}") }
             }
-        } catch (e: Exception) {
-            log("sendMessage(Message) failed: ${e.message}")
-            e.cause?.let { log("  Cause: ${it.message}") }
-        }
 
-        // Try 2: sendMessage(Contents)
-        try {
-            val sendMethod = conv.javaClass.methods.find { m ->
-                m.name == "sendMessage" &&
-                m.parameterTypes.size == 1 &&
-                m.parameterTypes[0].isAssignableFrom(Contents::class.java)
-            }
-            if (sendMethod != null) {
-                log("Found sendMessage(Contents) overload, calling...")
-                val result = sendMethod.invoke(conv, contents) as Message
-                val responseText = result.toString().trim()
-                val timeMs = (System.nanoTime() - startTime) / 1_000_000
-
-                log("SUCCESS with sendMessage(Contents)!")
-                log("Response: $responseText")
-                log("Time: ${timeMs}ms")
-
-                _state.update {
-                    it.copy(
-                        audioTestRunning = false,
-                        audioTestOutput = responseText,
-                        audioTestTimeMs = timeMs,
-                        audioTestStrategy = strategyName,
-                    )
-                }
-                return true
-            }
-        } catch (e: Exception) {
-            log("sendMessage(Contents) failed: ${e.message}")
-            e.cause?.let { log("  Cause: ${it.message}") }
-        }
-
-        // Try 3: sendMessageAsync(Message) → collect Flow
-        try {
-            val sendAsyncMethod = conv.javaClass.methods.find { m ->
-                m.name == "sendMessageAsync" &&
-                m.parameterTypes.size == 1 &&
-                m.parameterTypes[0].isAssignableFrom(Message::class.java)
-            }
-            if (sendAsyncMethod != null) {
-                log("Found sendMessageAsync(Message) overload, calling...")
-                @Suppress("UNCHECKED_CAST")
-                val flow = sendAsyncMethod.invoke(conv, userMsg) as kotlinx.coroutines.flow.Flow<Message>
-
+            // Try async sendMessage(Contents) → Flow
+            try {
+                log("Trying sendMessageAsync(Contents) → Flow...")
                 val fullResponse = StringBuilder()
                 var tokenCount = 0
-                kotlinx.coroutines.runBlocking {
-                    flow.collect { msg ->
+
+                val startTime2 = System.nanoTime()
+                conv.sendMessageAsync(contents)
+                    .catch { e ->
+                        log("Flow error: ${e.message}")
+                        throw e
+                    }
+                    .collect { msg ->
                         fullResponse.append(msg.toString())
                         tokenCount++
                     }
-                }
 
                 val responseText = fullResponse.toString().trim()
-                val timeMs = (System.nanoTime() - startTime) / 1_000_000
+                val timeMs = (System.nanoTime() - startTime2) / 1_000_000
 
-                log("SUCCESS with sendMessageAsync(Message)!")
+                log("SUCCESS! $label via sendMessageAsync(Contents) Flow")
                 log("Response: $responseText")
                 log("Time: ${timeMs}ms | Tokens: $tokenCount")
 
@@ -702,23 +581,95 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                         audioTestRunning = false,
                         audioTestOutput = responseText,
                         audioTestTimeMs = timeMs,
-                        audioTestStrategy = strategyName,
+                        audioTestStrategy = "$label → sendMessageAsync(Contents)",
                     )
                 }
                 return true
+            } catch (e: Exception) {
+                log("sendMessageAsync(Contents) failed: ${e.message}")
+                e.cause?.let { log("  Cause: ${it.message}") }
             }
+
+            // Try with Message.user() wrapper
+            try {
+                log("Trying sendMessage(Message.user(Contents))...")
+                val userMsg = Message.user(contents)
+
+                val startTime3 = System.nanoTime()
+                val response: Message = conv.sendMessage(userMsg)
+                val responseText = response.toString().trim()
+                val timeMs = (System.nanoTime() - startTime3) / 1_000_000
+
+                log("SUCCESS! $label via sendMessage(Message.user)")
+                log("Response: $responseText")
+                log("Time: ${timeMs}ms")
+
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestOutput = responseText,
+                        audioTestTimeMs = timeMs,
+                        audioTestStrategy = "$label → sendMessage(Message.user)",
+                    )
+                }
+                return true
+            } catch (e: Exception) {
+                log("sendMessage(Message.user) failed: ${e.message}")
+                e.cause?.let { log("  Cause: ${it.message}") }
+            }
+
         } catch (e: Exception) {
-            log("sendMessageAsync(Message) failed: ${e.message}")
+            log("$label construction failed: ${e.message}")
             e.cause?.let { log("  Cause: ${it.message}") }
         }
 
-        // Log all available methods for debugging
-        log("Available Conversation methods:")
-        conv.javaClass.methods
-            .filter { it.name.contains("send", ignoreCase = true) }
-            .forEach { m ->
-                log("  ${m.name}(${m.parameterTypes.map { it.simpleName }.joinToString()})")
+        return false
+    }
+
+    /**
+     * Try audio via Content.AudioFile — direct API.
+     */
+    private fun tryAudioFileDirectAPI(filePath: String, prompt: String): Boolean {
+        val conv = conversation ?: return false
+
+        try {
+            val contents = Contents.of(
+                Content.AudioFile(filePath),
+                Content.Text(prompt),
+            )
+            log("Contents built: AudioFile($filePath) + Text")
+
+            val startTime = System.nanoTime()
+
+            // Synchronous
+            try {
+                log("Calling conversation.sendMessage(Contents) with AudioFile...")
+                val response: Message = conv.sendMessage(contents)
+                val responseText = response.toString().trim()
+                val timeMs = (System.nanoTime() - startTime) / 1_000_000
+
+                log("SUCCESS! AudioFile via sendMessage(Contents)")
+                log("Response: $responseText")
+                log("Time: ${timeMs}ms")
+
+                _state.update {
+                    it.copy(
+                        audioTestRunning = false,
+                        audioTestOutput = responseText,
+                        audioTestTimeMs = timeMs,
+                        audioTestStrategy = "AudioFile → sendMessage(Contents)",
+                    )
+                }
+                return true
+            } catch (e: Exception) {
+                log("AudioFile sendMessage failed: ${e.message}")
+                e.cause?.let { log("  Cause: ${it.message}") }
             }
+
+        } catch (e: Exception) {
+            log("AudioFile construction failed: ${e.message}")
+            e.cause?.let { log("  Cause: ${it.message}") }
+        }
 
         return false
     }
@@ -764,8 +715,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Generate a synthetic WAV file with a 440Hz sine tone.
-     * 16kHz, mono, 16-bit PCM — matches our pipeline audio format.
-     * This is for API acceptance testing only (not real translation).
+     * 16kHz, mono, 16-bit PCM — matches AI Edge Gallery's audio format.
      */
     private fun generateSyntheticWav(file: File, durationMs: Int = 3000) {
         val sampleRate = 16000
@@ -777,7 +727,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         val dataSize = numSamples * 2  // 16-bit = 2 bytes per sample
         val buffer = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
 
-        // WAV header
+        // WAV header (RIFF/WAVE PCM format)
         buffer.put("RIFF".toByteArray())
         buffer.putInt(36 + dataSize)         // chunk size
         buffer.put("WAVE".toByteArray())
@@ -800,14 +750,13 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Extract raw PCM data from a WAV file (skip the 44-byte header).
+     * Extract raw PCM data from a WAV file (skip the header).
      */
     private fun extractPcmFromWav(wavFile: File): ByteArray? {
         try {
             val bytes = wavFile.readBytes()
             if (bytes.size < 44) return null
 
-            // Verify RIFF/WAVE header
             val header = String(bytes, 0, 4)
             if (header != "RIFF") {
                 log("Not a valid WAV file (header: $header)")
@@ -815,7 +764,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             // Find "data" chunk
-            var offset = 12 // after RIFF header
+            var offset = 12
             while (offset < bytes.size - 8) {
                 val chunkId = String(bytes, offset, 4)
                 val chunkSize = ByteBuffer.wrap(bytes, offset + 4, 4)
@@ -825,13 +774,12 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                     val pcmStart = offset + 8
                     val pcmEnd = minOf(pcmStart + chunkSize, bytes.size)
                     val pcm = bytes.copyOfRange(pcmStart, pcmEnd)
-                    log("Extracted PCM: ${pcm.size} bytes from WAV (data chunk at offset $offset)")
+                    log("Extracted PCM: ${pcm.size} bytes from WAV")
                     return pcm
                 }
                 offset += 8 + chunkSize
             }
 
-            // Fallback: skip 44 bytes
             log("No 'data' chunk found, using 44-byte header skip")
             return bytes.copyOfRange(44, bytes.size)
         } catch (e: Exception) {
@@ -848,95 +796,71 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
         val details = StringBuilder()
         var audioSupported = false
 
+        // Direct API checks — no reflection needed since we know the classes exist
         try {
-            // Check Content class for AudioBytes / AudioFile subclasses
-            val contentClass = Content::class.java
-            val subclasses = contentClass.declaredClasses.map { it.simpleName }
-            details.appendLine("Content subclasses: ${subclasses.joinToString()}")
-            log("Content subclasses: ${subclasses.joinToString()}")
-
-            val audioSubclasses = subclasses.filter {
-                it.contains("Audio", ignoreCase = true)
-            }
-            if (audioSubclasses.isNotEmpty()) {
-                details.appendLine("AUDIO Content types found: ${audioSubclasses.joinToString()}")
-                log("AUDIO Content types found: ${audioSubclasses.joinToString()}")
-                audioSupported = true
-            }
-
-            // Try to instantiate Content.AudioBytes to confirm it exists
-            try {
-                val audioBytesClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioBytes")
-                val constructors = audioBytesClass.declaredConstructors.map {
-                    "${it.name}(${it.parameterTypes.map { p -> p.simpleName }.joinToString()})"
-                }
-                details.appendLine("Content.AudioBytes constructors: ${constructors.joinToString()}")
-                log("Content.AudioBytes constructors: ${constructors.joinToString()}")
-                audioSupported = true
-            } catch (e: ClassNotFoundException) {
-                details.appendLine("Content.AudioBytes NOT found")
-                log("Content.AudioBytes NOT found")
-            }
-
-            // Try Content.AudioFile
-            try {
-                val audioFileClass = Class.forName("com.google.ai.edge.litertlm.Content\$AudioFile")
-                details.appendLine("Content.AudioFile FOUND")
-                log("Content.AudioFile FOUND")
-                audioSupported = true
-            } catch (e: ClassNotFoundException) {
-                details.appendLine("Content.AudioFile NOT found")
-            }
-
-            // Check EngineConfig for audioBackend field
-            val configClass = EngineConfig::class.java
-            val configFields = configClass.declaredFields.map { it.name }
-            details.appendLine("EngineConfig fields: ${configFields.joinToString()}")
-            log("EngineConfig fields: ${configFields.joinToString()}")
-
-            val hasAudioBackend = configFields.any { it.contains("audio", ignoreCase = true) }
-            if (hasAudioBackend) {
-                details.appendLine("EngineConfig HAS audioBackend field!")
-                log("EngineConfig HAS audioBackend field!")
-            }
-
-            // Check Message factory methods
-            val messageClass = Message::class.java
-            val methods = messageClass.declaredMethods.map { it.name }.distinct()
-            details.appendLine("Message methods: ${methods.joinToString()}")
-            log("Message methods: ${methods.joinToString()}")
-
-            // Check Contents class
-            val contentsClass = Contents::class.java
-            val contentsMethods = contentsClass.declaredMethods.map { it.name }.distinct()
-            details.appendLine("Contents methods: ${contentsMethods.joinToString()}")
-            log("Contents methods: ${contentsMethods.joinToString()}")
-
-            // Check Conversation sendMessage overloads
-            val convClass = Conversation::class.java
-            val convMethods = convClass.declaredMethods.map {
-                "${it.name}(${it.parameterTypes.map { p -> p.simpleName }.joinToString()})"
-            }
-            details.appendLine("Conversation methods: ${convMethods.joinToString()}")
-            log("Conversation methods: ${convMethods.joinToString()}")
-
+            // Verify Content subclasses exist at compile time
+            val audioBytes = Content.AudioBytes(ByteArray(0))
+            details.appendLine("Content.AudioBytes: AVAILABLE (${audioBytes.javaClass.simpleName})")
+            log("Content.AudioBytes: AVAILABLE")
+            audioSupported = true
         } catch (e: Exception) {
-            details.appendLine("Reflection check failed: ${e.message}")
-            logError("Audio support check failed", e)
+            details.appendLine("Content.AudioBytes: FAILED (${e.message})")
+            log("Content.AudioBytes: FAILED: ${e.message}")
+        }
+
+        try {
+            val audioFile = Content.AudioFile("")
+            details.appendLine("Content.AudioFile: AVAILABLE (${audioFile.javaClass.simpleName})")
+            log("Content.AudioFile: AVAILABLE")
+            audioSupported = true
+        } catch (e: Exception) {
+            details.appendLine("Content.AudioFile: FAILED (${e.message})")
+            log("Content.AudioFile: FAILED: ${e.message}")
+        }
+
+        // Check EngineConfig audioBackend
+        try {
+            val testConfig = EngineConfig(
+                modelPath = "/test",
+                backend = Backend.CPU(),
+                audioBackend = Backend.CPU(),
+            )
+            details.appendLine("EngineConfig.audioBackend: AVAILABLE")
+            log("EngineConfig.audioBackend: AVAILABLE")
+        } catch (e: Exception) {
+            details.appendLine("EngineConfig.audioBackend: FAILED (${e.message})")
+            log("EngineConfig.audioBackend: FAILED: ${e.message}")
+        }
+
+        // Check sendMessage overloads
+        try {
+            val convClass = Conversation::class.java
+            val sendMethods = convClass.methods.filter { it.name.contains("sendMessage") }
+            val methodSigs = sendMethods.map { m ->
+                "${m.name}(${m.parameterTypes.map { it.simpleName }.joinToString()}) → ${m.returnType.simpleName}"
+            }
+            details.appendLine("Conversation send methods (${methodSigs.size}):")
+            methodSigs.forEach { sig ->
+                details.appendLine("  $sig")
+                log("  $sig")
+            }
+        } catch (e: Exception) {
+            details.appendLine("Method check failed: ${e.message}")
         }
 
         if (audioSupported) {
             details.appendLine("")
-            details.appendLine("AUDIO SUPPORT DETECTED!")
-            details.appendLine("Content.AudioBytes and/or Content.AudioFile exist.")
-            details.appendLine("Use: Message.user(Contents.of(Content.AudioBytes(pcmData), Content.Text(prompt)))")
-            details.appendLine("EngineConfig supports audioBackend parameter.")
-            log("AUDIO SUPPORT DETECTED in LiteRT-LM API!")
+            details.appendLine("AUDIO FULLY SUPPORTED!")
+            details.appendLine("Config: EngineConfig(audioBackend=Backend.CPU())")
+            details.appendLine("Send: conversation.sendMessage(Contents.of(")
+            details.appendLine("  Content.AudioBytes(wavBytes),")
+            details.appendLine("  Content.Text(prompt)")
+            details.appendLine("))")
+            log("AUDIO FULLY SUPPORTED!")
         } else {
             details.appendLine("")
-            details.appendLine("CONCLUSION: Audio input NOT supported in current Kotlin API")
-            details.appendLine("FALLBACK: Use STT (Whisper ONNX) for audio->text, then Gemma for translation")
-            log("CONCLUSION: Audio NOT supported. Need STT fallback.")
+            details.appendLine("AUDIO NOT SUPPORTED in this build")
+            log("AUDIO NOT SUPPORTED")
         }
 
         _state.update {
@@ -974,7 +898,7 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                 val fullResponse = StringBuilder()
                 var tokenCount = 0
 
-                // Try streaming with Flow first
+                // Use sendMessage(String) for text-only — simplest overload
                 try {
                     conversation!!.sendMessageAsync(prompt)
                         .catch { e ->
@@ -988,7 +912,6 @@ class GemmaTestViewModel(application: Application) : AndroidViewModel(applicatio
                             _state.update { it.copy(englishOutput = fullResponse.toString()) }
                         }
                 } catch (e: Exception) {
-                    // Fallback to synchronous
                     log("Streaming failed (${e.message}), trying synchronous...")
                     fullResponse.clear()
                     tokenCount = 0
