@@ -44,6 +44,8 @@ data class AudioPocUiState(
     val playbackSampleRate: Int = -1,
     val captureLatencyMs: Int = -1,
     val playbackLatencyMs: Int = -1,
+    /** "Oboe" or "AudioTrack" — which back-end the playback sink is using. */
+    val playbackSinkLabel: String = "—",
 
     val totalSamplesCaptured: Long = 0,
     val overflowCount: Long = 0,
@@ -73,7 +75,7 @@ class AudioPocViewModel(app: Application) : AndroidViewModel(app) {
     private val engine: NativeAudioEngine = NativeAudioEngine.create(config)
     private val deviceManager = AudioDeviceManager(app, bus)
     private val captureManager = AudioCaptureManager(engine, bus, config, viewModelScope)
-    private val playbackManager = AudioPlaybackManager(engine, config, viewModelScope)
+    private val playbackManager = AudioPlaybackManager(app, engine, config, viewModelScope)
 
     init {
         deviceManager.register()
@@ -173,20 +175,22 @@ class AudioPocViewModel(app: Application) : AndroidViewModel(app) {
 
     fun startPlayback() {
         if (_state.value.playing) return
-        val outputDeviceId = _state.value.selectedOutputId ?: 0
-        log("Starting playback (selected deviceId=$outputDeviceId)")
-        val ok = playbackManager.start(outputDeviceId)
+        val outputDevice = _state.value.selectedOutput
+        log("Starting playback (selected=${outputDevice?.displayName ?: "default"})")
+        val ok = playbackManager.start(outputDevice)
         if (!ok) {
             logError("playbackManager.start returned false")
             return
         }
+        log("Sink: ${playbackManager.activeSinkLabel}")
         _state.update {
             it.copy(
                 playing = true,
                 error = null,
-                playbackRoutedDeviceId = engine.playbackRoutedDeviceId(),
-                playbackSampleRate = engine.actualSampleRatePlayback(),
-                playbackLatencyMs = engine.playbackLatencyMs(),
+                playbackSinkLabel = playbackManager.activeSinkLabel ?: "?",
+                playbackRoutedDeviceId = playbackManager.routedDeviceId(),
+                playbackSampleRate = playbackManager.sampleRate(),
+                playbackLatencyMs = playbackManager.latencyMs(),
             )
         }
     }
@@ -230,11 +234,13 @@ class AudioPocViewModel(app: Application) : AndroidViewModel(app) {
                         lastChunkPeak = peak,
                         lastChunkFrames = event.frameCount,
                         captureLatencyMs = engine.captureLatencyMs(),
-                        playbackLatencyMs = engine.playbackLatencyMs(),
+                        playbackLatencyMs = playbackManager.latencyMs(),
+                        underflowCount = playbackManager.underflowOrDropCount(),
                     )
                 }
                 if (_state.value.loopback && _state.value.playing) {
-                    engine.writePlayback(event.samples)
+                    // Goes through whichever sink (Oboe or AudioTrack) is active.
+                    playbackManager.feedLoopback(event.samples)
                 }
             }
             is AudioEvent.BufferOverflow -> {

@@ -158,10 +158,14 @@ fun AudioPocScreen(viewModel: AudioPocViewModel = viewModel()) {
                     Text("Loopback (mic → speaker)", style = MaterialTheme.typography.bodyMedium)
                 }
                 Spacer(Modifier.height(6.dp))
+                InfoRow("Sink back-end", state.playbackSinkLabel)
                 InfoRow("Routed output id", state.playbackRoutedDeviceId.toString())
                 InfoRow("Actual sample rate", "${state.playbackSampleRate} Hz")
-                InfoRow("Latency", "${state.playbackLatencyMs} ms")
-                InfoRow("Underflow samples", "${state.underflowCount}")
+                InfoRow(
+                    "Latency",
+                    if (state.playbackLatencyMs < 0) "n/a" else "${state.playbackLatencyMs} ms",
+                )
+                InfoRow("Underflow / dropped samples", "${state.underflowCount}")
             }
         }
 
