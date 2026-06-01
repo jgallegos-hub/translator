@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Android / Gradle
+.gradle/
+**/build/
+**/.idea/
+**/local.properties
+*.iml
+captures/
+.cxx/
+**/.kotlin/
