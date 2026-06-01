@@ -173,15 +173,17 @@ std::size_t AudioEngine::enqueue_playback(const int16_t* src, std::size_t count)
 int32_t AudioEngine::capture_latency_ms() const {
     std::lock_guard<std::mutex> lock(stream_mutex_);
     if (!capture_stream_) return -1;
+    // calculateLatencyMillis() returns ResultWithValue<double> — check
+    // operator bool() / hasValue() before reading .value().
     auto latency = capture_stream_->calculateLatencyMillis();
-    return latency ? static_cast<int32_t>(*latency) : -1;
+    return latency ? static_cast<int32_t>(latency.value()) : -1;
 }
 
 int32_t AudioEngine::playback_latency_ms() const {
     std::lock_guard<std::mutex> lock(stream_mutex_);
     if (!playback_stream_) return -1;
     auto latency = playback_stream_->calculateLatencyMillis();
-    return latency ? static_cast<int32_t>(*latency) : -1;
+    return latency ? static_cast<int32_t>(latency.value()) : -1;
 }
 
 int32_t AudioEngine::capture_routed_device_id() const {
