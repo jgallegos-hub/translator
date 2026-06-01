@@ -221,7 +221,8 @@ class AudioPocViewModel(app: Application) : AndroidViewModel(app) {
             is AudioEvent.AudioData -> {
                 val rms = rms(event.samples)
                 val peak = peak(event.samples)
-                val vu = (rms / Short.MAX_VALUE.toFloat()).coerceIn(0f, 1f)
+                // rms is Double; convert to Float for the Compose state.
+                val vu = (rms / Short.MAX_VALUE).toFloat().coerceIn(0f, 1f)
                 _state.update {
                     it.copy(
                         totalSamplesCaptured = it.totalSamplesCaptured + event.samples.size,
