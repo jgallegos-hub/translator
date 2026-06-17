@@ -1,0 +1,3 @@
+# Place silero_vad.onnx here before building.
+# Download from: https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+# Size: ~2.2 MB. Required for runtime; unit tests mock the model so do not need it.
