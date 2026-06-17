@@ -152,10 +152,18 @@ fun AudioPocScreen(viewModel: AudioPocViewModel = viewModel()) {
                     Switch(
                         checked = state.loopback,
                         onCheckedChange = { viewModel.setLoopback(it) },
-                        enabled = state.capturing && state.playing,
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Loopback (mic → speaker)", style = MaterialTheme.typography.bodyMedium)
+                    Column {
+                        Text("Loopback (mic → speaker)", style = MaterialTheme.typography.bodyMedium)
+                        if (state.loopback && !(state.capturing && state.playing)) {
+                            Text(
+                                "Waiting for capture + playback…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(6.dp))
                 InfoRow("Sink back-end", state.playbackSinkLabel)

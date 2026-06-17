@@ -214,8 +214,9 @@ class AudioPocViewModel(app: Application) : AndroidViewModel(app) {
      * to both be active.
      */
     fun setLoopback(enabled: Boolean) {
+        val prev = _state.value.loopback
         _state.update { it.copy(loopback = enabled) }
-        log("Loopback ${if (enabled) "ENABLED" else "disabled"}")
+        log("Loopback toggled ${if (enabled) "ON" else "OFF"} (was ${if (prev) "ON" else "OFF"}, capturing=${_state.value.capturing}, playing=${_state.value.playing})")
     }
 
     // ── Event handling ──────────────────────────────────────────────────────
