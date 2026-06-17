@@ -68,18 +68,49 @@ App standalone `audio-hw-check/` valida el hardware path antes de invertir en ND
 
 ---
 
-## Fase 1: Fundación (Pendiente)
-- Configurar proyecto Android con NDK, Compose, todas las dependencias
-- AudioConfig, AudioTypes, AudioEventBus con SharedFlow
-- Sealed classes para eventos
+## Fase 2: Audio Capture con Oboe (NDK) ✅ COMPLETADA (17 junio 2026)
 
-## Fase 2: Audio Capture con Oboe (NDK) — EN PROGRESO
-- POC standalone `audio-capture-poc/` (paralelo a gemma-ast-poc y audio-hw-check)
-- Ring buffer C++ lock-free (port de `buffers.py`)
-- Oboe capture/playback streams (USB mic ↔ USB speaker via hub)
-- JNI bridge a Kotlin
-- AudioDeviceManager (USB detection + hot-plug)
-- AudioEventBus con SharedFlow
-- UI con VU meter + device selector
+POC standalone `audio-capture-poc/` validado en Xiaomi 15T Pro (Dimensity 9400+, Android 16 / HyperOS).
 
-### Siguiente: Fase 2 — Audio Capture con Oboe (NDK)
+### Resultados:
+- **Oboe capture del Saramonic USB**: OK — device id=140, 16kHz mono, format I16, `Unprocessed` input preset, `LowLatency` + `Exclusive`
+- **AudioTrack playback al JBL Go 4 BT (A2DP)**: OK — routing correcto via `AudioTrackSink`
+- **Loopback (mic → speaker)**: funciona end-to-end (reverb esperado por feedback loop acústico)
+- **VU meter**: responde en tiempo real al hablar, drain interval 25 ms
+- **Tono 440Hz**: se oye limpio en JBL sin glitches
+- **Device detection**: enumeración + hot-plug funcionan (USB y BT)
+- **ADB por WiFi** configurado para iteración rápida
+
+### Arquitectura validada (dual-backend playback):
+
+| Sink | Cuándo se usa | Razón |
+|---|---|---|
+| `OboePlaybackSink` | USB DAC, BUILTIN_SPEAKER, WIRED | LowLatency + Exclusive, baja latencia real |
+| `AudioTrackSink` | BLUETOOTH_A2DP, BLE_HEADSET, SCO | **Oboe Exclusive/LowLatency no rutea a A2DP en HyperOS** — silencioso reroute al earpiece. AudioTrack via AudioPolicyManager sí rutea correctamente. |
+
+`AudioPlaybackManager.pickSink(device)` selecciona en `start()` basado en `type.isBluetoothOutput()`. `feedLoopback()` y `playSineWave()` usan la misma interfaz `PlaybackSink.write()` — el caller no sabe cuál back-end está activo.
+
+### Lecciones técnicas:
+- `Oboe::calculateLatencyMillis()` retorna `ResultWithValue<double>`, NO un puntero — usar `.value()` después de checar `operator bool()`.
+- `AudioTrack.write` en `MODE_STREAM` necesita `WRITE_NON_BLOCKING` para que el drain coroutine no se bloquee si el buffer BT se llena (drop el tail en su lugar).
+- Buffer ≥ 1s en `AudioTrack` para tolerar jitter BT.
+- `setPreferredDevice` ANTES de `play()` — confirmado en ambos POCs.
+- Forzar `AudioManager.mode = MODE_NORMAL` antes de abrir AudioTrack BT — restaurar al stop.
+- `<uses-native-library>` va dentro de `<application>`, NO de `<manifest>`.
+- Material3 `Switch` con `enabled=false` ignora silenciosamente `onCheckedChange` — no gatear el switch de loopback en estados del stream; el guard real va en el handler de eventos.
+
+### Decisión confirmada para producción:
+- **Captura**: Oboe + USB (Saramonic via hub Inland 10G) — la ruta más confiable, menor latencia.
+- **Playback**: AudioTrack si BT, Oboe si USB DAC/builtin. La abstracción `PlaybackSink` se mantiene en la app de producción.
+
+### 9/9 criterios Go/No-Go: PASS
+
+---
+
+## Fase 3: VAD + Chunking (Pendiente)
+- SileroVADProcessor con ONNX Runtime Android (port de `vad_processor.py`)
+- AudioChunker (3-6s, 700ms silence_end, 200ms pre-roll — port de `audio_chunker.py`)
+- Integración con `AudioEventBus` del POC de Fase 2
+- POC standalone `vad-chunking-poc/` (mismo patrón que Fases 0 y 2)
+
+### Siguiente: Fase 3 — VAD + Chunking en Android
