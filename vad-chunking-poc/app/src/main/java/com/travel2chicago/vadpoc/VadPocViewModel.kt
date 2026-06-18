@@ -100,6 +100,8 @@ class VadPocViewModel(app: Application) : AndroidViewModel(app) {
 
         // Load the ONNX model in background so the UI doesn't block.
         viewModelScope.launch(Dispatchers.IO) {
+            log("Model load STARTED (assets/silero_vad.onnx)")
+            val started = System.currentTimeMillis()
             try {
                 val loaded = SileroVadOnnxModel.loadFromAssets(getApplication())
                 model = loaded
@@ -111,11 +113,14 @@ class VadPocViewModel(app: Application) : AndroidViewModel(app) {
                     initialChunkerConfig = _state.value.chunkerConfig,
                 )
                 _state.update { it.copy(modelLoaded = true) }
-                log("Silero VAD model loaded")
+                val elapsed = System.currentTimeMillis() - started
+                log("Model LOADED ✓ in ${elapsed}ms — pipeline ready")
             } catch (t: Throwable) {
                 Log.e(TAG, "Model load failed", t)
-                _state.update { it.copy(modelLoadError = "Model load failed: ${t.message}") }
-                log("[ERROR] Model load failed: ${t.message}")
+                val elapsed = System.currentTimeMillis() - started
+                val msg = "Model load FAILED after ${elapsed}ms: ${t.javaClass.simpleName}: ${t.message}"
+                _state.update { it.copy(modelLoadError = msg) }
+                log("[ERROR] $msg")
             }
         }
     }

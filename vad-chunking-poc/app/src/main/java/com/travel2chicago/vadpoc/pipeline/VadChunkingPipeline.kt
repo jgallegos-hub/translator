@@ -58,6 +58,11 @@ class VadChunkingPipeline(
 
     val isRunning: Boolean get() = job?.isActive == true
 
+    // ── Diagnostic counters ────────────────────────────────────────────────
+    @Volatile private var audioDataEventsSeen: Long = 0
+    @Volatile private var framesEmitted: Long = 0
+    @Volatile private var vadInferences: Long = 0
+
     fun start(scope: CoroutineScope) {
         if (isRunning) {
             Log.w(TAG, "start: already running, ignoring")
@@ -66,8 +71,13 @@ class VadChunkingPipeline(
         reassembler.reset()
         processor.reset()
         chunker.flush() // discard any leftover
+        audioDataEventsSeen = 0
+        framesEmitted = 0
+        vadInferences = 0
 
         job = scope.launch(Dispatchers.Default) {
+            bus.emit(AudioEvent.EngineStatus("Pipeline subscribed to bus (waiting for AudioData…)"))
+            Log.i(TAG, "Pipeline subscribed to bus")
             bus.events
                 .filterIsInstance<AudioEvent.AudioData>()
                 .collect { event -> handleAudioData(event) }
@@ -97,21 +107,47 @@ class VadChunkingPipeline(
     }
 
     private fun handleAudioData(event: AudioEvent.AudioData) {
+        audioDataEventsSeen += 1
+        if (audioDataEventsSeen == 1L) {
+            bus.emit(AudioEvent.EngineStatus(
+                "Pipeline received first AudioData (${event.samples.size} samples)"))
+            Log.i(TAG, "First AudioData event received: ${event.samples.size} samples")
+        }
+
         val frames = reassembler.feed(event.samples)
         if (frames.isEmpty()) return
+
+        framesEmitted += frames.size
+        if (framesEmitted - frames.size == 0L) {
+            // Just crossed from 0 → first frames emitted.
+            bus.emit(AudioEvent.EngineStatus(
+                "Reassembler emitted first ${frames.size} frame(s) of 512 samples"))
+            Log.i(TAG, "Reassembler first emission: ${frames.size} frame(s)")
+        }
 
         val currentProcessor = processor
         val currentChunker = chunker
 
         for (frame in frames) {
-            // Read raw probability via the processor's underlying model (one
-            // inference per frame total — processFrame already calls it).
             val transition = try {
                 currentProcessor.processFrame(frame, event.timestampNs)
             } catch (t: Throwable) {
                 Log.e(TAG, "VAD inference failed", t)
                 bus.emit(AudioEvent.EngineStatus("VAD inference error: ${t.message}"))
                 return
+            }
+            vadInferences += 1
+            // First inference: surface to the UI so we know the model is alive.
+            if (vadInferences == 1L) {
+                bus.emit(AudioEvent.EngineStatus(
+                    "VAD first inference: p=${"%.3f".format(currentProcessor.lastProbability)}"))
+                Log.i(TAG, "VAD first inference: p=${currentProcessor.lastProbability}")
+            }
+            // Periodic heartbeat to logcat every 50 frames (~1.6 s of audio).
+            if (vadInferences % 50L == 0L) {
+                Log.i(TAG, "VAD heartbeat: inferences=$vadInferences " +
+                    "p=${"%.3f".format(currentProcessor.lastProbability)} " +
+                    "state=${currentProcessor.state} collecting=${currentChunker.isCollecting}")
             }
             if (transition != null) {
                 bus.emit(transition)

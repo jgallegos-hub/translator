@@ -1,5 +1,9 @@
 package com.travel2chicago.vadpoc.vad
 
+import android.util.Log
+
+private const val TAG = "FrameReassembler"
+
 /**
  * Re-frames variable-size audio chunks (1–2048 samples from Oboe via the
  * capture drain) into fixed [frameSize]-sample frames that Silero VAD can
@@ -19,6 +23,7 @@ class FrameReassembler(val frameSize: Int = 512) {
     init { require(frameSize > 0) { "frameSize must be positive" } }
 
     private var tail: ShortArray = ShortArray(0)
+    private var loggedFirstEmission: Boolean = false
 
     /** Total samples consumed since the last [reset]. Useful for diagnostics. */
     var totalSamplesIn: Long = 0
@@ -61,6 +66,12 @@ class FrameReassembler(val frameSize: Int = 512) {
         }
         totalSamplesOut += fullFrames.toLong() * frameSize
 
+        if (!loggedFirstEmission) {
+            loggedFirstEmission = true
+            Log.i(TAG, "Reassembled first frame: emitted $fullFrames frame(s) of $frameSize samples " +
+                "(consumed ${combined.size} samples total)")
+        }
+
         val remaining = combined.size - offset
         tail = if (remaining == 0) {
             EMPTY
@@ -76,6 +87,7 @@ class FrameReassembler(val frameSize: Int = 512) {
         tail = EMPTY
         totalSamplesIn = 0
         totalSamplesOut = 0
+        loggedFirstEmission = false
     }
 
     companion object {

@@ -66,6 +66,15 @@ android {
             noCompress += listOf("onnx")
         }
     }
+
+    testOptions {
+        unitTests {
+            // android.util.Log calls return 0 instead of throwing
+            // "method not mocked" — needed because the vad/chunker classes
+            // log diagnostics that we don't want to thread through a fake.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
