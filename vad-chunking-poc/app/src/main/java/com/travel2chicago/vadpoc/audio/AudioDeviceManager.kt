@@ -60,21 +60,39 @@ class AudioDeviceManager(
 
     fun preferredInput(): DeviceEntry? = listInputs().firstOrNull { it.info.type.isUsbInput() }
 
+    /**
+     * Priority for playback in this POC:
+     *   1. JBL Go A2DP (the paired BT speaker — what we actually test on)
+     *   2. Any other BT A2DP output
+     *   3. USB output (a real cabled DAC, when production hardware is set up)
+     *
+     * USB_HEADSET shows up in the OUTPUT list even when it's actually the
+     * Saramonic mic's loopback channel (mic, no usable speaker). We
+     * intentionally rank it LAST so we don't auto-select that as playback.
+     */
     fun preferredOutput(): DeviceEntry? {
         val outputs = listOutputs()
-        return outputs.firstOrNull { it.info.type.isUsbOutput() }
+        return outputs.firstOrNull { entry ->
+            val name = (entry.info.productName?.toString() ?: "").lowercase()
+            entry.info.type.isBluetoothOutput() && (name.contains("jbl") || name.contains("go"))
+        }
             ?: outputs.firstOrNull { it.info.type.isBluetoothOutput() }
+            ?: outputs.firstOrNull { it.info.type.isUsbOutput() }
     }
 
     private fun AudioDeviceInfo.toEntry(isInput: Boolean): DeviceEntry {
         val name = describe(this)
         val tName = typeName(type)
         val productLower = (productName?.toString() ?: "").lowercase()
+        // For outputs, only JBL/Go A2DP is marked preferred so the UI star
+        // and the auto-select picker land on the BT speaker, never on the
+        // Saramonic's USB_HEADSET loopback. When the JBL isn't connected
+        // the ViewModel falls back via [preferredOutput] / explicit BT
+        // checks — no star is shown but the right device is still chosen.
         val preferred = if (isInput) {
             type.isUsbInput()
         } else {
-            type.isUsbOutput() ||
-                (type.isBluetoothOutput() && (productLower.contains("jbl") || productLower.contains("go")))
+            type.isBluetoothOutput() && (productLower.contains("jbl") || productLower.contains("go"))
         }
         return DeviceEntry(
             info = this,

@@ -157,6 +157,7 @@ class VadPocViewModel(app: Application) : AndroidViewModel(app) {
 
         val selectedOut = outputs.firstOrNull { it.id == prevOut }?.id
             ?: outputs.firstOrNull { it.isPreferred }?.id
+            ?: deviceManager.preferredOutput()?.id   // BT > USB DAC fallback
             ?: outputs.firstOrNull()?.id
 
         _state.update {
@@ -188,6 +189,12 @@ class VadPocViewModel(app: Application) : AndroidViewModel(app) {
             log("[ERROR] captureManager.start failed")
             return
         }
+        // CRITICAL: Oboe may open the device at the hardware native rate
+        // (often 48 kHz) regardless of our setSampleRate(16000) hint.
+        // Tell the pipeline so it decimates correctly before Silero sees it.
+        val actualSr = engine.actualSampleRateCapture()
+        log("Capture actual sample rate: $actualSr Hz (target=${config.format.sampleRate} Hz)")
+        p.setCaptureSampleRate(actualSr)
         p.start(viewModelScope)
         _state.update {
             it.copy(

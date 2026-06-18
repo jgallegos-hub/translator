@@ -57,14 +57,40 @@ class SileroVadOnnxModel private constructor(
     /** Flat LSTM state, length 2 * 1 * 128 = 256. Carried across calls; zeroed by [reset]. */
     private var stateData: FloatArray = FloatArray(STATE_SIZE)
 
+    /** First-frame conversion diagnostics — fires exactly once per session. */
+    private var loggedFirstFrameDiag: Boolean = false
+
     override fun probability(frame: ShortArray): Float {
         require(frame.size == FRAME_SIZE) {
             "Silero v5 @ 16 kHz expects exactly $FRAME_SIZE samples per frame, got ${frame.size}"
         }
 
         // int16 → float32 normalized to [-1, 1].
+        // `.toFloat()` is explicit because `Short / Float` in Kotlin goes
+        // Short → Int → Float, which is correct but easy to misread.
         val floatFrame = FloatArray(FRAME_SIZE)
-        for (i in 0 until FRAME_SIZE) floatFrame[i] = frame[i] / 32768f
+        for (i in 0 until FRAME_SIZE) floatFrame[i] = frame[i].toFloat() / 32768f
+
+        if (!loggedFirstFrameDiag) {
+            loggedFirstFrameDiag = true
+            // Sanity-check the int16 → float32 normalization on the very first
+            // real frame Silero sees. If the float range is ≈ 0 the mic is
+            // muted; if it's outside [-1, 1] the divisor is wrong.
+            var shortPeak = 0
+            for (s in frame) {
+                val a = if (s.toInt() == Short.MIN_VALUE.toInt()) Short.MAX_VALUE.toInt() else kotlin.math.abs(s.toInt())
+                if (a > shortPeak) shortPeak = a
+            }
+            var fMin = Float.POSITIVE_INFINITY
+            var fMax = Float.NEGATIVE_INFINITY
+            for (f in floatFrame) {
+                if (f < fMin) fMin = f
+                if (f > fMax) fMax = f
+            }
+            Log.i(TAG, "First-frame conversion: int16 peak=$shortPeak, " +
+                "float range=[${"%.4f".format(fMin)}, ${"%.4f".format(fMax)}], " +
+                "frame size=${frame.size}, declared sampleRate=$sampleRate Hz")
+        }
 
         // All tensor allocations go inside the try so the finally closes
         // whatever was allocated even if a later createTensor() throws.
