@@ -36,17 +36,20 @@ interface SileroVadModel : AutoCloseable {
  * Production Silero VAD wrapper backed by ONNX Runtime Android.
  *
  * Silero v5 inputs / outputs:
- *   - input  "input": float32 [1, 512]      — normalized PCM samples
+ *   - input  "input": float32 [1, 576]      — context (64) prepended to frame (512)
  *   - input  "sr":    int64    [1]          — sample rate (16000)
  *   - input  "state": float32 [2, 1, 128]   — LSTM state carry-over
  *   - output "output": float32 [1, 1]       — speech probability
  *   - output "stateN": float32 [2, 1, 128]  — next state
  *
- * Tensors are built via the explicit-shape `OnnxTensor.createTensor(env,
- * Buffer, long[])` overload — the generic `Object` overload of ORT Android
- * 1.19 does not accept nested Java arrays for multi-dim float tensors. The
- * state is kept as a flat [FloatArray] of length 2*1*128 and re-shaped per
- * call.
+ * **Critical**: Silero v5 expects each call's input to be the concatenation
+ * `[context | frame]` where context is the LAST 64 samples (at 16 kHz) of
+ * the previous call's frame. Passing the bare 512-sample frame causes the
+ * LSTM state to drift linearly (the model reads the first 64 samples as
+ * context for the previous frame and runs the rest misaligned), and after
+ * a few hundred calls the state saturates and probabilities collapse to 0.
+ * The reference Python `OnnxWrapper.__call__` in snakers4/silero-vad shows
+ * the same `_context` field maintained between calls.
  */
 class SileroVadOnnxModel private constructor(
     private val env: OrtEnvironment,
@@ -57,11 +60,23 @@ class SileroVadOnnxModel private constructor(
     /** Flat LSTM state, length 2 * 1 * 128 = 256. Carried across calls; zeroed by [reset]. */
     private var stateData: FloatArray = FloatArray(STATE_SIZE)
 
+    /**
+     * Rolling 64-sample context (at 16 kHz). On each call we prepend this to
+     * the incoming frame to build the actual model input of 576 floats, then
+     * update it with the trailing 64 samples of the current frame. Zeroed
+     * by [reset]; the first inference therefore sees a 64-sample silent
+     * prefix, which is correct (no preceding audio existed).
+     */
+    private var context: FloatArray = FloatArray(CONTEXT_SIZE)
+
     /** First-frame conversion diagnostics — fires exactly once per session. */
     private var loggedFirstFrameDiag: Boolean = false
 
     /** Counts inferences for the per-call diagnostic log. */
     private var inferenceCount: Long = 0
+
+    /** Logged once on first inference: the actual runtime shape ORT returns for stateN. */
+    private var loggedStateShape: Boolean = false
 
     override fun probability(frame: ShortArray): Float {
         require(frame.size == FRAME_SIZE) {
@@ -73,6 +88,13 @@ class SileroVadOnnxModel private constructor(
         // Short → Int → Float, which is correct but easy to misread.
         val floatFrame = FloatArray(FRAME_SIZE)
         for (i in 0 until FRAME_SIZE) floatFrame[i] = frame[i].toFloat() / 32768f
+
+        // Build the actual model input: [previous-context (64) | this frame (512)] = 576.
+        // This is the missing piece — Silero v5 MUST receive the trailing 64
+        // samples of the previous chunk as the prefix of each new input.
+        val modelInput = FloatArray(MODEL_INPUT_SIZE)
+        System.arraycopy(context, 0, modelInput, 0, CONTEXT_SIZE)
+        System.arraycopy(floatFrame, 0, modelInput, CONTEXT_SIZE, FRAME_SIZE)
 
         if (!loggedFirstFrameDiag) {
             loggedFirstFrameDiag = true
@@ -89,20 +111,17 @@ class SileroVadOnnxModel private constructor(
             }
             Log.i(TAG, "First-frame conversion: int16 peak=$shortPeak, " +
                 "float range=[${"%.4f".format(fMin)}, ${"%.4f".format(fMax)}], " +
-                "frame size=${frame.size}, declared sampleRate=$sampleRate Hz")
+                "frame size=${frame.size}, modelInput size=$MODEL_INPUT_SIZE " +
+                "(context $CONTEXT_SIZE + frame $FRAME_SIZE), declared sampleRate=$sampleRate Hz")
         }
 
-        // All tensor allocations go inside the try so the finally closes
-        // whatever was allocated even if a later createTensor() throws.
         var inputTensor: OnnxTensor? = null
         var srTensor: OnnxTensor? = null
         var stateTensor: OnnxTensor? = null
-        // Snapshot state-in checksum for diagnostic — useful to confirm the
-        // state IS mutating across calls (a stuck state explains p=0 forever).
         val stateInPeak = if (inferenceCount < 10) absMax(stateData) else 0f
         try {
             inputTensor = OnnxTensor.createTensor(
-                env, FloatBuffer.wrap(floatFrame), longArrayOf(1L, FRAME_SIZE.toLong()))
+                env, FloatBuffer.wrap(modelInput), longArrayOf(1L, MODEL_INPUT_SIZE.toLong()))
             srTensor = OnnxTensor.createTensor(
                 env, LongBuffer.wrap(longArrayOf(sampleRate.toLong())), longArrayOf(1L))
             stateTensor = OnnxTensor.createTensor(
@@ -114,9 +133,6 @@ class SileroVadOnnxModel private constructor(
                 "state" to stateTensor,
             )
             session.run(inputs).use { results ->
-                // Access by NAME so we don't depend on ORT iteration order —
-                // if [0] is the state and [1] is the prob we'd misread the
-                // probability as a giant float and silently get garbage.
                 val probOnnx = results.get("output").orElseThrow {
                     OrtException("Model output 'output' missing — names=" +
                         results.map { it.key }.joinToString())
@@ -124,6 +140,17 @@ class SileroVadOnnxModel private constructor(
                 val stateOnnx = results.get("stateN").orElseThrow {
                     OrtException("Model output 'stateN' missing — names=" +
                         results.map { it.key }.joinToString())
+                }
+
+                // One-shot diagnostic: log the actual runtime shape of stateN.
+                // Static spec says [-1,-1,-1] (dynamic) so we want to confirm
+                // it's really [2,1,128] at runtime. A different shape would
+                // mean our flatten loop reads the wrong number of floats.
+                if (!loggedStateShape && stateOnnx is OnnxTensor) {
+                    loggedStateShape = true
+                    val shape = stateOnnx.info.shape
+                    Log.i(TAG, "First inference stateN runtime shape: " +
+                        shape.joinToString(prefix = "[", postfix = "]"))
                 }
 
                 @Suppress("UNCHECKED_CAST")
@@ -136,21 +163,29 @@ class SileroVadOnnxModel private constructor(
                 var idx = 0
                 for (layer in nextRaw) {
                     for (batch in layer) {
-                        System.arraycopy(batch, 0, flat, idx, batch.size)
-                        idx += batch.size
+                        val copyLen = minOf(batch.size, STATE_SIZE - idx)
+                        if (copyLen <= 0) break
+                        System.arraycopy(batch, 0, flat, idx, copyLen)
+                        idx += copyLen
                     }
+                    if (idx >= STATE_SIZE) break
                 }
                 stateData = flat
 
+                // Update the rolling context: last 64 samples of THIS frame
+                // become the context for the NEXT call. This is what the
+                // reference Python wrapper does as `_context = x[..., -64:]`.
+                System.arraycopy(floatFrame, FRAME_SIZE - CONTEXT_SIZE, context, 0, CONTEXT_SIZE)
+
                 inferenceCount += 1
-                // First 10 inferences get a detailed log so we can SEE the
-                // probability stream + verify the state is actually mutating.
                 if (inferenceCount <= 10) {
                     val stateOutPeak = absMax(stateData)
+                    val ctxPeak = absMax(context)
                     Log.i(TAG, "Inference #$inferenceCount: prob=${"%.6f".format(prob)} " +
                         "probShape=[${probArr.size}, ${probArr[0].size}] " +
                         "stateIn|peak|=${"%.4f".format(stateInPeak)} " +
-                        "stateOut|peak|=${"%.4f".format(stateOutPeak)}")
+                        "stateOut|peak|=${"%.4f".format(stateOutPeak)} " +
+                        "ctx|peak|=${"%.4f".format(ctxPeak)}")
                 }
                 return prob
             }
@@ -175,6 +210,7 @@ class SileroVadOnnxModel private constructor(
 
     override fun reset() {
         stateData = FloatArray(STATE_SIZE)
+        context = FloatArray(CONTEXT_SIZE)
     }
 
     override fun close() {
@@ -184,8 +220,12 @@ class SileroVadOnnxModel private constructor(
     }
 
     companion object {
-        /** Silero v5 @ 16 kHz: exactly 512 samples per inference call. */
+        /** Silero v5 @ 16 kHz: caller passes exactly 512 samples per inference call. */
         const val FRAME_SIZE = 512
+        /** Context prefix Silero v5 requires before each frame at 16 kHz (32 at 8 kHz). */
+        private const val CONTEXT_SIZE = 64
+        /** Actual model input: [previous-frame-context | this-frame] = 64 + 512 = 576 floats. */
+        private const val MODEL_INPUT_SIZE = CONTEXT_SIZE + FRAME_SIZE
         private const val STATE_SIZE = 2 * 1 * 128
 
         /** Asset path inside the APK. Place the file at `app/src/main/assets/silero_vad.onnx`. */
@@ -268,6 +308,7 @@ class SileroVadOnnxModel private constructor(
         reset()
         inferenceCount = 0
         loggedFirstFrameDiag = false
-        Log.i(TAG, "── Self-test complete (state reset) ─────────────────")
+        loggedStateShape = false
+        Log.i(TAG, "── Self-test complete (state + context reset) ───────")
     }
 }
