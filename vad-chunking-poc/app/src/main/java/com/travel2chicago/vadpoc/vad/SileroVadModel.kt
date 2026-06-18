@@ -60,6 +60,9 @@ class SileroVadOnnxModel private constructor(
     /** First-frame conversion diagnostics — fires exactly once per session. */
     private var loggedFirstFrameDiag: Boolean = false
 
+    /** Counts inferences for the per-call diagnostic log. */
+    private var inferenceCount: Long = 0
+
     override fun probability(frame: ShortArray): Float {
         require(frame.size == FRAME_SIZE) {
             "Silero v5 @ 16 kHz expects exactly $FRAME_SIZE samples per frame, got ${frame.size}"
@@ -73,9 +76,6 @@ class SileroVadOnnxModel private constructor(
 
         if (!loggedFirstFrameDiag) {
             loggedFirstFrameDiag = true
-            // Sanity-check the int16 → float32 normalization on the very first
-            // real frame Silero sees. If the float range is ≈ 0 the mic is
-            // muted; if it's outside [-1, 1] the divisor is wrong.
             var shortPeak = 0
             for (s in frame) {
                 val a = if (s.toInt() == Short.MIN_VALUE.toInt()) Short.MAX_VALUE.toInt() else kotlin.math.abs(s.toInt())
@@ -97,6 +97,9 @@ class SileroVadOnnxModel private constructor(
         var inputTensor: OnnxTensor? = null
         var srTensor: OnnxTensor? = null
         var stateTensor: OnnxTensor? = null
+        // Snapshot state-in checksum for diagnostic — useful to confirm the
+        // state IS mutating across calls (a stuck state explains p=0 forever).
+        val stateInPeak = if (inferenceCount < 10) absMax(stateData) else 0f
         try {
             inputTensor = OnnxTensor.createTensor(
                 env, FloatBuffer.wrap(floatFrame), longArrayOf(1L, FRAME_SIZE.toLong()))
@@ -111,15 +114,24 @@ class SileroVadOnnxModel private constructor(
                 "state" to stateTensor,
             )
             session.run(inputs).use { results ->
-                // Output "output" shape [1, 1] — ORT boxes float tensors as
-                // nested arrays even when input was buffer-backed.
+                // Access by NAME so we don't depend on ORT iteration order —
+                // if [0] is the state and [1] is the prob we'd misread the
+                // probability as a giant float and silently get garbage.
+                val probOnnx = results.get("output").orElseThrow {
+                    OrtException("Model output 'output' missing — names=" +
+                        results.map { it.key }.joinToString())
+                }
+                val stateOnnx = results.get("stateN").orElseThrow {
+                    OrtException("Model output 'stateN' missing — names=" +
+                        results.map { it.key }.joinToString())
+                }
+
                 @Suppress("UNCHECKED_CAST")
-                val probArr = results[0].value as Array<FloatArray>
+                val probArr = probOnnx.value as Array<FloatArray>
                 val prob = probArr[0][0]
 
-                // Output "stateN" shape [2, 1, 128] — flatten back for next call.
                 @Suppress("UNCHECKED_CAST")
-                val nextRaw = results[1].value as Array<Array<FloatArray>>
+                val nextRaw = stateOnnx.value as Array<Array<FloatArray>>
                 val flat = FloatArray(STATE_SIZE)
                 var idx = 0
                 for (layer in nextRaw) {
@@ -129,16 +141,36 @@ class SileroVadOnnxModel private constructor(
                     }
                 }
                 stateData = flat
+
+                inferenceCount += 1
+                // First 10 inferences get a detailed log so we can SEE the
+                // probability stream + verify the state is actually mutating.
+                if (inferenceCount <= 10) {
+                    val stateOutPeak = absMax(stateData)
+                    Log.i(TAG, "Inference #$inferenceCount: prob=${"%.6f".format(prob)} " +
+                        "probShape=[${probArr.size}, ${probArr[0].size}] " +
+                        "stateIn|peak|=${"%.4f".format(stateInPeak)} " +
+                        "stateOut|peak|=${"%.4f".format(stateOutPeak)}")
+                }
                 return prob
             }
         } catch (e: OrtException) {
-            Log.e(TAG, "ONNX inference failed", e)
+            Log.e(TAG, "ONNX inference failed (#${inferenceCount + 1})", e)
             throw e
         } finally {
             inputTensor?.close()
             srTensor?.close()
             stateTensor?.close()
         }
+    }
+
+    private fun absMax(a: FloatArray): Float {
+        var m = 0f
+        for (v in a) {
+            val av = if (v < 0) -v else v
+            if (av > m) m = av
+        }
+        return m
     }
 
     override fun reset() {
@@ -182,7 +214,60 @@ class SileroVadOnnxModel private constructor(
                 setIntraOpNumThreads(2)
             }
             val session = env.createSession(modelBytes, options)
-            return SileroVadOnnxModel(env, session, sampleRate)
+
+            // Dump session metadata so we can confirm the model has the
+            // input/output names we're calling it with. Mismatches here
+            // would make session.run() throw — but we want it visible up
+            // front, before the first inference.
+            try {
+                val ins = session.inputInfo
+                Log.i(TAG, "Session INPUTS (${ins.size}):")
+                for ((name, info) in ins) {
+                    Log.i(TAG, "  '$name' → ${info.info}")
+                }
+                val outs = session.outputInfo
+                Log.i(TAG, "Session OUTPUTS (${outs.size}):")
+                for ((name, info) in outs) {
+                    Log.i(TAG, "  '$name' → ${info.info}")
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not enumerate session inputs/outputs", t)
+            }
+
+            val instance = SileroVadOnnxModel(env, session, sampleRate)
+            instance.selfTest()
+            return instance
         }
+    }
+
+    /**
+     * Synthetic smoke test: feeds 3 silence frames followed by 3 frames of
+     * loud white noise. If the model is healthy:
+     *   - silence probs should stay near 0
+     *   - noise probs should rise (Silero treats sustained energy as
+     *     potential speech with some probability > 0.05)
+     * If both stay at 0.0000 forever, the model + inputs are mis-wired in
+     * a way that doesn't depend on the live microphone.
+     */
+    fun selfTest() {
+        Log.i(TAG, "── Self-test ────────────────────────────────────────")
+        val silence = ShortArray(FRAME_SIZE)
+        repeat(3) {
+            val p = probability(silence)
+            Log.i(TAG, "  silence frame → p=${"%.6f".format(p)}")
+        }
+        // Pseudo-random noise around ±8000 (≈ 24% peak) — fixed seed so
+        // every run is comparable.
+        val rng = java.util.Random(12345L)
+        val noise = ShortArray(FRAME_SIZE) { (rng.nextInt(16000) - 8000).toShort() }
+        repeat(3) {
+            val p = probability(noise)
+            Log.i(TAG, "  loud noise frame → p=${"%.6f".format(p)}")
+        }
+        // Restore clean state so the real session starts from zeros.
+        reset()
+        inferenceCount = 0
+        loggedFirstFrameDiag = false
+        Log.i(TAG, "── Self-test complete (state reset) ─────────────────")
     }
 }
