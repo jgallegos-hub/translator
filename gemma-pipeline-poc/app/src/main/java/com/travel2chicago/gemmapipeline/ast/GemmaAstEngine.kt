@@ -145,6 +145,18 @@ class LiteRtGemmaAstEngine private constructor(
                 }
 
                 Log.i(TAG, "Attempting init with $label backend…")
+                // Known noise during initialize(): LiteRT-LM v0.12.0 emits
+                //   [litert_dispatch.cc:113] No dispatch library found in <modelDirPath>
+                // once per subgraph op (~hundreds of lines). This is harmless —
+                // the dispatch library is an OPTIONAL accelerator; when absent
+                // LiteRT-LM falls back to the declared backend (GPU/CPU) without
+                // any functional degradation. EngineConfig in 0.12.0 exposes
+                // only {modelPath, backend, audioBackend, maxNumTokens, cacheDir}
+                // — there is no `dispatchLibDir` / `litert_dispatch_lib_dir`
+                // field to redirect or silence this path. The log originates
+                // from native code (__android_log_print) so it cannot be
+                // filtered from the Kotlin side. If a future SDK release adds
+                // a dispatch-lib setting, wire it in HERE.
                 val engineConfig = EngineConfig(
                     modelPath = modelFile.absolutePath,
                     backend = backend,

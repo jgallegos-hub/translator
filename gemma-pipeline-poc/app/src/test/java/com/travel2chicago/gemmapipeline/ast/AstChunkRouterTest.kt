@@ -3,9 +3,13 @@ package com.travel2chicago.gemmapipeline.ast
 import app.cash.turbine.test
 import com.travel2chicago.gemmapipeline.audio.AudioEvent
 import com.travel2chicago.gemmapipeline.audio.AudioEventBus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -180,7 +184,7 @@ class AstChunkRouterTest {
                 // Release and let the consumer drain so we don't leak the thread.
                 gate.countDown()
                 Thread.sleep(50)
-                router.stop()
+                router.cancel()
             }
         } finally {
             executor.shutdownNow()
@@ -206,11 +210,11 @@ class AstChunkRouterTest {
         // FIFO: translate() should see seeds 1, 2, 3 in that exact order.
         assertEquals(listOf(1, 2, 3), engine.seedsCalled())
         assertEquals(3L, router.totalTranslated)
-        router.stop()
+        router.cancel()
     }
 
     @Test
-    fun `stop cancels both producer and consumer and isRunning becomes false`() = runTest(UnconfinedTestDispatcher()) {
+    fun `cancel hard-stops both producer and consumer and isRunning becomes false`() = runTest(UnconfinedTestDispatcher()) {
         val bus = AudioEventBus()
         val engine = FakeEngine()
         val router = AstChunkRouter(bus, engine, config(),
@@ -220,9 +224,100 @@ class AstChunkRouterTest {
         advanceUntilIdle()
         assertTrue(router.isRunning)
 
-        router.stop()
+        router.cancel()
         advanceUntilIdle()
         assertEquals(false, router.isRunning)
+    }
+
+    /*
+     * The two stopGracefully tests run on `runBlocking` (real time) rather
+     * than `runTest` (virtual time). stopGracefully internally uses
+     * `withTimeoutOrNull` + `Job.join()` to await a consumer that lives on
+     * a real OS thread — virtual time would either fire the timeout
+     * instantly or deadlock waiting for the real thread to advance.
+     *
+     * The router's producer/consumer launch on a separate `CoroutineScope`
+     * backed by Dispatchers.Default so the runBlocking call itself never
+     * holds the router's lifecycle.
+     */
+
+    @Test
+    fun `stopGracefully drains pending chunks before returning`() = runBlocking {
+        val executor = Executors.newSingleThreadExecutor()
+        val consumerDispatcher = executor.asCoroutineDispatcher()
+        val routerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val bus = AudioEventBus()
+            val gate = CountDownLatch(1)
+            val engine = FakeEngine(gate = gate)
+            val router = AstChunkRouter(bus, engine, config(queueCapacity = 4),
+                ioDispatcher = consumerDispatcher)
+            router.start(routerScope)
+            // bus.events is a SharedFlow with replay=0 — wait for the
+            // producer's collect{} to subscribe before emitting, else
+            // the events drop on the floor.
+            Thread.sleep(100)
+
+            // Submit 3 chunks. The consumer picks up #1 and blocks on the
+            // gate; #2 and #3 sit in the channel (capacity=4, none dropped).
+            for (i in 1..3) bus.emit(chunk(seed = i))
+            Thread.sleep(100)  // let consumer pull #1 and reach gate.await()
+
+            // Release the gate from a side thread so the consumer can make
+            // progress while stopGracefully is awaiting the drain.
+            Thread {
+                Thread.sleep(50)
+                gate.countDown()
+            }.start()
+
+            val drained = router.stopGracefully(drainTimeoutMs = 5_000L)
+
+            assertEquals(3, drained)
+            assertEquals(3, engine.translateCalls.get())
+            assertEquals(listOf(1, 2, 3), engine.seedsCalled())
+            assertEquals(3L, router.totalTranslated)
+            assertEquals(false, router.isRunning)
+        } finally {
+            routerScope.cancel()
+            executor.shutdownNow()
+            executor.awaitTermination(1, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun `stopGracefully times out and hard-cancels when consumer is stuck`() = runBlocking {
+        val executor = Executors.newSingleThreadExecutor()
+        val consumerDispatcher = executor.asCoroutineDispatcher()
+        val routerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val gate = CountDownLatch(1)  // never released by the test body
+        try {
+            val bus = AudioEventBus()
+            val engine = FakeEngine(gate = gate)
+            val router = AstChunkRouter(bus, engine, config(queueCapacity = 4),
+                ioDispatcher = consumerDispatcher)
+            router.start(routerScope)
+            // Wait for producer collect{} to subscribe (SharedFlow replay=0).
+            Thread.sleep(100)
+
+            bus.emit(chunk(seed = 1))
+            Thread.sleep(100)  // let consumer pull chunk #1 and block
+
+            val startNs = System.nanoTime()
+            val drained = router.stopGracefully(drainTimeoutMs = 200L)
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
+
+            // Must return within a reasonable margin of the timeout — not
+            // hang forever on the latch.
+            assertTrue("stopGracefully blocked too long: ${elapsedMs}ms", elapsedMs < 1_500L)
+            assertEquals(0, drained)
+            assertEquals(false, router.isRunning)
+        } finally {
+            // Release the stuck consumer thread so the executor can shut down.
+            gate.countDown()
+            routerScope.cancel()
+            executor.shutdownNow()
+            executor.awaitTermination(1, TimeUnit.SECONDS)
+        }
     }
 
     @Test
@@ -253,6 +348,6 @@ class AstChunkRouterTest {
 
         assertEquals(2L, router.totalTranslated)
         assertEquals(150.0, router.averageLatencyMs, 1e-9)
-        router.stop()
+        router.cancel()
     }
 }

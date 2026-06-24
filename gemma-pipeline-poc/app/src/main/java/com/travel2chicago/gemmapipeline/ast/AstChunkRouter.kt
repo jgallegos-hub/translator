@@ -13,6 +13,7 @@ import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -98,7 +99,16 @@ class AstChunkRouter(
         }
     }
 
-    fun stop() {
+    /**
+     * Hard-cancel. Both producer and consumer jobs are cancelled immediately;
+     * any chunk queued or in-flight is lost. Safe to call from non-suspend
+     * contexts like `ViewModel.onCleared()` or tests that just need to tear
+     * down quickly.
+     *
+     * Use [stopGracefully] from a coroutine when you want pending chunks to
+     * finish translating before shutdown (e.g. user-initiated Stop button).
+     */
+    fun cancel() {
         producerJob?.cancel()
         consumerJob?.cancel()
         producerJob = null
@@ -107,7 +117,53 @@ class AstChunkRouter(
         // the consumer's consumeEach exits cleanly. The router is one-shot:
         // the caller (ViewModel) constructs a fresh router on each start.
         channel.close()
-        Log.i(TAG, "Router stopped. translated=$totalTranslated dropped=$totalDropped errors=$totalErrors")
+        Log.i(TAG, "Router cancelled. translated=$totalTranslated dropped=$totalDropped errors=$totalErrors")
+    }
+
+    /**
+     * Graceful shutdown. Stops accepting new chunks, then waits for the
+     * consumer to drain everything already in the channel before returning.
+     *
+     *  1. Cancel the producer so no further `ChunkReady` events get enqueued.
+     *  2. Close the channel — `consumeEach` exits naturally once the buffer
+     *     is empty.
+     *  3. Wait up to [drainTimeoutMs] for the consumer job to complete.
+     *  4. If the timeout fires (Gemma stuck on a single inference), fall
+     *     back to hard cancel so the call still returns deterministically.
+     *
+     * @param drainTimeoutMs maximum time to wait for queued + in-flight
+     *   chunks to finish. Default 8000 ms ≈ queueCapacity(4) × ~2 s/inference.
+     * @return number of translations that completed during the drain window
+     *   (zero if the channel was already empty when called, or if the
+     *   timeout fired before any chunk finished).
+     */
+    suspend fun stopGracefully(drainTimeoutMs: Long = 8_000L): Int {
+        producerJob?.cancel()
+        producerJob = null
+
+        // Closing the channel signals "no more sends". consumeEach will
+        // exit cleanly once the in-memory buffer is drained.
+        channel.close()
+
+        val before = translatedCount.get()
+        val consumer = consumerJob
+        val drained = withTimeoutOrNull(drainTimeoutMs) {
+            consumer?.join()
+            true
+        }
+        if (drained == null) {
+            Log.w(TAG, "stopGracefully: drain timed out after ${drainTimeoutMs}ms — hard-cancelling consumer")
+            consumer?.cancel()
+        }
+        consumerJob = null
+
+        val completedDuringDrain = (translatedCount.get() - before).toInt()
+        Log.i(
+            TAG,
+            "Router stopped gracefully. drained=$completedDuringDrain timedOut=${drained == null} " +
+                "totalTranslated=$totalTranslated totalDropped=$totalDropped totalErrors=$totalErrors",
+        )
+        return completedDuringDrain
     }
 
     /**

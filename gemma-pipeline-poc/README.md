@@ -63,6 +63,23 @@ No TTS yet — that's Fase 5 (Kokoro).
   UI sección "TRANSLATIONS"
 ```
 
+## Known noise
+
+During `engine.initialize()` LiteRT-LM v0.12.0 emits hundreds of native
+logs of the form:
+
+```
+[litert_dispatch.cc:113] No dispatch library found in /sdcard/Download/gemma_model
+```
+
+This is **expected and harmless**. The dispatch library is an optional
+accelerator hook; when absent, LiteRT-LM falls back to the declared backend
+(GPU or CPU) without functional degradation. The SDK's `EngineConfig` does
+not expose a setting to point at, disable, or silence this path. The log
+comes from native code (`__android_log_print`), so a Kotlin `Log` filter
+cannot suppress it. See the comment block in `GemmaAstEngine.kt` for the
+exact spot to wire a dispatch-lib config if a future SDK release adds one.
+
 ## Go/No-Go for Fase 5
 
 12 criteria — see the project plan file for the full list. Critical:

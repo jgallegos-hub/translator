@@ -20,10 +20,17 @@ data class AstConfig(
     /**
      * Prompt sent alongside each audio chunk. Validated phrasing from Fase 0
      * — keep terse and explicit so Gemma does not add commentary.
+     *
+     * The "completely" + "without truncating" wording was added after Fase 4
+     * device testing: with the original prompt, longer utterances (>5 s)
+     * occasionally stopped mid-sentence (e.g. "start a new" instead of
+     * "start a new shift"). The explicit completeness instruction nudges the
+     * sampler to emit a full translation before EOS.
      */
     val prompt: String =
-        "Translate the following Spanish audio to English. " +
-            "Respond with only the English translation, no other text.",
+        "Translate the following Spanish audio to English completely. " +
+            "Output the full translated sentence without truncating. " +
+            "Respond with only the English translation, no other text or commentary.",
 
     /** Maximum tokens per response — matches the EngineConfig validated in Fase 0. */
     val maxNumTokens: Int = 1024,

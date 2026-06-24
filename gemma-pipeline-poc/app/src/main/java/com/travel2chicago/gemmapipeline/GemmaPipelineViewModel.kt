@@ -146,7 +146,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
-        router?.stop()
+        // onCleared is not suspendable — use the synchronous hard cancel.
+        // Any chunks in flight at this moment (rotation / process death)
+        // are lost; that's an accepted trade-off here.
+        router?.cancel()
         pipeline?.stop()
         captureManager.stop()
         playbackManager.stop()
@@ -331,8 +334,18 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopPipeline() {
-        router?.stop()
+        // Capture the router instance, then null it out so a quick re-start
+        // can't reach the old one. The graceful drain runs in the background
+        // — user-facing stop reports "stopped" immediately while pending
+        // translations keep landing in the TRANSLATIONS list until done.
+        val r = router
         router = null
+        if (r != null) {
+            viewModelScope.launch {
+                val drained = r.stopGracefully()
+                log("AST router drained $drained pending chunks before stop")
+            }
+        }
         pipeline?.stop()
         captureManager.stop()
         _state.update {
@@ -345,7 +358,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 collecting = false,
             )
         }
-        log("Pipeline + AST router stopped")
+        log("Pipeline + AST router stopped (drain in progress)")
     }
 
     fun startPlayback() {
