@@ -107,10 +107,50 @@ POC standalone `audio-capture-poc/` validado en Xiaomi 15T Pro (Dimensity 9400+,
 
 ---
 
-## Fase 3: VAD + Chunking (Pendiente)
-- SileroVADProcessor con ONNX Runtime Android (port de `vad_processor.py`)
-- AudioChunker (3-6s, 700ms silence_end, 200ms pre-roll — port de `audio_chunker.py`)
-- Integración con `AudioEventBus` del POC de Fase 2
-- POC standalone `vad-chunking-poc/` (mismo patrón que Fases 0 y 2)
+## Fase 3: VAD + Chunking ✅ COMPLETADA (18 junio 2026)
 
-### Siguiente: Fase 3 — VAD + Chunking en Android
+POC standalone `vad-chunking-poc/` validado en Xiaomi 15T Pro. Silero VAD v5 (ONNX Runtime Android) + chunker 3–6 s integrados sobre la capa Oboe de Fase 2. Commit final: **`e98b996`**.
+
+### Resultados:
+- **VAD detecta speech consistentemente** (p > 0.9 hablando, ~0.001 en silencio)
+- **Chunks de 3–6 s** emitidos correctamente con pre-roll de 200 ms (sin clipping del syllable inicial)
+- **Múltiples transiciones SPEECH ↔ SILENCE** funcionando sin flicker
+- **Replay del último chunk audible** — coherente con lo que se habló
+- **Self-test del modelo al cargar** confirma sanidad: silence → p≈0, noise → p>0.05
+- **39 unit tests passing** (11 VAD + 12 chunker + 8 reassembler + 8 configs)
+
+### Bugs críticos corregidos (en orden de descubrimiento):
+
+**Bug 1 — Sample rate mismatch** (commit `733c09e`):
+Oboe en el Xiaomi abre el USB Saramonic a 48 kHz (sample rate nativo del hardware) aunque pidamos 16 kHz. Le pasábamos los 512 samples a Silero diciéndole `sr=16000` → el modelo veía 10.6 ms de audio en vez de 32 ms y respondía con basura. Fix: el pipeline consulta `engine.actualSampleRateCapture()` al arrancar y aplica mean-decimation por factor entero (48 → 16 = factor 3) antes del FrameReassembler.
+
+**Bug 2 — Lectura de outputs ONNX por índice** (commit `b697944`):
+`results[0]` no es necesariamente el output declarado primero — ORT no garantiza el orden. Si esta build de Silero retorna `stateN` en [0] y `output` en [1], leíamos el primer float del LSTM state como probabilidad (≈ 0 tras init). Fix: `results.get("output")` y `results.get("stateN")` por nombre.
+
+**Bug 3 — Silero v5 requiere context prefix de 64 samples** (commit `e98b996`):
+El wrapper oficial (`silero_vad/utils_vad.py OnnxWrapper.__call__`) muestra que el input real al modelo es **576 samples = `[context_64 | frame_512]`** donde `context_64` son los últimos 64 samples del frame anterior. Pasarle solo 512 samples causaba que el LSTM interpretara los primeros 64 como "context residual" y todo lo demás desalineado. El state crecía linealmente (+1.0 por inferencia, exacto en los logs) hasta saturar la sigmoid a las ~350 inferencias y colapsar prob a 0 para siempre. Fix: buffer rodante `context: FloatArray(64)`, prepended a cada frame antes de la inferencia, actualizado con `frame[-64:]` después.
+
+### Lecciones técnicas:
+- ORT Android 1.19 `OnnxTensor.createTensor(env, Object)` con `Array<FloatArray>` no funciona → usar `FloatBuffer.wrap(...)` con `long[]` explícito de shape.
+- Silero v5 no es drop-in con su predecesor v4 (que usaba estados `h`/`c` separados de shape [2,1,64]). El v5 tiene single state [2,1,128] + context prefix obligatorio.
+- Anti-flicker en VAD state machine (counters consecutiveSpeech/consecutiveSilence) elimina tos / transientes sin perder palabras cortas.
+- Output `stateN` declarado como [-1,-1,-1] dynamic en el static spec; el runtime shape real es [2,1,128] — loguear shape real en primera inferencia ayuda a confirmar.
+- `unitTests.isReturnDefaultValues = true` en `build.gradle.kts` evita que `android.util.Log` rompa los unit tests JVM.
+
+### Arquitectura validada:
+- `AudioEventBus` (Kotlin `SharedFlow`) como columna vertebral — capture publica `AudioData`, pipeline publica `VadTransition` + `ChunkReady` al mismo bus. Múltiples colectores independientes (UI ViewModel + pipeline) sin interferencia.
+- `FrameReassembler` (nuevo, sin contraparte Python) re-batches los chunks variables de Oboe (1–2048 samples por evento) en frames fijos de 512 para Silero. Sum-equality preservada bajo carga aleatoria.
+- Sliders en UI para todos los tunables (threshold/minSpeech/minSilence/min/max/silenceEnd/preRoll) — la única forma realista de calibrar es con voz real en device.
+
+### 12/12 criterios Go/No-Go: PASS
+
+---
+
+## Fase 4: Gemma AST en Pipeline (Pendiente)
+- POC standalone `gemma-pipeline-poc/` (mismo patrón)
+- Reusa capa audio/vad/chunker verbatim de Fase 3
+- Nuevo paquete `ast/`: AstConfig, WavBuilder (PCM int16 → WAV bytes), GemmaAstEngine (wrapper LiteRT-LM), AstChunkRouter (Channel bounded DROP_OLDEST, consumer single-threaded)
+- Integra Gemma 4 E4B AST (configuración validada en Fase 0) — chunks 3-6 s → traducción ES→EN en texto
+- UI: sección "TRANSLATIONS" en tiempo real con avg latency + queue size
+
+### Siguiente: Fase 4 — Gemma AST en Pipeline
