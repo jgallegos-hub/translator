@@ -33,16 +33,20 @@ pipeline in one process.
 
 2. The Kokoro TTS model must live at `/sdcard/Download/kokoro_model/`:
    ```
-   kokoro-v1.0.onnx    (~80 MB, int8)
-   voices-v1.0.bin     (~5 MB, all voice embeddings concatenated)
+   kokoro-v1.0.int8.onnx    (~88 MB, int8 quantised)
+   voices-v1.0.bin          (~5 MB, all voice embeddings concatenated)
    ```
    Both files are from `huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX`.
+   The int8 build is the right one for mobile — the fp32 (~310 MB) does not
+   fit comfortably in the RAM budget alongside Gemma.
 
-3. `silero_vad.onnx`, `kokoro_config.json`, and `kokoro_dict_en_us.txt` are
-   bundled in `app/src/main/assets/`. The config + dictionary shipped in this
-   repo are **STUBS** with minimal coverage — replace them with the full files
-   from `github.com/puff-dayo/Kokoro-82M-Android` before relying on real TTS
-   output. The stubs only exist to let the loader + unit tests run.
+3. `silero_vad.onnx`, `kokoro_config.json`, and `cmudict_ipa.dict` are
+   bundled in `app/src/main/assets/`. The config holds the canonical 178-token
+   Kokoro vocab (sourced verbatim from `thewh1teagle/kokoro-onnx`); the
+   dictionary is the ~125 000-entry CMU→IPA file from
+   `puff-dayo/Kokoro-82M-Android` (GPL-3, bundled as data only). OOV words
+   fall through to a schwa fallback with a WARN log — extend the dict if
+   common terms in your domain produce robotic speech.
 
 4. Grant `MANAGE_EXTERNAL_STORAGE` when prompted (needed to read the Gemma
    and Kokoro models from `/sdcard/Download/`).

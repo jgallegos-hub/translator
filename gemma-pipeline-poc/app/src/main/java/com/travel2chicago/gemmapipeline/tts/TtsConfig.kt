@@ -14,14 +14,18 @@ package com.travel2chicago.gemmapipeline.tts
 data class TtsConfig(
     /** Directory on the device holding the Kokoro ONNX model and voice file. */
     val modelDirPath: String = "/sdcard/Download/kokoro_model",
-    /** Int8-quantized model (~80 MB). */
-    val modelFilename: String = "kokoro-v1.0.onnx",
+    /** Int8-quantized model (~88 MB) — the int8 build, not the 310 MB fp32 one. */
+    val modelFilename: String = "kokoro-v1.0.int8.onnx",
     /** Voice-style embeddings, all voices concatenated (~5 MB). */
     val voicesFilename: String = "voices-v1.0.bin",
     /** Bundled phoneme→token-id map + voice index table. */
     val configAsset: String = "kokoro_config.json",
-    /** Bundled English pronunciation dictionary (CMU subset). */
-    val dictionaryAsset: String = "kokoro_dict_en_us.txt",
+    /**
+     * Bundled English pronunciation dictionary (CMU words → IPA).
+     * Sourced from puff-dayo/Kokoro-82M-Android — ~125k entries, ~3 MB,
+     * tab-separated, lines starting with `;;;` are comments.
+     */
+    val dictionaryAsset: String = "cmudict_ipa.dict",
     /** Hardcoded voice for v1; selector UI is a post-POC follow-up. */
     val voice: String = "af_heart",
     /** Kokoro outputs PCM at this rate (mono float32 → we convert to int16). */

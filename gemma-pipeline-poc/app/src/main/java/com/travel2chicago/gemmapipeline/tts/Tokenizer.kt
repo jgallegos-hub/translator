@@ -7,60 +7,58 @@ import org.json.JSONObject
 private const val TAG = "Tokenizer"
 
 /**
- * Maps a phoneme sequence to the LongArray of token IDs that the Kokoro ONNX
- * model expects as input. The phoneme→ID vocabulary, the special-token IDs,
- * and the maximum sequence length all come from the model's `config.json`
- * (bundled in assets).
+ * Maps a single string of IPA characters (output of [Phonemizer]) to the
+ * `LongArray` of token IDs Kokoro's ONNX model expects.
  *
- * Format expected from `kokoro_config.json`:
+ * **One token per CHARACTER**, not per phoneme group — this matches the
+ * Kokoro reference tokeniser
+ * (see `thewh1teagle/kokoro-onnx/tokenizer.py` and the puff-dayo Android
+ * port). The vocab in `kokoro_config.json` (178 entries) is the canonical
+ * mapping the model was trained against; do not reorder.
  *
- * ```json
- * {
- *   "vocab": { "ə": 1, "h": 2, ... },
- *   "max_position": 512,
- *   "bos_token_id": 0,
- *   "eos_token_id": 0,
- *   "unk_token_id": 0
- * }
- * ```
+ * **No BOS/EOS at this layer.** The Python reference wraps the IDs as
+ * `[0, ...tokens, 0]` right before `session.run`. We replicate that wrap in
+ * [KokoroOnnxEngine.synthesize] rather than here so this class stays a pure
+ * "phoneme → ID" function with no implicit state.
  *
- * Notes:
- *   - In the reference Kokoro models BOS and EOS are commonly the same token
- *     (id=0). We accept distinct values via the config if a future variant
- *     splits them.
- *   - Unknown phonemes are mapped to [unkId] rather than crashing; loggers
- *     warn so a missing vocab entry is visible during QA.
+ * Unknown characters map to [padId] and are counted in [unkHits] so a
+ * missing vocab entry is visible during QA.
  */
 class Tokenizer(
-    private val phonemeToId: Map<String, Int>,
-    val bosId: Int,
-    val eosId: Int,
-    val unkId: Int,
+    private val charToId: Map<String, Int>,
+    val padId: Int,
     val maxLen: Int,
 ) {
     @Volatile var unkHits: Long = 0
         private set
 
-    fun tokenize(phonemes: List<String>): LongArray {
-        val budget = maxLen - 2  // reserve for BOS + EOS
-        val ids = ArrayList<Long>(minOf(phonemes.size, budget) + 2)
-        ids += bosId.toLong()
+    /**
+     * Returns the model-ready token sequence (without the 0/PAD wrapping —
+     * see [KokoroOnnxEngine.synthesize] for that). Input longer than
+     * [maxLen] − 2 is truncated so the engine's wrap still fits inside the
+     * model's max_position window.
+     */
+    fun tokenize(phonemes: String): LongArray {
+        if (phonemes.isEmpty()) return LongArray(0)
+        val budget = (maxLen - 2).coerceAtLeast(0)
+        val limit = minOf(phonemes.length, budget)
+        val out = LongArray(limit)
         var truncated = 0
-        for (p in phonemes) {
-            if (ids.size - 1 >= budget) { truncated += 1; continue }
-            val id = phonemeToId[p]
+        for (i in 0 until limit) {
+            val ch = phonemes[i].toString()
+            val id = charToId[ch]
             if (id == null) {
                 unkHits += 1
-                ids += unkId.toLong()
+                out[i] = padId.toLong()
             } else {
-                ids += id.toLong()
+                out[i] = id.toLong()
             }
         }
-        ids += eosId.toLong()
-        if (truncated > 0) {
-            Log.w(TAG, "tokenize: input was ${phonemes.size} phonemes; truncated $truncated to fit maxLen=$maxLen")
+        if (phonemes.length > budget) {
+            truncated = phonemes.length - budget
+            Log.w(TAG, "tokenize: input was ${phonemes.length} chars; truncated $truncated to fit maxLen=$maxLen")
         }
-        return ids.toLongArray()
+        return out
     }
 
     companion object {
@@ -75,18 +73,10 @@ class Tokenizer(
                 val key = it.next()
                 vocab[key] = vocabJson.getInt(key)
             }
-            val bos = json.optInt("bos_token_id", 0)
-            val eos = json.optInt("eos_token_id", 0)
-            val unk = json.optInt("unk_token_id", 0)
+            val pad = json.optInt("pad_token_id", 0)
             val maxLen = json.optInt("max_position", 512)
-            Log.i(TAG, "Loaded tokenizer: ${vocab.size} phonemes, max=$maxLen, bos=$bos eos=$eos unk=$unk")
-            return Tokenizer(
-                phonemeToId = vocab,
-                bosId = bos,
-                eosId = eos,
-                unkId = unk,
-                maxLen = maxLen,
-            )
+            Log.i(TAG, "Loaded tokenizer: ${vocab.size} chars, max=$maxLen, pad=$pad")
+            return Tokenizer(charToId = vocab, padId = pad, maxLen = maxLen)
         }
     }
 }
