@@ -78,4 +78,35 @@ sealed class AudioEvent {
         val sourceChunkTimestampNs: Long,
         val timestampNs: Long,
     ) : AudioEvent()
+
+    /**
+     * Kokoro TTS has synthesized PCM audio for a previously emitted
+     * [TranslationReady]. [samples] is int16 mono at [sampleRate] (typically
+     * 24 kHz — note this is DIFFERENT from the 16 kHz capture/chunk rate, so
+     * the playback path for TTS uses a dedicated [tts.TtsAudioPlayer] running
+     * its own AudioTrack at 24 kHz rather than the Oboe 16 kHz playback).
+     */
+    data class TtsAudioReady(
+        val samples: ShortArray,
+        val sampleRate: Int,
+        val sourceText: String,
+        val sourceTranslationTimestampNs: Long,
+        val latencyMs: Long,
+        val timestampNs: Long,
+    ) : AudioEvent() {
+        override fun equals(other: Any?): Boolean = this === other
+        override fun hashCode(): Int = System.identityHashCode(this)
+    }
+
+    /**
+     * Kokoro TTS failed to synthesize a translation. Router continues; the
+     * next translation gets a fresh attempt. Surfaced so the UI can show the
+     * error.
+     */
+    data class TtsError(
+        val message: String,
+        val sourceText: String,
+        val sourceTranslationTimestampNs: Long,
+        val timestampNs: Long,
+    ) : AudioEvent()
 }

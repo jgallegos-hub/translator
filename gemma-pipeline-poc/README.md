@@ -1,8 +1,9 @@
 # gemma-pipeline-poc
 
-Standalone Android POC for **Fase 4** of the Travel2Chicago real-time ES→EN
-translator: integrates the VAD + chunker layer (Fase 3) with Gemma 4 E4B AST
-(Fase 0). The first end-to-end POC — speech goes in, English text comes out.
+Standalone Android POC for **Fases 4 + 5** of the Travel2Chicago real-time
+ES→EN translator. Integrates Silero VAD + chunker (Fase 3), Gemma 4 E4B AST
+(Fase 0), and Kokoro-82M TTS (Fase 5) into one app — full speech-to-speech
+pipeline in one process.
 
 ## What it does
 
@@ -12,8 +13,8 @@ translator: integrates the VAD + chunker layer (Fase 3) with Gemma 4 E4B AST
 3. Each chunk is wrapped in a WAV (RIFF/WAVE PCM 16-bit) and sent to Gemma 4
    E4B via LiteRT-LM (`Backend.GPU()` + `audioBackend=Backend.CPU()`).
 4. The English translation appears in the UI within ~2 s.
-
-No TTS yet — that's Fase 5 (Kokoro).
+5. Each translation is fed to Kokoro TTS (ONNX Runtime CPU, int8 model) to
+   synthesize PCM at 24 kHz, played back through a dedicated `AudioTrack`.
 
 ## Setup before first run
 
@@ -30,10 +31,21 @@ No TTS yet — that's Fase 5 (Kokoro).
    Reuse the directory from `gemma-ast-poc` (Fase 0). The companion files are
    required for the GPU backend.
 
-2. `silero_vad.onnx` is bundled in `app/src/main/assets/` — no action needed.
+2. The Kokoro TTS model must live at `/sdcard/Download/kokoro_model/`:
+   ```
+   kokoro-v1.0.onnx    (~80 MB, int8)
+   voices-v1.0.bin     (~5 MB, all voice embeddings concatenated)
+   ```
+   Both files are from `huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX`.
 
-3. Grant `MANAGE_EXTERNAL_STORAGE` when prompted (needed to read the Gemma
-   model from `/sdcard/Download/`).
+3. `silero_vad.onnx`, `kokoro_config.json`, and `kokoro_dict_en_us.txt` are
+   bundled in `app/src/main/assets/`. The config + dictionary shipped in this
+   repo are **STUBS** with minimal coverage — replace them with the full files
+   from `github.com/puff-dayo/Kokoro-82M-Android` before relying on real TTS
+   output. The stubs only exist to let the loader + unit tests run.
+
+4. Grant `MANAGE_EXTERNAL_STORAGE` when prompted (needed to read the Gemma
+   and Kokoro models from `/sdcard/Download/`).
 
 ## Architecture (additions over vad-chunking-poc)
 
@@ -59,8 +71,28 @@ No TTS yet — that's Fase 5 (Kokoro).
          ▼
   bus.emit(AudioEvent.TranslationReady)
          │
+         ├──▶ UI sección "TRANSLATIONS"
+         │
          ▼
-  UI sección "TRANSLATIONS"
+  TtsRouter
+   - Channel(capacity=4, DROP_OLDEST)  ← bounds Kokoro backlog
+   - Consumer (Dispatchers.IO, single)
+         │
+         ▼
+  KokoroOnnxEngine.synthesize(text, voice="af_heart")
+   - Phonemizer (dict-based, EN-US)
+   - Tokenizer (phoneme→ID + BOS/EOS)
+   - OrtSession.run(input_ids, style, speed) → "audio" float32 [1, N]
+   - sentence splitting if text > 510 tokens
+         │
+         ▼
+  bus.emit(AudioEvent.TtsAudioReady) (24 kHz int16 PCM)
+         │
+         ▼
+  TtsAudioPlayer (dedicated AudioTrack @ 24 kHz, Mutex-serialised)
+         │
+         ▼
+  JBL Go 4 BT speaker (English voice)
 ```
 
 ## Known noise
@@ -80,10 +112,14 @@ comes from native code (`__android_log_print`), so a Kotlin `Log` filter
 cannot suppress it. See the comment block in `GemmaAstEngine.kt` for the
 exact spot to wire a dispatch-lib config if a future SDK release adds one.
 
-## Go/No-Go for Fase 5
+## Go/No-Go criteria (Fase 4 + Fase 5)
 
-12 criteria — see the project plan file for the full list. Critical:
+12 criteria documented in the project plan file. Critical for shipping:
 
-- **#6**: First end-to-end translation in <3 s from end-of-speech.
-- **#7**: 10 consecutive utterances all translated, avg latency <3000 ms.
-- **#10**: Sustained 10-min run without OOM, leaks, or overflow.
+- **AST #6**: First end-to-end translation in <3 s from end-of-speech.
+- **AST #7**: 10 consecutive utterances translated, avg latency <3 000 ms.
+- **AST #10**: Sustained 10-min run without OOM, leaks, or overflow.
+- **TTS #6**: Synthesized PCM is intelligible English via the JBL Go 4.
+- **TTS #7**: 5 consecutive translations are spoken in order, no overlap.
+- **TTS #11**: `stopGracefully` drains any pending translation through TTS
+  before the pipeline reports stopped.

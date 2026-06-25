@@ -18,6 +18,11 @@ import com.travel2chicago.gemmapipeline.audio.NativeAudioEngine
 import com.travel2chicago.gemmapipeline.audio.VadState
 import com.travel2chicago.gemmapipeline.chunker.ChunkerConfig
 import com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline
+import com.travel2chicago.gemmapipeline.tts.KokoroOnnxEngine
+import com.travel2chicago.gemmapipeline.tts.KokoroTtsEngine
+import com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer
+import com.travel2chicago.gemmapipeline.tts.TtsConfig
+import com.travel2chicago.gemmapipeline.tts.TtsRouter
 import com.travel2chicago.gemmapipeline.vad.SileroVadModel
 import com.travel2chicago.gemmapipeline.vad.SileroVadOnnxModel
 import com.travel2chicago.gemmapipeline.vad.VadConfig
@@ -86,12 +91,32 @@ data class GemmaPipelineUiState(
     val totalSamplesCaptured: Long = 0,
     val overflowCount: Long = 0,
 
+    // Kokoro TTS engine state
+    val kokoroLoading: Boolean = false,
+    val kokoroLoaded: Boolean = false,
+    val kokoroLoadTimeMs: Long = 0,
+    val kokoroLoadError: String? = null,
+    val kokoroModelExists: Boolean = false,
+    val kokoroVoice: String = TtsConfig().voice,
+
+    // TTS pipeline runtime
+    val ttsRouterRunning: Boolean = false,
+    val ttsQueueSize: Int = 0,
+    val totalSynthesized: Long = 0,
+    val totalSpoken: Int = 0,
+    val ttsDropped: Long = 0,
+    val ttsErrors: Long = 0,
+    val ttsAvgLatencyMs: Double = 0.0,
+    val lastSpokenText: String = "",
+    val lastTtsDurationMs: Int = 0,
+
     val logs: List<String> = emptyList(),
     val error: String? = null,
 ) {
     val selectedInput get() = inputDevices.firstOrNull { it.id == selectedInputId }
     val selectedOutput get() = outputDevices.firstOrNull { it.id == selectedOutputId }
-    val pipelineReady: Boolean get() = sileroLoaded && gemmaLoaded && hasRecordPermission && hasStoragePermission
+    val pipelineReady: Boolean
+        get() = sileroLoaded && gemmaLoaded && kokoroLoaded && hasRecordPermission && hasStoragePermission
 }
 
 data class TranslationEntry(
@@ -110,17 +135,22 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
 
     private val audioConfig = AudioEngineConfig()
     private val astConfig = AstConfig()
+    private val ttsConfig = TtsConfig()
     private val bus = AudioEventBus(bufferCapacity = 128)
     private val nativeEngine: NativeAudioEngine = NativeAudioEngine.create(audioConfig)
     private val deviceManager = AudioDeviceManager(app, bus)
     private val captureManager = AudioCaptureManager(nativeEngine, bus, audioConfig, viewModelScope)
     private val playbackManager = AudioPlaybackManager(app, nativeEngine, audioConfig, viewModelScope)
+    private val ttsPlayer = TtsAudioPlayer(sampleRate = ttsConfig.sampleRate)
 
     @Volatile private var sileroModel: SileroVadModel? = null
     @Volatile private var pipeline: VadChunkingPipeline? = null
 
     @Volatile private var gemmaEngine: GemmaAstEngine? = null
     @Volatile private var router: AstChunkRouter? = null
+
+    @Volatile private var kokoroEngine: KokoroTtsEngine? = null
+    @Volatile private var ttsRouter: TtsRouter? = null
 
     /**
      * Re-entry guard for [loadGemmaEngine]. Must be set atomically before any
@@ -129,6 +159,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * with undefined native behavior after ~30s of work.
      */
     private val gemmaLoadInFlight = AtomicBoolean(false)
+
+    /** Same CAS-latch pattern as [gemmaLoadInFlight] — ORT session creation
+     *  is not safe to call concurrently from two coroutines. */
+    private val kokoroLoadInFlight = AtomicBoolean(false)
 
     init {
         deviceManager.register()
@@ -149,14 +183,17 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         // onCleared is not suspendable — use the synchronous hard cancel.
         // Any chunks in flight at this moment (rotation / process death)
         // are lost; that's an accepted trade-off here.
+        ttsRouter?.cancel()
         router?.cancel()
         pipeline?.stop()
         captureManager.stop()
         playbackManager.stop()
+        ttsPlayer.close()
         deviceManager.unregister()
         nativeEngine.close()
         sileroModel?.close()
         gemmaEngine?.close()
+        kokoroEngine?.close()
     }
 
     // ── Permissions ─────────────────────────────────────────────────────────
@@ -174,15 +211,21 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         refreshDevices()
         checkModelFileExists()
 
-        // Kick off Gemma load when storage permission first becomes available.
-        if (storage && !prev.hasStoragePermission && gemmaEngine == null && !_state.value.gemmaLoading) {
-            loadGemmaEngine()
+        // Kick off Gemma + Kokoro loads when storage permission first becomes
+        // available. Each runs in its own coroutine; ORT and LiteRT both
+        // initialise on separate threads so they don't block each other.
+        if (storage && !prev.hasStoragePermission) {
+            if (gemmaEngine == null && !_state.value.gemmaLoading) loadGemmaEngine()
+            if (kokoroEngine == null && !_state.value.kokoroLoading) loadKokoroEngine()
         }
     }
 
     private fun checkModelFileExists() {
-        val exists = try { File(astConfig.modelPath).isFile } catch (_: Throwable) { false }
-        _state.update { it.copy(gemmaModelExists = exists) }
+        val gemmaExists = try { File(astConfig.modelPath).isFile } catch (_: Throwable) { false }
+        val kokoroExists = try {
+            File(ttsConfig.modelPath).isFile && File(ttsConfig.voicesPath).isFile
+        } catch (_: Throwable) { false }
+        _state.update { it.copy(gemmaModelExists = gemmaExists, kokoroModelExists = kokoroExists) }
     }
 
     // ── Device selection ────────────────────────────────────────────────────
@@ -291,6 +334,56 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadKokoroEngine() {
+        if (kokoroEngine != null) return
+        if (!kokoroLoadInFlight.compareAndSet(false, true)) return
+
+        if (!_state.value.hasStoragePermission) {
+            log("[ERROR] Cannot load Kokoro: storage permission not granted")
+            kokoroLoadInFlight.set(false)
+            return
+        }
+        if (!File(ttsConfig.modelPath).isFile) {
+            val msg = "Kokoro model not found at ${ttsConfig.modelPath} — " +
+                "download kokoro-v1.0.onnx + voices-v1.0.bin from HuggingFace"
+            log("[ERROR] $msg")
+            _state.update { it.copy(kokoroLoadError = msg) }
+            kokoroLoadInFlight.set(false)
+            return
+        }
+        if (!File(ttsConfig.voicesPath).isFile) {
+            val msg = "Kokoro voices file not found at ${ttsConfig.voicesPath}"
+            log("[ERROR] $msg")
+            _state.update { it.copy(kokoroLoadError = msg) }
+            kokoroLoadInFlight.set(false)
+            return
+        }
+
+        _state.update { it.copy(kokoroLoading = true, kokoroLoadError = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            log("Kokoro load STARTED (this takes ~5-15s)")
+            try {
+                val loaded = KokoroOnnxEngine.load(getApplication(), ttsConfig)
+                kokoroEngine = loaded
+                _state.update {
+                    it.copy(
+                        kokoroLoading = false,
+                        kokoroLoaded = true,
+                        kokoroLoadTimeMs = loaded.loadTimeMs,
+                    )
+                }
+                log("Kokoro LOADED ✓ in ${loaded.loadTimeMs}ms (voices=${loaded.availableVoices.size})")
+            } catch (t: Throwable) {
+                val msg = "Kokoro load FAILED: ${t.javaClass.simpleName}: ${t.message}"
+                Log.e(TAG, msg, t)
+                _state.update { it.copy(kokoroLoading = false, kokoroLoadError = msg) }
+                log("[ERROR] $msg")
+            } finally {
+                kokoroLoadInFlight.set(false)
+            }
+        }
+    }
+
     // ── Pipeline ────────────────────────────────────────────────────────────
 
     fun startPipeline() {
@@ -314,36 +407,61 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         r.start(viewModelScope)
         router = r
 
+        val k = kokoroEngine ?: run { log("[ERROR] Kokoro not loaded yet"); return }
+        // Init the TTS player lazily here so a missing audio output device
+        // surfaces at start-pipeline time, not at app launch.
+        runCatching { ttsPlayer.init() }
+            .onFailure { log("[ERROR] TTS player init failed: ${it.message}") }
+        val ttsR = TtsRouter(bus, k, ttsConfig)
+        ttsR.start(viewModelScope)
+        ttsRouter = ttsR
+
         _state.update {
             it.copy(
                 capturing = true,
                 pipelineRunning = true,
                 routerRunning = true,
+                ttsRouterRunning = true,
                 chunksEmitted = 0,
                 lastChunkSamples = null,
                 totalTranslated = 0,
                 totalDropped = 0,
                 astErrors = 0,
                 translations = emptyList(),
+                totalSynthesized = 0,
+                totalSpoken = 0,
+                ttsDropped = 0,
+                ttsErrors = 0,
+                ttsAvgLatencyMs = 0.0,
+                lastSpokenText = "",
+                lastTtsDurationMs = 0,
                 totalSamplesCaptured = 0,
                 overflowCount = 0,
                 error = null,
             )
         }
-        log("Pipeline + AST router started")
+        log("Pipeline + AST router + TTS router started")
     }
 
     fun stopPipeline() {
-        // Capture the router instance, then null it out so a quick re-start
-        // can't reach the old one. The graceful drain runs in the background
-        // — user-facing stop reports "stopped" immediately while pending
-        // translations keep landing in the TRANSLATIONS list until done.
+        // Capture the router instances, then null them out so a quick re-start
+        // can't reach the old ones. Both drains run in the background — the
+        // user-facing stop reports "stopped" immediately while pending
+        // translations + their TTS audio keep landing until done.
         val r = router
         router = null
         if (r != null) {
             viewModelScope.launch {
                 val drained = r.stopGracefully()
                 log("AST router drained $drained pending chunks before stop")
+            }
+        }
+        val ttsR = ttsRouter
+        ttsRouter = null
+        if (ttsR != null) {
+            viewModelScope.launch {
+                val drained = ttsR.stopGracefully()
+                log("TTS router drained $drained pending translations before stop")
             }
         }
         pipeline?.stop()
@@ -353,12 +471,13 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 capturing = false,
                 pipelineRunning = false,
                 routerRunning = false,
+                ttsRouterRunning = false,
                 vadState = VadState.SILENCE,
                 vadProbability = 0f,
                 collecting = false,
             )
         }
-        log("Pipeline + AST router stopped (drain in progress)")
+        log("Pipeline + AST router + TTS router stopped (drain in progress)")
     }
 
     fun startPlayback() {
@@ -499,6 +618,44 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 log("[ERROR] AST: ${event.message}")
+            }
+            is AudioEvent.TtsAudioReady -> {
+                val tr = ttsRouter
+                val durationMs = if (event.sampleRate > 0)
+                    event.samples.size * 1000 / event.sampleRate else 0
+                _state.update {
+                    it.copy(
+                        totalSynthesized = tr?.totalSynthesized ?: it.totalSynthesized,
+                        ttsAvgLatencyMs = tr?.averageLatencyMs ?: it.ttsAvgLatencyMs,
+                        ttsQueueSize = tr?.queueSize ?: 0,
+                        ttsDropped = tr?.totalDropped ?: it.ttsDropped,
+                        lastSpokenText = event.sourceText,
+                        lastTtsDurationMs = durationMs,
+                    )
+                }
+                log("TTS ready (${event.latencyMs}ms, ${event.samples.size} samp @${event.sampleRate}Hz): " +
+                    event.sourceText.take(60))
+                // Fire-and-forget playback. TtsAudioPlayer's internal Mutex
+                // serialises overlapping play() calls, so two TtsAudioReady
+                // events arriving back-to-back are spoken in order.
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        ttsPlayer.play(event.samples)
+                        _state.update { it.copy(totalSpoken = it.totalSpoken + 1) }
+                    } catch (t: Throwable) {
+                        log("[ERROR] TTS playback failed: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            }
+            is AudioEvent.TtsError -> {
+                val tr = ttsRouter
+                _state.update {
+                    it.copy(
+                        ttsErrors = tr?.totalErrors ?: (it.ttsErrors + 1),
+                        ttsDropped = tr?.totalDropped ?: it.ttsDropped,
+                    )
+                }
+                log("[ERROR] TTS: ${event.message}")
             }
             is AudioEvent.BufferOverflow -> {
                 _state.update { it.copy(overflowCount = it.overflowCount + event.droppedSamples) }

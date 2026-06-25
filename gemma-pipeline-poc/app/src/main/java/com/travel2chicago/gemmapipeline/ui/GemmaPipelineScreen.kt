@@ -107,6 +107,41 @@ fun GemmaPipelineScreen(
         }
 
         item {
+            SectionCard(title = "TTS ENGINE (Kokoro)") {
+                val statusLine = when {
+                    state.kokoroLoadError != null -> "ERROR: ${state.kokoroLoadError}"
+                    state.kokoroLoaded -> "Loaded ✓ (${state.kokoroLoadTimeMs}ms, voice=${state.kokoroVoice})"
+                    state.kokoroLoading -> "Loading… (5–15s first run)"
+                    !state.hasStoragePermission -> "Waiting for storage permission"
+                    !state.kokoroModelExists -> "Model files not found"
+                    else -> "Idle (tap Load below)"
+                }
+                Text(statusLine, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "/sdcard/Download/kokoro_model/{kokoro-v1.0.onnx, voices-v1.0.bin}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!state.hasStoragePermission) {
+                        Button(
+                            onClick = onRequestStoragePermission,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Grant storage permission") }
+                    } else if (!state.kokoroLoaded && !state.kokoroLoading) {
+                        Button(
+                            onClick = { viewModel.loadKokoroEngine() },
+                            enabled = state.kokoroModelExists,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Load Kokoro engine") }
+                    }
+                }
+            }
+        }
+
+        item {
             SectionCard(title = "PERMISSIONS") {
                 InfoRow("RECORD_AUDIO", if (state.hasRecordPermission) "GRANTED ✓" else "DENIED ✗")
                 InfoRow("BLUETOOTH_CONNECT", if (state.hasBluetoothPermission) "GRANTED ✓" else "DENIED ✗")
@@ -214,7 +249,42 @@ fun GemmaPipelineScreen(
         }
 
         item {
-            SectionCard(title = "5. PLAYBACK") {
+            SectionCard(title = "5. TTS PLAYBACK (Kokoro 24 kHz)") {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        "Avg latency: ${state.ttsAvgLatencyMs.toInt()} ms",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Queue: ${state.ttsQueueSize}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Drops: ${state.ttsDropped} | Errors: ${state.ttsErrors}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                InfoRow("Synthesized", "${state.totalSynthesized}")
+                InfoRow("Spoken", "${state.totalSpoken}")
+                InfoRow("Last duration", "${state.lastTtsDurationMs} ms")
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (state.lastSpokenText.isBlank()) "No spoken text yet"
+                    else "🔊 \"${state.lastSpokenText.take(120)}\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (state.lastSpokenText.isBlank())
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+
+        item {
+            SectionCard(title = "6. CHUNK PLAYBACK (16 kHz raw)") {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { viewModel.startPlayback() },
@@ -239,7 +309,7 @@ fun GemmaPipelineScreen(
         }
 
         item {
-            SectionCard(title = "6. VAD TUNING") {
+            SectionCard(title = "7. VAD TUNING") {
                 SliderRow(
                     label = "threshold",
                     value = state.vadConfig.threshold,
@@ -255,7 +325,7 @@ fun GemmaPipelineScreen(
         }
 
         item {
-            SectionCard(title = "7. CHUNKER TUNING") {
+            SectionCard(title = "8. CHUNKER TUNING") {
                 IntSliderRow("minChunkMs", state.chunkerConfig.minChunkMs,
                     { viewModel.setChunkerMinMs(it) }, 200..10_000, "ms")
                 IntSliderRow("maxChunkMs", state.chunkerConfig.maxChunkMs,
@@ -268,7 +338,7 @@ fun GemmaPipelineScreen(
         }
 
         item {
-            SectionCard(title = "8. LOGS") {
+            SectionCard(title = "9. LOGS") {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
