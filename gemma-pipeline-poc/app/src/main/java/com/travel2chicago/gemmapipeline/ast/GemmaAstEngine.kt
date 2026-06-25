@@ -70,6 +70,12 @@ interface GemmaAstEngine : AutoCloseable {
  * `conversation.reset()`, so we instead build a fresh `Conversation` for
  * each `translate()` — the create cost is ~ms vs ~2s of inference.
  *
+ * **One active Conversation per Engine.** LiteRT-LM 0.12.0 errors with
+ * `FAILED_PRECONDITION: A session already exists` if a second
+ * `createConversation()` is called while a prior one is still open. We
+ * keep a reference to the last conversation and `close()` it before
+ * building the next, plus on engine `close()` so nothing leaks.
+ *
  * GPU → CPU fallback: if [config.preferGpu] is true we try GPU first; on any
  * exception during `Engine(...).initialize()` we tear down and retry with
  * `Backend.CPU()`. CPU is slower (~3–5×) but always works.
@@ -86,6 +92,15 @@ class LiteRtGemmaAstEngine private constructor(
 
     @Volatile private var closed: Boolean = false
 
+    /**
+     * The Conversation opened by the most recent [translate] call. LiteRT-LM
+     * only tolerates one open Conversation per Engine at a time
+     * (`FAILED_PRECONDITION: A session already exists` otherwise), so we
+     * close the prior one before opening the next. Also closed on engine
+     * teardown.
+     */
+    @Volatile private var currentConversation: Conversation? = null
+
     override val isLoaded: Boolean get() = !closed
 
     override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
@@ -100,12 +115,17 @@ class LiteRtGemmaAstEngine private constructor(
             Content.Text(prompt),
         )
 
+        // Release the previous Conversation before opening a new one — only
+        // one session per Engine is allowed (FAILED_PRECONDITION otherwise).
+        closeCurrentConversation()
+
         // Fresh Conversation per call — see class doc for why reusing one
         // overflows the context after ~6 turns and bleeds prior translations
         // into the new output.
         val conv: Conversation = engine.createConversation(
             ConversationConfig(samplerConfig = samplerConfig),
         )
+        currentConversation = conv
 
         val startNs = System.nanoTime()
         val response: Message = conv.sendMessage(contents)
@@ -119,10 +139,21 @@ class LiteRtGemmaAstEngine private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        closeCurrentConversation()
         try {
             engine.close()
         } catch (e: Exception) {
             Log.w(TAG, "engine.close() threw — ignored", e)
+        }
+    }
+
+    private fun closeCurrentConversation() {
+        val prev = currentConversation ?: return
+        currentConversation = null
+        try {
+            prev.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "conversation.close() threw — ignored", e)
         }
     }
 
