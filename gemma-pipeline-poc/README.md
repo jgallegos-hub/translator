@@ -34,11 +34,18 @@ pipeline in one process.
 2. The Kokoro TTS model must live at `/sdcard/Download/kokoro_model/`:
    ```
    kokoro-v1.0.int8.onnx    (~88 MB, int8 quantised)
-   voices-v1.0.bin          (~5 MB, all voice embeddings concatenated)
+   voices-v1.0.bin          (~27 MB, NPZ archive of ~26 voice embeddings)
    ```
    Both files are from `huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX`.
    The int8 build is the right one for mobile — the fp32 (~310 MB) does not
    fit comfortably in the RAM budget alongside Gemma.
+
+   `voices-v1.0.bin` is **not** a raw float blob — it's an NPZ archive (a
+   ZIP of `.npy` files, one per voice). `VoicesNpz` parses every entry on
+   load; each voice is a `[511, 1, 256]` float32 tensor and the engine
+   slices `voice[tokenCount]` per sentence (matching `voice = voice[len(tokens)]`
+   in the Python reference). Voice keys (`af_heart`, `af_bella`,
+   `am_michael`, `bf_emma`, `bm_george`, …) come from the entry filenames.
 
 3. `silero_vad.onnx`, `kokoro_config.json`, and `cmudict_ipa.dict` are
    bundled in `app/src/main/assets/`. The config holds the canonical 178-token

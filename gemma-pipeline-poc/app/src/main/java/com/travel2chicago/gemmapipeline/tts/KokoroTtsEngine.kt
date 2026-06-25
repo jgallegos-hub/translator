@@ -55,7 +55,7 @@ class KokoroOnnxEngine private constructor(
     private val session: OrtSession,
     private val phonemizer: Phonemizer,
     private val tokenizer: Tokenizer,
-    private val voices: Map<String, FloatArray>,
+    private val voices: VoiceStyles,
     private val sampleRate: Int,
     private val isNewExport: Boolean,
     override val loadTimeMs: Long,
@@ -64,19 +64,22 @@ class KokoroOnnxEngine private constructor(
     @Volatile private var closed: Boolean = false
 
     override val isLoaded: Boolean get() = !closed
-    override val availableVoices: Set<String> get() = voices.keys
+    override val availableVoices: Set<String> get() = voices.availableVoices
 
     override fun synthesize(text: String, voice: String): TtsResult {
         check(!closed) { "Engine is closed" }
         require(text.isNotBlank()) { "text must not be blank" }
-        val voiceVec = voices[voice]
-            ?: throw IllegalArgumentException("Unknown voice '$voice'. Available: ${voices.keys}")
+        if (!voices.has(voice)) {
+            throw IllegalArgumentException(
+                "Unknown voice '$voice'. Available: ${voices.availableVoices}",
+            )
+        }
 
         val startedNs = System.nanoTime()
         val sentences = splitIntoSentences(text)
         val pcmChunks = ArrayList<FloatArray>(sentences.size)
         for (sentence in sentences) {
-            val pcm = synthesizeOne(sentence, voiceVec) ?: continue
+            val pcm = synthesizeOne(sentence, voice) ?: continue
             pcmChunks += pcm
         }
         val merged = concatToInt16(pcmChunks)
@@ -85,11 +88,16 @@ class KokoroOnnxEngine private constructor(
         return TtsResult(pcm = merged, sampleRate = sampleRate, latencyMs = elapsedMs)
     }
 
-    private fun synthesizeOne(sentence: String, voiceVec: FloatArray): FloatArray? {
+    private fun synthesizeOne(sentence: String, voice: String): FloatArray? {
         val phonemes = phonemizer.phonemize(sentence)
         if (phonemes.isEmpty()) return null
         val rawTokens = tokenizer.tokenize(phonemes)
         if (rawTokens.isEmpty()) return null
+
+        // Select the style vector for THIS sentence — Python does
+        //   voice = voice[len(tokens)]
+        // BEFORE wrapping with PAD, so we pass the unwrapped count.
+        val voiceVec = voices.styleFor(voice, rawTokens.size)
 
         // Wrap with PAD at both ends. Python reference: [[0, *tokens, 0]].
         val padded = LongArray(rawTokens.size + 2).also { arr ->
@@ -169,16 +177,6 @@ class KokoroOnnxEngine private constructor(
         const val INPUT_SPEED = "speed"
         const val OUTPUT_AUDIO = "audio"
 
-        /**
-         * Default voice ordering used by the bundled stub voices loader.
-         * Replace with the real voice list when swapping in the published
-         * `voices-v1.0.bin`. v1.0 ships ~50 voices including af_heart,
-         * af_bella, af_nicole, am_adam, am_michael, bf_emma, bf_isabella,
-         * bm_george, bm_lewis. The first index in voices.bin corresponds
-         * to the first entry here.
-         */
-        val STUB_VOICE_NAMES = listOf("af_heart")
-
         fun load(context: Context, config: TtsConfig): KokoroOnnxEngine {
             Log.i(TAG, "Loading Kokoro TTS engine…")
             val startedNs = System.nanoTime()
@@ -198,14 +196,13 @@ class KokoroOnnxEngine private constructor(
             val phonemizer = DictionaryPhonemizer.loadFromAssets(context, config.dictionaryAsset)
             val tokenizer = Tokenizer.loadFromAsset(context, config.configAsset)
 
-            val voicesLoader = VoicesLoader(
-                voiceNames = STUB_VOICE_NAMES,
-                voiceFloatStride = 511 * 1 * 256,
-                sliceLen = 256,
-            )
-            val voices = voicesLoader.loadFromFile(voicesFile)
-            check(voices.isNotEmpty()) {
-                "No voices loaded from ${voicesFile.name} — check binary layout"
+            // voices-v1.0.bin is an NPZ (ZIP of .npy float32 arrays, one per
+            // voice). VoicesNpz parses every entry so af_heart, af_bella,
+            // am_michael, etc. are all loaded at once.
+            val voices = VoicesNpz.load(voicesFile)
+            check(voices.has(config.voice)) {
+                "Requested voice '${config.voice}' not present in ${voicesFile.name}. " +
+                    "Found: ${voices.availableVoices}"
             }
 
             val modelBytes = modelFile.readBytes()
@@ -234,7 +231,7 @@ class KokoroOnnxEngine private constructor(
             Log.i(TAG, "Export type: ${if (isNewExport) "NEW (input_ids + speed:int32)" else "OLD (tokens + speed:float32)"}")
 
             val loadMs = (System.nanoTime() - startedNs) / 1_000_000
-            Log.i(TAG, "Kokoro engine ready in ${loadMs}ms (${voices.size} voices)")
+            Log.i(TAG, "Kokoro engine ready in ${loadMs}ms (${voices.availableVoices.size} voices)")
             return KokoroOnnxEngine(
                 env = env,
                 session = session,
