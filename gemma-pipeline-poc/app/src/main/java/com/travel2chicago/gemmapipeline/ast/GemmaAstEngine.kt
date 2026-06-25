@@ -54,11 +54,21 @@ interface GemmaAstEngine : AutoCloseable {
  * GemmaTestViewModel.kt` lines 305–346):
  *   - `EngineConfig(modelPath, backend=GPU|CPU, audioBackend=Backend.CPU(),
  *     maxNumTokens=1024, cacheDir=app.externalFilesDir)`
- *   - `Conversation` created once with low-temperature sampler for
- *     translation-style determinism (temp=0.1, topK=10, topP=0.95).
+ *   - Low-temperature sampler for translation-style determinism
+ *     (temp=0.1, topK=10, topP=0.95).
  *   - `Contents.of(Content.AudioBytes(wav), Content.Text(prompt))` — audio
  *     FIRST, text LAST.
  *   - Synchronous `conv.sendMessage(contents): Message` → `.toString().trim()`.
+ *
+ * **Conversation lifetime is per-call, not per-engine.** Reusing one
+ * `Conversation` for many translations made it accumulate every prior
+ * (audio + text) message in its KV cache. After ~6 multi-modal turns the
+ * context window overflowed and `sendMessage` started throwing
+ * `LiteRtLmJniException("Failed to invoke the compiled model")`. Before
+ * that, the model also started echoing earlier translations into new ones
+ * because old turns were still "in scope". LiteRT-LM 0.12.0 has no
+ * `conversation.reset()`, so we instead build a fresh `Conversation` for
+ * each `translate()` — the create cost is ~ms vs ~2s of inference.
  *
  * GPU → CPU fallback: if [config.preferGpu] is true we try GPU first; on any
  * exception during `Engine(...).initialize()` we tear down and retry with
@@ -69,7 +79,7 @@ interface GemmaAstEngine : AutoCloseable {
  */
 class LiteRtGemmaAstEngine private constructor(
     private val engine: Engine,
-    private val conversation: Conversation,
+    private val samplerConfig: SamplerConfig,
     override val backendUsed: String,
     override val loadTimeMs: Long,
 ) : GemmaAstEngine {
@@ -90,8 +100,15 @@ class LiteRtGemmaAstEngine private constructor(
             Content.Text(prompt),
         )
 
+        // Fresh Conversation per call — see class doc for why reusing one
+        // overflows the context after ~6 turns and bleeds prior translations
+        // into the new output.
+        val conv: Conversation = engine.createConversation(
+            ConversationConfig(samplerConfig = samplerConfig),
+        )
+
         val startNs = System.nanoTime()
-        val response: Message = conversation.sendMessage(contents)
+        val response: Message = conv.sendMessage(contents)
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
 
         val text = response.toString().trim()
@@ -178,26 +195,18 @@ class LiteRtGemmaAstEngine private constructor(
                 val loadMs = (System.nanoTime() - startedAt) / 1_000_000
                 Log.i(TAG, "$label backend ready in ${loadMs}ms")
 
-                val conv = try {
-                    eng.createConversation(
-                        ConversationConfig(
-                            samplerConfig = SamplerConfig(
-                                temperature = 0.1,
-                                topK = 10,
-                                topP = 0.95,
-                            ),
-                        ),
-                    )
-                } catch (t: Throwable) {
-                    Log.e(TAG, "createConversation() failed on $label", t)
-                    runCatching { eng.close() }
-                    lastError = t
-                    continue
-                }
+                // Pin the sampler so every per-call Conversation uses the
+                // same translation-tuned config (low temperature for
+                // deterministic-ish output).
+                val samplerConfig = SamplerConfig(
+                    temperature = 0.1,
+                    topK = 10,
+                    topP = 0.95,
+                )
 
                 return LiteRtGemmaAstEngine(
                     engine = eng,
-                    conversation = conv,
+                    samplerConfig = samplerConfig,
                     backendUsed = label,
                     loadTimeMs = loadMs,
                 )
