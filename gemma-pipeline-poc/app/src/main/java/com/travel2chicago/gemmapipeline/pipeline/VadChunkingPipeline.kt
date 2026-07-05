@@ -194,7 +194,17 @@ class VadChunkingPipeline(
         if (muted != wasMuted) {
             wasMuted = muted
             if (muted) {
-                Log.i(TAG, "TTS playing → muting VAD input")
+                // Rising edge — mic is about to be muted. If the chunker was
+                // in the middle of collecting a chunk, we can't just keep it
+                // suspended: post-mute audio would concatenate to pre-mute
+                // audio with a gap the length of the TTS output, giving
+                // Gemma a temporally-broken utterance. Emit it now if it's
+                // already long enough to be useful, otherwise drop it. Then
+                // clear the chunker's pre-roll (pre-mute silence frames)
+                // and the VAD state machine + reassembler so the un-mute
+                // starts from a clean baseline.
+                handleMuteRisingEdge()
+                Log.i(TAG, "TTS playing → muting VAD input (chunker/VAD reset)")
                 bus.emit(AudioEvent.EngineStatus("VAD muted: TTS is speaking"))
             } else {
                 Log.i(TAG, "TTS finished → un-muting VAD input (droppedFrames=$mutedFramesDropped)")
@@ -280,6 +290,42 @@ class VadChunkingPipeline(
                 bus.emit(chunk)
             }
         }
+    }
+
+    /**
+     * Rising-edge mute handler. Called once, right when [ttsPlaying] flips
+     * from false to true. Decides what to do with any in-flight chunk buffer,
+     * then wipes VAD + reassembler so the un-mute starts clean.
+     *
+     *   - Chunker collecting AND buffer ≥ minChunkSamples → flush it out as
+     *     a normal ChunkReady (Gemma still gets a coherent utterance).
+     *   - Chunker collecting AND buffer < minChunkSamples → drop; too short
+     *     to translate meaningfully, would just spend GPU on garbage.
+     *   - Chunker idle → nothing to flush, still reset pre-roll.
+     *
+     * After the buffer decision, [AudioChunker.resetAll], [SileroVadProcessor.reset],
+     * and [FrameReassembler.reset] all fire unconditionally. The reassembler
+     * matters: it may hold up to 511 pre-mute samples that would otherwise be
+     * spliced onto the first post-mute frame, giving a garbled first inference.
+     */
+    private fun handleMuteRisingEdge() {
+        val currentChunker = chunker
+        val currentProcessor = processor
+        if (currentChunker.isCollecting) {
+            val sampleCount = currentChunker.currentSampleCount
+            if (sampleCount >= currentChunker.minChunkSamples) {
+                val flushed = currentChunker.flush()
+                if (flushed != null) {
+                    Log.i(TAG, "Mute edge: flushed in-flight chunk (${flushed.samples.size} samples)")
+                    bus.emit(flushed)
+                }
+            } else {
+                Log.i(TAG, "Mute edge: discarded partial chunk ($sampleCount samples < minChunk)")
+            }
+        }
+        currentChunker.resetAll()
+        currentProcessor.reset()
+        reassembler.reset()
     }
 
     /**

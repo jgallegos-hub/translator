@@ -151,6 +151,42 @@ class AudioChunkerTest {
         assertNull(c.flush())
     }
 
+    // ── currentSampleCount + resetAll ──────────────────────────────────────
+
+    @Test
+    fun `currentSampleCount tracks buffered samples while collecting`() {
+        val c = chunker(minChunkMs = 32)
+        assertEquals(0, c.currentSampleCount)
+        c.feed(speech(), VadState.SPEECH)
+        // First SPEECH frame dumps pre-roll (containing this frame once via
+        // pushPreRoll) into the buffer. The count grows in BLOCK-sized steps.
+        assertTrue("expected >0 samples after first SPEECH frame", c.currentSampleCount > 0)
+    }
+
+    @Test
+    fun `resetAll clears buffer preRoll and collecting state`() {
+        val c = chunker(minChunkMs = 32, preRollMs = 128)
+        // Feed a couple of silence frames so preRoll fills up.
+        repeat(4) { c.feed(silence(), VadState.SILENCE) }
+        // Then two SPEECH frames so we're actively collecting.
+        c.feed(speech(), VadState.SPEECH)
+        c.feed(speech(), VadState.SPEECH)
+        assertTrue(c.isCollecting)
+        assertTrue(c.currentSampleCount > 0)
+
+        c.resetAll()
+
+        assertFalse(c.isCollecting)
+        assertEquals(0, c.currentSampleCount)
+        // After resetAll, flush must return null — nothing left.
+        assertNull(c.flush())
+        // Also: a fresh SPEECH frame doesn't pull leftover pre-roll from
+        // before the reset. The only pre-roll contribution should be the
+        // current frame itself, exactly BLOCK samples.
+        c.feed(speech(), VadState.SPEECH)
+        assertEquals(BLOCK, c.currentSampleCount)
+    }
+
     // ── Multiple segments ──────────────────────────────────────────────────
 
     @Test

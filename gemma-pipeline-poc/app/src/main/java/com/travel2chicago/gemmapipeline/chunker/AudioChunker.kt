@@ -31,7 +31,11 @@ class AudioChunker(
     private val config: ChunkerConfig,
     private val format: AudioFormat,
 ) {
-    private val minChunkSamples: Int = config.minChunkSamples(format)
+    /** Minimum sample count that [feed] requires before emitting on
+     *  end-of-utterance. Exposed so the pipeline can decide whether a
+     *  partial chunk is worth flushing across an audio-timeline
+     *  discontinuity (e.g. mic mute during TTS playback). */
+    val minChunkSamples: Int = config.minChunkSamples(format)
     private val maxChunkSamples: Int = config.maxChunkSamples(format)
     private val silenceEndFrames: Int = config.silenceEndFrames(format)
     private val preRollFrames: Int = config.preRollFrames(format)
@@ -43,6 +47,21 @@ class AudioChunker(
     private var collecting: Boolean = false
 
     val isCollecting: Boolean get() = collecting
+
+    /** Samples currently buffered in the running chunk (0 if not collecting). */
+    val currentSampleCount: Int get() = chunkSampleCount
+
+    /**
+     * Full reset — clears the running chunk, the pre-roll ring, and the
+     * silence counter. Use this when the mic input has a discontinuity that
+     * makes any leftover data misleading (e.g. we just muted the VAD during
+     * TTS playback, so the pre-roll frames are pre-mute audio that shouldn't
+     * be prepended to a post-mute utterance).
+     */
+    fun resetAll() {
+        reset()
+        preRoll.clear()
+    }
 
     /**
      * Feed one frame plus its VAD state. Returns the assembled chunk if this

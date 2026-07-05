@@ -79,12 +79,25 @@ data class AstConfig(
      * dodge with a rephrase, so we only list phrases observed in device.
      */
     val metaTextPatterns: List<String> = listOf(
+        // Silence / no-input replies
         "not provided",
         "no audio",
         "please provide",
         "no spanish",
         "cannot translate",
         "no speech",
+        // Assistant-style preambles that leak into the reply and would be
+        // spoken by Kokoro if we let them through. All observed in device.
+        // Examples:
+        //   "The translation of the Spanish audio is: 'I'm going to the store.'"
+        //   "Here is the translation: hello"
+        //   "The audio is: hello"
+        "translation of",
+        "the translation",
+        "spanish audio",
+        "translate the",
+        "here is the",
+        "the audio",
     ),
 ) {
     init {

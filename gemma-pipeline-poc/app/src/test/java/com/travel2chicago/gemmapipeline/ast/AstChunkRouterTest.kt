@@ -461,6 +461,46 @@ class AstChunkRouterTest {
         }
 
     @Test
+    fun `default AstConfig patterns catch the assistant-preamble leak observed on device`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            // Exact phrase Gemma produced in device that slipped past the
+            // original six-pattern list; the new "translation of" / "the
+            // translation" / "the audio" entries in the default config
+            // are what catches it.
+            val engine = FakeEngine(
+                nextResult = AstResult(
+                    "The translation of the Spanish audio is: 'I'm going to the store.'",
+                    100L,
+                    "FAKE",
+                ),
+            )
+            // Use the REAL AstConfig defaults (only overriding modelDirPath +
+            // prompt so init() doesn't require a real model file). Do NOT
+            // reset metaTextPatterns — that's what we're verifying.
+            val realDefaultConfig = AstConfig(
+                modelDirPath = "/sdcard/unused-in-test",
+                prompt = "Translate.",
+                rmsThreshold = 0.0,  // so seed=1 chunk still reaches the engine
+            )
+            val router = AstChunkRouter(
+                bus, engine, realDefaultConfig,
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                expectNoEvents()
+                cancelAndConsumeRemainingEvents()
+            }
+            assertEquals(1L, router.totalDiscardedMeta)
+            router.cancel()
+        }
+
+    @Test
     fun `clean replies still pass through when meta-text list is configured`() =
         runTest(UnconfinedTestDispatcher()) {
             val bus = AudioEventBus()
