@@ -196,20 +196,153 @@ filtrar la sesión JNI en `onCleared()`.
 
 ---
 
-## Siguiente: Optimización de latencia + estabilización
+## Estabilización post-Fase 5 ✅ COMPLETADA (julio 2026)
 
-Antes de consolidar los 5 POCs en `translator-android/` (Fase 6),
-abordar los 4 issues no-blocking en orden de impacto:
+Los dos ciclos de contaminación observados durante el primer testing
+end-to-end de Fase 5 (feedback loop mic↔speaker y meta-texto de Gemma
+llegando a Kokoro) están cerrados. Commits: **`6fc65af`** + **`15f509d`**.
 
-1. **Mute durante playback** + RMS pre-filter — elimina los dos ciclos
-   (feedback loop + meta-texto)
-2. **Streaming AST** (`AudioStreamingEnabled`) — reduce latencia primera
-   palabra ~2 s
-3. **Streaming TTS por oración** + pre-buffer en `AudioTrack` — recorta
-   los 5 s de Kokoro a percepción ~1 s
-4. **Producción**: mic unidireccional + USB DAC speaker — elimina BT
-   latency y el feedback físico
+### Cambios:
 
-Cuando esos 4 estén estables, los POCs se consolidan tal cual
-(`audio/`, `vad/`, `chunker/`, `pipeline/`, `ast/`, `tts/`) en una
-sola app de producción.
+**1 — Filtros de garbage en `AstChunkRouter`** (commit `6fc65af`):
+- **Pre-filtro RMS** en `AstConfig.rmsThreshold` (default 500). Chunks
+  con RMS por-sample debajo del umbral se descartan **antes** de la
+  llamada a Gemma → ahorra ~2.8 s de GPU cada vez que el chunker emite
+  algo con poco speech real. Contador `totalDiscardedLowEnergy`
+  expuesto en UI.
+- **Post-filtro meta-texto** en `AstConfig.metaTextPatterns`. Substring
+  match sobre `text.trim().lowercase()` — si hay hit, la respuesta se
+  dropea **antes** de emitir `TranslationReady` al bus, así Kokoro
+  nunca sintetiza meta-texto por el speaker. Contador
+  `totalDiscardedMeta` expuesto en UI.
+
+**2 — Meta-text list ampliada** (commit `15f509d`): la lista original
+de 6 patrones cubría respuestas de "no-input" ("not provided",
+"no audio", "please provide", "no spanish", "cannot translate",
+"no speech") pero dejaba pasar los **preámbulos de asistente**
+observados en device — ejemplos reales:
+- `"The translation of the Spanish audio is: 'I'm going to the store.'"`
+- `"Here is the translation: hello"`
+- `"The audio is: hello"`
+
+6 patrones nuevos agregados al default: `"translation of"`,
+`"the translation"`, `"spanish audio"`, `"translate the"`,
+`"here is the"`, `"the audio"`. **Total: 12 patrones**. Nuevo test
+`AstChunkRouterTest#default AstConfig patterns catch the assistant-
+preamble leak observed on device` valida contra la frase exacta usando
+el `AstConfig` real (sin override de patrones) — si alguien acorta la
+lista sin querer, el test rompe.
+
+**3 — Mute VAD durante TTS playback** (commit `6fc65af`): shared
+`AtomicBoolean ttsPlaying`, ownado por el ViewModel:
+- `TtsAudioPlayer.play()` lo levanta antes del primer
+  `AudioTrack.write()` y lo baja en `finally` (garantiza cierre incluso
+  si el coroutine se cancela mid-playback).
+- `VadChunkingPipeline.setTtsPlayingRef(ref)` recibe la referencia
+  antes de `start()`. En `handleAudioData`, si `ttsPlaying.get()` es
+  `true`, hace `return` inmediato — no reassembler, no VAD, no
+  chunker. Log edge-triggered: **una línea** al empezar mute, **una**
+  al terminar con contador de frames droppeados. No spam.
+- La UI muestra el estado live `🔇 VAD muted (TTS)` ↔ `🎙 VAD live` y
+  el total de frames droppeados desde el último `start`.
+
+**4 — Reset del chunker + VAD + reassembler en el edge de mute**
+(commit `15f509d`): sin este reset, el frame post-mute concatenaba a
+un buffer pre-mute con un gap de varios segundos de TTS. Gemma recibía
+una utterance temporalmente rota y respondía con basura.
+
+Nuevo helper `VadChunkingPipeline.handleMuteRisingEdge()`, invocado
+una sola vez en el edge `false→true`:
+- Chunker `collecting=true` **y** `currentSampleCount >= minChunkSamples`
+  → `flush()` y emite el chunk (Gemma recibe algo coherente de lo que
+  se dijo pre-mute).
+- Chunker `collecting=true` **y** buffer `< minChunkSamples`
+  → discard silencioso; muy corto para traducir.
+- Incondicional: `chunker.resetAll()` (buffer + preRoll + silenceCount
+  + collecting) + `processor.reset()` (state machine + LSTM state +
+  context prefix Silero v5) + `reassembler.reset()` (descarta hasta
+  511 samples residuales pre-mute que hubieran splicheado al primer
+  frame post-mute).
+
+`AudioChunker` extendido con `currentSampleCount: Int` (getter),
+`minChunkSamples: Int` (ahora público — el pipeline usa el MISMO valor
+que `feed()` internamente para no divergir), y `resetAll()` (que es
+`reset()` **más** `preRoll.clear()`).
+
+### Tests nuevos (total suite ahora ~86):
+- `AstChunkRouterTest` (5 nuevos post-Fase 5): low-RMS discard, high-RMS
+  pass-through, meta-text discard con `expectNoEvents()` sobre
+  `TranslationReady`, case-insensitive match, clean replies pasan
+  cuando la lista está configurada. + 1 nuevo del pattern-leak con
+  `AstConfig` default.
+- `AudioChunkerTest` (2 nuevos): `currentSampleCount` tracking,
+  `resetAll` clears buffer + preRoll (verifica que un nuevo SPEECH
+  frame post-reset no arrastra pre-roll viejo — el buffer nuevo tiene
+  exactamente `BLOCK` samples).
+
+### Issues conocidos pendientes (no blocking):
+
+1. **Feedback loop mic ↔ speaker (físico)** — el mute software cortó
+   el ciclo digital, pero cuando el JBL Go 4 está pegado al Saramonic
+   USB, el propio Silero VAD puede confundirse con el eco durante los
+   transients de fin de playback (el mute baja justo antes de que se
+   apague el último buffer del `AudioTrack`). Solución producción:
+   mic unidireccional apuntando lejos del speaker + speaker cableado
+   USB DAC (sin BT, para latencia determinística).
+
+2. **Gemma con slang mexicano produce traducciones garbled** —
+   ejemplo real en device: "no mames" → "store no asa". El modelo
+   Gemma 4 E4B está entrenado con español neutro; expresiones muy
+   coloquiales (regionalismos, groserías, contracciones informales)
+   caen en OOV semántico. Optimización futura: (a) tuning del prompt
+   con hints de registro ("informal Latin American Spanish"), (b)
+   evaluar un modelo fine-tuned para es-MX, (c) fallback a un
+   translator de texto si Gemma falla en confianza.
+
+3. **Latencia primera frase ~14 s** — sigue siendo el mismo cuello:
+   acumulación 6 s (max chunk) + Gemma 2.8 s + Kokoro 5 s. Los filtros
+   RMS + mute no cambian la latencia percibida en el happy path.
+   Siguiente: **Fase 6 Streaming AST** (`AudioStreamingEnabled` en
+   LiteRT-LM) reduce Gemma a "primera palabra en ~500 ms",
+   posiblemente combinado con streaming TTS por oración → percepción
+   ~2–3 s.
+
+4. **JBL Go 4 BT se desconecta por inactividad** — en el testing
+   sostenido de estabilización el speaker BT se pone a dormir después
+   de ~30–60 s sin audio; al volver a hablar los primeros ~300 ms de
+   TTS se pierden porque el codec A2DP tarda en re-negociar. Sin
+   solución razonable en software; reemplazar con speaker cableado
+   USB DAC en producción.
+
+---
+
+## Siguiente: Fase 6 — Streaming AST
+
+El siguiente cuello de latencia real es Gemma AST full-utterance
+(~2.8 s por chunk). LiteRT-LM 0.12.0 expone `AudioStreamingEnabled` en
+`EngineConfig` que — en teoría — permite alimentar audio a Gemma en
+tiempo real y recibir tokens conforme se generan, en vez de esperar
+el chunk completo + esperar la traducción completa. Esto colapsa dos
+esperas serializadas en una sola con solapamiento parcial.
+
+Plan de Fase 6:
+1. **Investigación LiteRT-LM streaming API**: leer el source del SDK
+   (o issues/PRs) para confirmar qué garantía ofrece `AudioStreamingEnabled`
+   — ¿es truly streaming en input (chunks parciales), en output
+   (partial tokens), o ambos? La documentación es escueta.
+2. **POC de streaming input**: mandar los chunks del `AudioChunker` a
+   Gemma antes de que terminen (partial samples cada ~500 ms) y medir
+   si la traducción sale antes.
+3. **Streaming TTS por oración**: `KokoroTtsEngine` ya divide por
+   oraciones; encolar cada oración al `AudioTrack` apenas termina su
+   inferencia, sin esperar a la última.
+4. **Pre-buffer `AudioTrack`**: escribir ~200 ms de silencio al inicio
+   para tapar la latencia de arranque del stream A2DP y evitar clip
+   inicial.
+
+Objetivo Fase 6: latencia percibida de la primera palabra inglesa
+en ≤ 3 s desde end-of-speech (vs los ~14 s actuales).
+
+Cuando Fase 6 cierre, entonces sí consolidamos los 5 POCs
+(`audio/`, `vad/`, `chunker/`, `pipeline/`, `ast/`, `tts/`) en
+`translator-android/` como app de producción.
