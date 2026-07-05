@@ -8,6 +8,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "TtsAudioPlayer"
 
@@ -29,6 +30,17 @@ private const val TAG = "TtsAudioPlayer"
  */
 class TtsAudioPlayer(
     private val sampleRate: Int = 24_000,
+    /**
+     * Shared flag toggled while [play] is actively writing samples to the
+     * `AudioTrack`. The VAD/chunker pipeline reads this to short-circuit
+     * incoming mic frames during playback — otherwise the mic picks up
+     * the speaker output and feeds it back into Gemma as new "speech".
+     *
+     * Owned by the ViewModel; the player only sets it. Default is an
+     * unshared instance so tests and standalone uses work without any
+     * wiring.
+     */
+    private val ttsPlaying: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
 
     private var track: AudioTrack? = null
@@ -77,21 +89,29 @@ class TtsAudioPlayer(
     suspend fun play(pcm: ShortArray) = mutex.withLock {
         val t = track ?: error("TtsAudioPlayer not initialised — call init() first")
         if (pcm.isEmpty()) return@withLock
-        // Write in ~100 ms chunks so a cancellation lands within ~100 ms.
-        val chunkSize = (sampleRate / 10).coerceAtLeast(256)
-        var off = 0
-        while (off < pcm.size) {
-            if (!currentCoroutineContext().isActive) {
-                Log.i(TAG, "play: cancelled at offset $off / ${pcm.size}")
-                return@withLock
+        // Raise the flag BEFORE the first sample hits the DAC so the VAD
+        // pipeline mutes in time; lower it in `finally` so cancellations
+        // don't leave the mic gated shut.
+        ttsPlaying.set(true)
+        try {
+            // Write in ~100 ms chunks so a cancellation lands within ~100 ms.
+            val chunkSize = (sampleRate / 10).coerceAtLeast(256)
+            var off = 0
+            while (off < pcm.size) {
+                if (!currentCoroutineContext().isActive) {
+                    Log.i(TAG, "play: cancelled at offset $off / ${pcm.size}")
+                    return@withLock
+                }
+                val n = minOf(chunkSize, pcm.size - off)
+                val written = t.write(pcm, off, n)
+                if (written < 0) {
+                    Log.e(TAG, "AudioTrack.write returned $written — aborting")
+                    return@withLock
+                }
+                off += written
             }
-            val n = minOf(chunkSize, pcm.size - off)
-            val written = t.write(pcm, off, n)
-            if (written < 0) {
-                Log.e(TAG, "AudioTrack.write returned $written — aborting")
-                return@withLock
-            }
-            off += written
+        } finally {
+            ttsPlaying.set(false)
         }
     }
 

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "VadChunkingPipeline"
 
@@ -75,6 +76,28 @@ class VadChunkingPipeline(
     @Volatile private var framesEmitted: Long = 0
     @Volatile private var vadInferences: Long = 0
     @Volatile private var loggedSampleStats: Int = 0  // first 5 frames get a per-frame stats line
+    @Volatile private var mutedFramesDropped: Long = 0
+    @Volatile private var wasMuted: Boolean = false
+
+    /**
+     * Shared flag driven by [com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer].
+     * While `true`, [handleAudioData] drops every incoming frame — the mic is
+     * likely picking up the TTS output through the speaker and re-feeding it
+     * into Gemma. Reset to `null` in [stop] so a fresh [start] can rebind.
+     */
+    @Volatile private var ttsPlaying: AtomicBoolean? = null
+
+    /** Frames skipped since [start] because the TTS was speaking. */
+    val totalMutedFrames: Long get() = mutedFramesDropped
+
+    /**
+     * Bind the shared TTS-playing flag. Must be called BEFORE [start].
+     * Passing `null` disables muting (default).
+     */
+    fun setTtsPlayingRef(ref: AtomicBoolean?) {
+        ttsPlaying = ref
+        Log.i(TAG, "setTtsPlayingRef: ${if (ref == null) "disabled" else "enabled"}")
+    }
 
     fun start(scope: CoroutineScope) {
         if (isRunning) {
@@ -88,6 +111,8 @@ class VadChunkingPipeline(
         framesEmitted = 0
         vadInferences = 0
         loggedSampleStats = 0
+        mutedFramesDropped = 0
+        wasMuted = false
 
         job = scope.launch(Dispatchers.Default) {
             bus.emit(AudioEvent.EngineStatus(
@@ -159,6 +184,27 @@ class VadChunkingPipeline(
             bus.emit(AudioEvent.EngineStatus(
                 "Pipeline received first AudioData (${event.samples.size} samples)"))
             Log.i(TAG, "First AudioData event received: ${event.samples.size} samples")
+        }
+
+        // If TTS is currently talking, drop the frame entirely — the mic
+        // is almost certainly picking up the speaker output. Log only on
+        // the edges (start / end of a mute window) so 30 frames/s of speech
+        // don't spam logcat.
+        val muted = ttsPlaying?.get() == true
+        if (muted != wasMuted) {
+            wasMuted = muted
+            if (muted) {
+                Log.i(TAG, "TTS playing → muting VAD input")
+                bus.emit(AudioEvent.EngineStatus("VAD muted: TTS is speaking"))
+            } else {
+                Log.i(TAG, "TTS finished → un-muting VAD input (droppedFrames=$mutedFramesDropped)")
+                bus.emit(AudioEvent.EngineStatus(
+                    "VAD un-muted (dropped ${mutedFramesDropped} mic events during playback)"))
+            }
+        }
+        if (muted) {
+            mutedFramesDropped += 1
+            return
         }
 
         // Decimate to the target Silero rate if Oboe opened the device at a

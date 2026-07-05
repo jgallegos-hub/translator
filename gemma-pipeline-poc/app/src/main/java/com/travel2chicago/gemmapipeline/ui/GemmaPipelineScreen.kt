@@ -232,6 +232,33 @@ fun GemmaPipelineScreen(
                         fontWeight = FontWeight.Medium,
                     )
                 }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        "Skipped low-RMS: ${state.totalDiscardedLowEnergy}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Meta-text dropped: ${state.totalDiscardedMeta}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        if (state.ttsPlaying) "🔇 VAD muted (TTS)" else "🎙 VAD live",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (state.ttsPlaying)
+                            MaterialTheme.colorScheme.tertiary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.mutedMicFrames > 0) {
+                    Text(
+                        "Muted mic events since start: ${state.mutedMicFrames}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 if (state.translations.isEmpty()) {
                     Text(

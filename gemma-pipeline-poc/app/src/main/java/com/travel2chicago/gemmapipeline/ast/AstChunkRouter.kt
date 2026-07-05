@@ -62,6 +62,8 @@ class AstChunkRouter(
     private val droppedCount = AtomicLong(0)
     private val totalLatencyMs = AtomicLong(0)
     private val errorCount = AtomicLong(0)
+    private val lowEnergyDiscardCount = AtomicLong(0)
+    private val metaTextDiscardCount = AtomicLong(0)
 
     val isRunning: Boolean
         get() = producerJob?.isActive == true && consumerJob?.isActive == true
@@ -70,6 +72,10 @@ class AstChunkRouter(
     val totalTranslated: Long get() = translatedCount.get()
     val totalDropped: Long get() = droppedCount.get()
     val totalErrors: Long get() = errorCount.get()
+    /** Chunks skipped BEFORE Gemma because their RMS was under [AstConfig.rmsThreshold]. */
+    val totalDiscardedLowEnergy: Long get() = lowEnergyDiscardCount.get()
+    /** Translations dropped AFTER Gemma because the reply matched a meta-text pattern. */
+    val totalDiscardedMeta: Long get() = metaTextDiscardCount.get()
     val averageLatencyMs: Double get() {
         val n = translatedCount.get()
         return if (n > 0) totalLatencyMs.get().toDouble() / n else 0.0
@@ -210,6 +216,23 @@ class AstChunkRouter(
     }
 
     private suspend fun processChunk(chunk: AudioEvent.ChunkReady) {
+        // Pre-filter: skip near-silent chunks BEFORE the expensive Gemma call.
+        // See AstConfig.rmsThreshold for rationale.
+        if (config.rmsThreshold > 0.0) {
+            val rms = computeRms(chunk.samples)
+            if (rms < config.rmsThreshold) {
+                val n = lowEnergyDiscardCount.incrementAndGet()
+                Log.i(
+                    TAG,
+                    "Chunk discarded: low RMS (${"%.1f".format(rms)} < ${config.rmsThreshold}) " +
+                        "durMs=${chunk.durationMs} peak=${chunk.peak} totalLowEnergy=$n",
+                )
+                bus.emit(AudioEvent.EngineStatus(
+                    "AST skipped low-energy chunk (rms=${"%.0f".format(rms)}, total=$n)"))
+                return
+            }
+        }
+
         val wav = try {
             WavBuilder.build(chunk.samples, sampleRate = sampleRate, channels = 1)
         } catch (t: Throwable) {
@@ -232,6 +255,22 @@ class AstChunkRouter(
         translatedCount.incrementAndGet()
         totalLatencyMs.addAndGet(result.latencyMs)
 
+        // Post-filter: Gemma sometimes replies with meta-text on near-silent
+        // chunks that slipped past the RMS gate. Kill the reply BEFORE it
+        // reaches TtsRouter so Kokoro never speaks "please provide the audio".
+        val matched = matchMetaPattern(result.text)
+        if (matched != null) {
+            val n = metaTextDiscardCount.incrementAndGet()
+            Log.i(
+                TAG,
+                "Translation discarded: meta-text detected ('$matched') text='${result.text.take(80)}' " +
+                    "totalMeta=$n",
+            )
+            bus.emit(AudioEvent.EngineStatus(
+                "AST dropped meta-text reply ('$matched', total=$n)"))
+            return
+        }
+
         bus.emit(
             AudioEvent.TranslationReady(
                 text = result.text,
@@ -242,6 +281,29 @@ class AstChunkRouter(
                 timestampNs = System.nanoTime(),
             ),
         )
+    }
+
+    private fun matchMetaPattern(text: String): String? {
+        if (config.metaTextPatterns.isEmpty()) return null
+        val lower = text.trim().lowercase()
+        if (lower.isEmpty()) return null
+        return config.metaTextPatterns.firstOrNull { pat -> lower.contains(pat) }
+    }
+
+    /**
+     * Per-sample RMS on int16 PCM. Uses `Int` accumulation up-front and
+     * `Double` sums to avoid overflow on long chunks — a 6-second chunk at
+     * 16 kHz is 96 000 samples, and `sum(s*s)` on peaks-near-32 767 comfortably
+     * exceeds `Long.MAX_VALUE` if you accumulate in the wrong type.
+     */
+    private fun computeRms(samples: ShortArray): Double {
+        if (samples.isEmpty()) return 0.0
+        var sumSq = 0.0
+        for (s in samples) {
+            val v = s.toDouble()
+            sumSq += v * v
+        }
+        return kotlin.math.sqrt(sumSq / samples.size)
     }
 
     private suspend fun emitError(message: String, chunk: AudioEvent.ChunkReady) {

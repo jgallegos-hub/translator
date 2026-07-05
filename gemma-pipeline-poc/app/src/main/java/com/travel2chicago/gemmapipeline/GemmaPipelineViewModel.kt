@@ -86,10 +86,19 @@ data class GemmaPipelineUiState(
     val astErrors: Long = 0,
     val astQueueSize: Int = 0,
     val astAvgLatencyMs: Double = 0.0,
+    /** Chunks skipped BEFORE Gemma because RMS was under the router threshold. */
+    val totalDiscardedLowEnergy: Long = 0,
+    /** Replies dropped AFTER Gemma because they matched a meta-text pattern. */
+    val totalDiscardedMeta: Long = 0,
     val translations: List<TranslationEntry> = emptyList(),
 
     val totalSamplesCaptured: Long = 0,
     val overflowCount: Long = 0,
+
+    /** True while `TtsAudioPlayer` is writing to `AudioTrack` — VAD is muted. */
+    val ttsPlaying: Boolean = false,
+    /** Frames dropped by the pipeline while [ttsPlaying] was true. */
+    val mutedMicFrames: Long = 0,
 
     // Kokoro TTS engine state
     val kokoroLoading: Boolean = false,
@@ -141,7 +150,18 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     private val deviceManager = AudioDeviceManager(app, bus)
     private val captureManager = AudioCaptureManager(nativeEngine, bus, audioConfig, viewModelScope)
     private val playbackManager = AudioPlaybackManager(app, nativeEngine, audioConfig, viewModelScope)
-    private val ttsPlayer = TtsAudioPlayer(sampleRate = ttsConfig.sampleRate)
+    /**
+     * Shared VAD-mute flag. `TtsAudioPlayer` raises it while writing samples
+     * to `AudioTrack`; the VAD pipeline reads it via `setTtsPlayingRef` and
+     * drops mic frames while it's `true`. Prevents the speaker output from
+     * being re-captured and re-translated.
+     */
+    private val ttsPlaying = AtomicBoolean(false)
+
+    private val ttsPlayer = TtsAudioPlayer(
+        sampleRate = ttsConfig.sampleRate,
+        ttsPlaying = ttsPlaying,
+    )
 
     @Volatile private var sileroModel: SileroVadModel? = null
     @Volatile private var pipeline: VadChunkingPipeline? = null
@@ -401,6 +421,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         val actualSr = nativeEngine.actualSampleRateCapture()
         log("Capture actual sample rate: $actualSr Hz")
         p.setCaptureSampleRate(actualSr)
+        p.setTtsPlayingRef(ttsPlaying)
         p.start(viewModelScope)
 
         val r = AstChunkRouter(bus, g, astConfig, sampleRate = audioConfig.format.sampleRate)
@@ -427,7 +448,11 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 totalTranslated = 0,
                 totalDropped = 0,
                 astErrors = 0,
+                totalDiscardedLowEnergy = 0,
+                totalDiscardedMeta = 0,
                 translations = emptyList(),
+                ttsPlaying = false,
+                mutedMicFrames = 0,
                 totalSynthesized = 0,
                 totalSpoken = 0,
                 ttsDropped = 0,
@@ -559,13 +584,16 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     private fun handleEvent(event: AudioEvent) {
         when (event) {
             is AudioEvent.AudioData -> {
+                val p = pipeline
                 _state.update {
                     it.copy(
                         totalSamplesCaptured = it.totalSamplesCaptured + event.samples.size,
-                        vadState = pipeline?.vadState ?: it.vadState,
-                        vadProbability = pipeline?.lastProbability ?: it.vadProbability,
-                        collecting = pipeline?.isCollecting ?: it.collecting,
+                        vadState = p?.vadState ?: it.vadState,
+                        vadProbability = p?.lastProbability ?: it.vadProbability,
+                        collecting = p?.isCollecting ?: it.collecting,
                         astQueueSize = router?.queueSize ?: 0,
+                        ttsPlaying = ttsPlaying.get(),
+                        mutedMicFrames = p?.totalMutedFrames ?: it.mutedMicFrames,
                     )
                 }
             }
@@ -605,6 +633,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         totalTranslated = r?.totalTranslated ?: it.totalTranslated,
                         astAvgLatencyMs = r?.averageLatencyMs ?: it.astAvgLatencyMs,
                         astQueueSize = r?.queueSize ?: 0,
+                        totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
+                        totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
                     )
                 }
                 log("Translation #$nextIdx (${event.latencyMs}ms): ${event.text.take(80)}")
@@ -615,6 +645,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         astErrors = r?.totalErrors ?: (it.astErrors + 1),
                         totalDropped = r?.totalDropped ?: it.totalDropped,
+                        totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
+                        totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
                     )
                 }
                 log("[ERROR] AST: ${event.message}")

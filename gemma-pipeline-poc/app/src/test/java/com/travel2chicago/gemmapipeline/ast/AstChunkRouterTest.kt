@@ -86,10 +86,19 @@ class AstChunkRouterTest {
         timestampNs = ts,
     )
 
-    private fun config(queueCapacity: Int = 4) = AstConfig(
+    private fun config(
+        queueCapacity: Int = 4,
+        rmsThreshold: Double = 0.0,
+        metaTextPatterns: List<String> = emptyList(),
+    ) = AstConfig(
         modelDirPath = "/sdcard/unused-in-test",
         prompt = "Translate.",
         queueCapacity = queueCapacity,
+        // Filters default to OFF in tests so seed-based chunks (whose RMS
+        // varies from 100 to a few thousand) always reach the engine.
+        // The filter tests re-enable them explicitly.
+        rmsThreshold = rmsThreshold,
+        metaTextPatterns = metaTextPatterns,
     )
 
     @Test
@@ -350,4 +359,129 @@ class AstChunkRouterTest {
         assertEquals(150.0, router.averageLatencyMs, 1e-9)
         router.cancel()
     }
+
+    @Test
+    fun `low-RMS chunks are dropped before reaching Gemma`() = runTest(UnconfinedTestDispatcher()) {
+        val bus = AudioEventBus()
+        val engine = FakeEngine(nextResult = AstResult("should not run", 1L, "FAKE"))
+        // Threshold 500; silence chunk has RMS = 0 → discarded.
+        val router = AstChunkRouter(
+            bus, engine,
+            config(rmsThreshold = 500.0),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+        )
+        router.start(backgroundScope)
+        advanceUntilIdle()
+
+        val silence = AudioEvent.ChunkReady(
+            samples = ShortArray(16_000),  // all zeros
+            durationMs = 1000,
+            peak = 0,
+            timestampNs = 42L,
+        )
+        bus.emit(silence)
+        advanceUntilIdle()
+
+        assertEquals(0, engine.translateCalls.get())
+        assertEquals(0L, router.totalTranslated)
+        assertEquals(1L, router.totalDiscardedLowEnergy)
+        router.cancel()
+    }
+
+    @Test
+    fun `high-RMS chunks pass the RMS gate and reach Gemma`() = runTest(UnconfinedTestDispatcher()) {
+        val bus = AudioEventBus()
+        val engine = FakeEngine(nextResult = AstResult("ok", 1L, "FAKE"))
+        // seed=10 → constant sample 1000 → RMS 1000 > threshold 500.
+        val router = AstChunkRouter(
+            bus, engine,
+            config(rmsThreshold = 500.0),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+        )
+        router.start(backgroundScope)
+        advanceUntilIdle()
+
+        bus.emit(chunk(seed = 10))
+        advanceUntilIdle()
+
+        assertEquals(1, engine.translateCalls.get())
+        assertEquals(1L, router.totalTranslated)
+        assertEquals(0L, router.totalDiscardedLowEnergy)
+        router.cancel()
+    }
+
+    @Test
+    fun `meta-text replies are dropped and never reach the bus`() = runTest(UnconfinedTestDispatcher()) {
+        val bus = AudioEventBus()
+        val engine = FakeEngine(
+            nextResult = AstResult("Sorry, the audio was not provided.", 100L, "FAKE"),
+        )
+        val router = AstChunkRouter(
+            bus, engine,
+            config(metaTextPatterns = listOf("not provided", "please provide")),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+        )
+        router.start(backgroundScope)
+        advanceUntilIdle()
+
+        // TranslationReady must NOT arrive for this chunk.
+        bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+            bus.emit(chunk(seed = 1))
+            advanceUntilIdle()
+            expectNoEvents()
+            cancelAndConsumeRemainingEvents()
+        }
+
+        assertEquals(1, engine.translateCalls.get())
+        assertEquals(1L, router.totalTranslated)  // Gemma ran; counter still climbs
+        assertEquals(1L, router.totalDiscardedMeta)
+        router.cancel()
+    }
+
+    @Test
+    fun `meta-text match is case- and punctuation-insensitive via lowercase substring`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeEngine(
+                nextResult = AstResult("  I CANNOT TRANSLATE what wasn't spoken.  ", 1L, "FAKE"),
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(metaTextPatterns = listOf("cannot translate")),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.emit(chunk(seed = 1))
+            advanceUntilIdle()
+
+            assertEquals(1L, router.totalDiscardedMeta)
+            router.cancel()
+        }
+
+    @Test
+    fun `clean replies still pass through when meta-text list is configured`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeEngine(nextResult = AstResult("Hello, how are you?", 1L, "FAKE"))
+            val router = AstChunkRouter(
+                bus, engine,
+                config(metaTextPatterns = listOf("not provided", "please provide")),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                val tr = awaitItem()
+                assertEquals("Hello, how are you?", tr.text)
+                cancelAndConsumeRemainingEvents()
+            }
+
+            assertEquals(0L, router.totalDiscardedMeta)
+            router.cancel()
+        }
 }
