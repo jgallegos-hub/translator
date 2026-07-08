@@ -10,6 +10,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
+import kotlinx.coroutines.flow.onCompletion
 import java.io.File
 
 private const val TAG = "GemmaAstEngine"
@@ -45,6 +46,31 @@ interface GemmaAstEngine : AutoCloseable {
      * underlying LiteRT-LM call fails.
      */
     fun translate(wavBytes: ByteArray, prompt: String): AstResult
+
+    /**
+     * Streaming variant used by Fase 6 Stage A. Suspends until Gemma finishes
+     * decoding the reply, but calls [onToken] for every partial [Message]
+     * emitted by `Conversation.sendMessageAsync(...): Flow<Message>` — the
+     * router uses those callbacks to detect sentence boundaries and emit
+     * per-sentence `TranslationReady` events so Kokoro can start speaking
+     * before Gemma is done.
+     *
+     * Each token passed to [onToken] is the delta emitted by the SDK (the
+     * text NEWLY produced since the previous callback), not the accumulated
+     * reply. See `LiteRtGemmaAstEngine.translateStreaming` for the exact
+     * semantics.
+     *
+     * Returns the aggregate [AstResult] — [AstResult.text] is the fully
+     * accumulated reply (already `.trim()`-ed) and [AstResult.latencyMs] the
+     * total wall-clock spent inside the streaming call. Throws on failure;
+     * the router treats a thrown exception the same as `translate()` (emit
+     * `AstError`, keep the consumer alive).
+     */
+    suspend fun translateStreaming(
+        wavBytes: ByteArray,
+        prompt: String,
+        onToken: suspend (token: String) -> Unit,
+    ): AstResult
 }
 
 /**
@@ -133,6 +159,68 @@ class LiteRtGemmaAstEngine private constructor(
 
         val text = response.toString().trim()
         Log.i(TAG, "translate: ${wavBytes.size} wav bytes → ${text.length} chars in ${elapsedMs}ms ($backendUsed)")
+        return AstResult(text = text, latencyMs = elapsedMs, backendUsed = backendUsed)
+    }
+
+    override suspend fun translateStreaming(
+        wavBytes: ByteArray,
+        prompt: String,
+        onToken: suspend (token: String) -> Unit,
+    ): AstResult {
+        check(!closed) { "Engine is closed" }
+        require(wavBytes.size > 44) { "WAV bytes too small (${wavBytes.size}); missing header?" }
+        require(prompt.isNotBlank()) { "Prompt must not be blank" }
+
+        // Same content order as translate() — audio FIRST, text LAST.
+        val contents = Contents.of(
+            Content.AudioBytes(wavBytes),
+            Content.Text(prompt),
+        )
+
+        // Same one-Conversation-per-Engine discipline as translate(). We MUST
+        // close the prior Conversation before creating this one; we MUST NOT
+        // close the new one until the streaming Flow has fully drained,
+        // otherwise LiteRT-LM 0.12.0 throws `FAILED_PRECONDITION: A session
+        // already exists` on the next translate/translateStreaming call.
+        closeCurrentConversation()
+
+        val conv: Conversation = engine.createConversation(
+            ConversationConfig(samplerConfig = samplerConfig),
+        )
+        currentConversation = conv
+
+        val fullText = StringBuilder()
+        val startNs = System.nanoTime()
+
+        // Flow<Message> is coroutine-native; `onCompletion` runs on both the
+        // success and error branches, guaranteeing we release the
+        // Conversation after the JNI decoder has drained. Closing inside
+        // `collect` would race with the SDK's own finalisation and can leak
+        // the native session.
+        conv.sendMessageAsync(contents)
+            .onCompletion { closeCurrentConversation() }
+            .collect { msg ->
+                // Assumption: each `Message` in the Flow is the DELTA that
+                // was decoded since the previous callback (i.e. one or more
+                // new tokens as text), not the accumulated reply. If a
+                // future SDK revision changes this to "cumulative", the
+                // router will double-count text — flip to a diff strategy
+                // (msg.substring(fullText.length)) then. The first-boot
+                // log line below prints the first delta so we can eyeball
+                // it in device logcat.
+                val delta = msg.toString()
+                if (delta.isNotEmpty()) {
+                    if (fullText.isEmpty()) {
+                        Log.i(TAG, "translateStreaming: first delta '${delta.take(40)}' at ${(System.nanoTime() - startNs) / 1_000_000}ms")
+                    }
+                    fullText.append(delta)
+                    onToken(delta)
+                }
+            }
+
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
+        val text = fullText.toString().trim()
+        Log.i(TAG, "translateStreaming: ${wavBytes.size} wav bytes → ${text.length} chars in ${elapsedMs}ms ($backendUsed)")
         return AstResult(text = text, latencyMs = elapsedMs, backendUsed = backendUsed)
     }
 

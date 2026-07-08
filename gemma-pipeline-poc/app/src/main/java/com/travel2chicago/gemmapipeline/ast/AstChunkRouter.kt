@@ -241,6 +241,17 @@ class AstChunkRouter(
             return
         }
 
+        // Fase 6 Stage A — branch on the streaming flag. Off by default; the
+        // legacy path is preserved byte-for-byte so a device regression is a
+        // single-toggle revert.
+        if (config.streamingEnabled) {
+            processChunkStreaming(chunk, wav)
+        } else {
+            processChunkOneShot(chunk, wav)
+        }
+    }
+
+    private suspend fun processChunkOneShot(chunk: AudioEvent.ChunkReady, wav: ByteArray) {
         val result = try {
             engine.translate(wav, config.prompt)
         } catch (t: Throwable) {
@@ -281,6 +292,183 @@ class AstChunkRouter(
                 timestampNs = System.nanoTime(),
             ),
         )
+    }
+
+    /**
+     * Fase 6 Stage A — token-streaming path.
+     *
+     * Router owns the sentence boundary detection (in-line — not a shared
+     * util) and the meta-text guard. Gemma's tokens are forwarded as they
+     * arrive; each time a terminator (`.`, `!`, `?`) closes a sentence, the
+     * router runs the meta-text filter on the ENTIRE accumulated buffer up
+     * to and including that terminator. Rationale: preambles like "The
+     * translation of the Spanish audio is: Hello." span multiple token
+     * emissions — a per-sentence-only check would miss the "translation of"
+     * fragment.
+     *
+     * Emission strategy: the newly-closed sentence is HELD as `pending`
+     * until either (a) the next terminator fires — pending gets emitted
+     * with `isFinal=false` and the new one takes its place — or (b) the
+     * Flow completes — pending is emitted with `isFinal=true`. Trailing
+     * non-terminated text at end-of-flow is emitted as the final event.
+     * This gives downstream consumers a reliable "utterance ended" signal
+     * (Stage B's `TtsAudioPlayer.endUtterance` will use it) without a
+     * separate closer event on the bus.
+     *
+     * On meta-text hit anywhere in the accumulated buffer, we set a
+     * `dropRestOfChunk` flag: no further sentences from this chunk are
+     * emitted, and the currently-pending sentence (which pre-dated the
+     * preamble hit) is also discarded — it may itself have been part of
+     * the preamble. We keep consuming the Flow so LiteRT-LM's decoder
+     * drains cleanly.
+     */
+    private suspend fun processChunkStreaming(chunk: AudioEvent.ChunkReady, wav: ByteArray) {
+        val sb = StringBuilder()
+        var lastCutOffset = 0
+        var sentenceCounter = 0
+        var dropRestOfChunk = false
+        var pendingText: String? = null
+        var pendingIndex = -1
+
+        suspend fun emitPendingAsNonFinal() {
+            val p = pendingText ?: return
+            bus.emit(
+                AudioEvent.TranslationReady(
+                    text = p,
+                    sourceChunkTimestampNs = chunk.timestampNs,
+                    sourceDurationMs = chunk.durationMs,
+                    sourcePeak = chunk.peak,
+                    // Per-sentence latency isn't meaningful pre-final; the
+                    // aggregate lands on the isFinal=true event below.
+                    latencyMs = 0L,
+                    timestampNs = System.nanoTime(),
+                    sentenceIndex = pendingIndex,
+                    isFinal = false,
+                ),
+            )
+            pendingText = null
+            pendingIndex = -1
+        }
+
+        val result = try {
+            engine.translateStreaming(wav, config.prompt) { delta ->
+                if (dropRestOfChunk) return@translateStreaming
+                sb.append(delta)
+
+                // One delta may contain multiple terminators (e.g. Gemma
+                // emits a whole clause at once). Drain them all before
+                // yielding back for the next token.
+                while (!dropRestOfChunk) {
+                    val termIdx = findSentenceTerminator(sb, lastCutOffset)
+                    if (termIdx < 0) break
+                    val sentence = sb.substring(lastCutOffset, termIdx + 1).trim()
+                    lastCutOffset = termIdx + 1
+                    if (sentence.isEmpty()) continue
+
+                    val matched = matchMetaPattern(sb.substring(0, lastCutOffset))
+                    if (matched != null) {
+                        val n = metaTextDiscardCount.incrementAndGet()
+                        Log.i(
+                            TAG,
+                            "Streaming: dropping rest of chunk after meta-text '$matched' " +
+                                "acc='${sb.take(80)}' totalMeta=$n",
+                        )
+                        bus.emit(AudioEvent.EngineStatus(
+                            "AST dropped meta-text reply ('$matched', total=$n)"))
+                        // Discard any pending — it pre-dated the preamble
+                        // hit and may itself be preamble text.
+                        pendingText = null
+                        pendingIndex = -1
+                        dropRestOfChunk = true
+                        return@translateStreaming
+                    }
+
+                    // A new closed sentence is available. Flush the prior
+                    // pending as non-final; hold this one until the next
+                    // boundary or flow completion.
+                    emitPendingAsNonFinal()
+                    pendingText = sentence
+                    pendingIndex = sentenceCounter++
+                }
+            }
+        } catch (t: Throwable) {
+            errorCount.incrementAndGet()
+            Log.e(TAG, "Gemma translateStreaming() failed", t)
+            emitError("Gemma translateStreaming failed: ${t.javaClass.simpleName}: ${t.message}", chunk)
+            return
+        }
+
+        // Aggregate metrics — same semantics as the one-shot path: one chunk
+        // has been fully processed by Gemma.
+        translatedCount.incrementAndGet()
+        totalLatencyMs.addAndGet(result.latencyMs)
+
+        if (dropRestOfChunk) return
+
+        // Final meta-text check on the entire reply — defensive against
+        // preambles that never contain a terminator ("The audio was not
+        // provided" with no period). This mirrors the one-shot filter's
+        // whole-text semantics.
+        val finalMatched = matchMetaPattern(sb.toString())
+        if (finalMatched != null) {
+            val n = metaTextDiscardCount.incrementAndGet()
+            Log.i(TAG, "Streaming: final meta-text match '$finalMatched' totalMeta=$n")
+            bus.emit(AudioEvent.EngineStatus(
+                "AST dropped meta-text reply ('$finalMatched', total=$n)"))
+            return
+        }
+
+        val trailing = sb.substring(lastCutOffset).trim()
+        when {
+            trailing.isNotEmpty() -> {
+                // Both pending + trailing exist — pending is not final,
+                // trailing is.
+                emitPendingAsNonFinal()
+                bus.emit(
+                    AudioEvent.TranslationReady(
+                        text = trailing,
+                        sourceChunkTimestampNs = chunk.timestampNs,
+                        sourceDurationMs = chunk.durationMs,
+                        sourcePeak = chunk.peak,
+                        latencyMs = result.latencyMs,
+                        timestampNs = System.nanoTime(),
+                        sentenceIndex = sentenceCounter++,
+                        isFinal = true,
+                    ),
+                )
+            }
+            pendingText != null -> {
+                // The last closed sentence IS the final one.
+                bus.emit(
+                    AudioEvent.TranslationReady(
+                        text = pendingText!!,
+                        sourceChunkTimestampNs = chunk.timestampNs,
+                        sourceDurationMs = chunk.durationMs,
+                        sourcePeak = chunk.peak,
+                        latencyMs = result.latencyMs,
+                        timestampNs = System.nanoTime(),
+                        sentenceIndex = pendingIndex,
+                        isFinal = true,
+                    ),
+                )
+                pendingText = null
+                pendingIndex = -1
+            }
+            // else: reply was empty — emit nothing (consumer sees the
+            // metrics increment but no TranslationReady, same as the
+            // one-shot path when Gemma returns "").
+        }
+    }
+
+    /** In-line sentence terminator scan. `.`, `!`, `?` only — no abbreviation
+     *  handling. Kokoro's own `splitIntoSentences` does another pass, so a
+     *  mid-abbreviation split here is at worst a cosmetic mis-boundary. */
+    private fun findSentenceTerminator(sb: StringBuilder, from: Int): Int {
+        for (i in from until sb.length) {
+            val c = sb[i]
+            if (c == '.' || c == '!' || c == '?') return i
+        }
+        return -1
     }
 
     private fun matchMetaPattern(text: String): String? {

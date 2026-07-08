@@ -57,7 +57,18 @@ sealed class AudioEvent {
      * Gemma AST has produced a translation for a previously emitted [ChunkReady].
      * [sourceChunkTimestampNs] is the timestamp of the originating [ChunkReady]
      * so the UI can correlate translations with the chunks they came from.
-     * [latencyMs] is wall-clock time spent inside `Conversation.sendMessage`.
+     * [latencyMs] is wall-clock time spent inside `Conversation.sendMessage` for
+     * the non-streaming path; for streaming it's the time from the chunk's
+     * router entry to the current emission's first-token or per-sentence
+     * completion (approximate — see `AstChunkRouter`).
+     *
+     * **Streaming fields** ([sentenceIndex], [isFinal]) are populated only
+     * when `AstConfig.streamingEnabled = true`. In that mode Fase 6 emits ONE
+     * event per sentence of Gemma's reply so Kokoro can begin synthesising
+     * sentence 1 while Gemma is still decoding sentence 2. Consumers that
+     * don't care can ignore both fields — the non-streaming path emits a
+     * single event with `sentenceIndex = null` and `isFinal = true`, i.e.
+     * the pre-Fase-6 shape.
      */
     data class TranslationReady(
         val text: String,
@@ -66,6 +77,21 @@ sealed class AudioEvent {
         val sourcePeak: Int,
         val latencyMs: Long,
         val timestampNs: Long,
+        /**
+         * 0-based index within the reply for the source chunk when streaming
+         * is on. `null` in the non-streaming path (single-event-per-chunk
+         * contract preserved).
+         */
+        val sentenceIndex: Int? = null,
+        /**
+         * `true` when this is the LAST event the router will emit for the
+         * given [sourceChunkTimestampNs]. In the non-streaming path always
+         * `true`. In streaming: `false` for every sentence except the last
+         * (which may be a trailing non-terminated fragment or the final
+         * closed sentence). Consumers can use this to bookend per-utterance
+         * work — e.g. `TtsAudioPlayer.endUtterance` (Stage B).
+         */
+        val isFinal: Boolean = true,
     ) : AudioEvent()
 
     /**

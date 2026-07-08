@@ -78,6 +78,23 @@ data class AstConfig(
      * intentionally short — every entry here is a lever the model can
      * dodge with a rephrase, so we only list phrases observed in device.
      */
+    /**
+     * Fase 6 Stage A — token streaming from Gemma.
+     *
+     * When `true`, `AstChunkRouter` invokes `GemmaAstEngine.translateStreaming`
+     * and emits ONE `TranslationReady` per sentence as tokens arrive, so
+     * `TtsRouter` / `KokoroTtsEngine` can begin synthesising sentence 1 while
+     * Gemma is still decoding sentence 2. Each event carries `sentenceIndex`
+     * (0-based) and `isFinal` (true on the last one).
+     *
+     * When `false` (default) the router uses the legacy full-utterance
+     * `engine.translate(...)` path — one `ChunkReady` → one `TranslationReady`
+     * with `sentenceIndex = null`, `isFinal = true`. Left off at Fase 6 merge
+     * time so the first-boot APK behaves exactly like Fase 5; the ViewModel
+     * exposes a UI switch to flip it on for device testing.
+     */
+    val streamingEnabled: Boolean = false,
+
     val metaTextPatterns: List<String> = listOf(
         // Silence / no-input replies
         "not provided",

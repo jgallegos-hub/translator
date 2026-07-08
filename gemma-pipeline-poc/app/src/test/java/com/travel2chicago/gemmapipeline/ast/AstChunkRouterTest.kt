@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -76,6 +77,57 @@ class AstChunkRouterTest {
             throwOnNext?.let { throw it.also { throwOnNext = null } }
             return nextResult ?: AstResult("fallback", 1L, "FAKE")
         }
+        // Minimal streaming impl: emits the nextResult.text as one delta.
+        // Tests that need multi-token control use FakeStreamingEngine below.
+        override suspend fun translateStreaming(
+            wavBytes: ByteArray,
+            prompt: String,
+            onToken: suspend (String) -> Unit,
+        ): AstResult {
+            translateCalls.incrementAndGet()
+            val firstShort = ((wavBytes[44].toInt() and 0xff) or
+                ((wavBytes[45].toInt() and 0xff) shl 8)).toShort()
+            recordSeed(firstShort.toInt() / 100)
+            gate?.await()
+            throwOnNext?.let { throw it.also { throwOnNext = null } }
+            val result = nextResult ?: AstResult("fallback", 1L, "FAKE")
+            if (result.text.isNotEmpty()) onToken(result.text)
+            return result
+        }
+        override fun close() {}
+    }
+
+    /**
+     * Stream-only stub. Emits a pre-configured token sequence to
+     * `translateStreaming` and asserts if the router accidentally calls
+     * `translate` (which would signal `streamingEnabled=false` regressed).
+     */
+    private class FakeStreamingEngine(
+        private val tokens: List<String>,
+        private val latencyMs: Long = 100L,
+        private val throwOnStream: Throwable? = null,
+    ) : GemmaAstEngine {
+        val translateCalls = AtomicInteger(0)
+        override val isLoaded: Boolean = true
+        override val backendUsed: String = "FAKE-STREAM"
+        override val loadTimeMs: Long = 0L
+        override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
+            error("translate() called on streaming stub — test misconfiguration")
+        }
+        override suspend fun translateStreaming(
+            wavBytes: ByteArray,
+            prompt: String,
+            onToken: suspend (String) -> Unit,
+        ): AstResult {
+            translateCalls.incrementAndGet()
+            throwOnStream?.let { throw it }
+            for (t in tokens) if (t.isNotEmpty()) onToken(t)
+            return AstResult(
+                text = tokens.joinToString(""),
+                latencyMs = latencyMs,
+                backendUsed = "FAKE-STREAM",
+            )
+        }
         override fun close() {}
     }
 
@@ -90,6 +142,7 @@ class AstChunkRouterTest {
         queueCapacity: Int = 4,
         rmsThreshold: Double = 0.0,
         metaTextPatterns: List<String> = emptyList(),
+        streamingEnabled: Boolean = false,
     ) = AstConfig(
         modelDirPath = "/sdcard/unused-in-test",
         prompt = "Translate.",
@@ -99,6 +152,7 @@ class AstChunkRouterTest {
         // The filter tests re-enable them explicitly.
         rmsThreshold = rmsThreshold,
         metaTextPatterns = metaTextPatterns,
+        streamingEnabled = streamingEnabled,
     )
 
     @Test
@@ -522,6 +576,248 @@ class AstChunkRouterTest {
             }
 
             assertEquals(0L, router.totalDiscardedMeta)
+            router.cancel()
+        }
+
+    // ── Fase 6 Stage A — streaming path tests ────────────────────────────
+
+    @Test
+    fun `streaming multi-sentence emission emits one event per sentence, isFinal on last`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(
+                tokens = listOf("Hello", ". ", "World", "."),
+                latencyMs = 42L,
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+
+                val first = awaitItem()
+                assertEquals("Hello.", first.text)
+                assertEquals(0, first.sentenceIndex)
+                assertFalse(first.isFinal)
+
+                val second = awaitItem()
+                assertEquals("World.", second.text)
+                assertEquals(1, second.sentenceIndex)
+                assertTrue(second.isFinal)
+                assertEquals(42L, second.latencyMs)
+
+                cancelAndConsumeRemainingEvents()
+            }
+            assertEquals(1, engine.translateCalls.get())
+            assertEquals(1L, router.totalTranslated)
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming trailing non-terminated text becomes the final sentence`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(
+                tokens = listOf("Hello", ". ", "World with no end"),
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+
+                val first = awaitItem()
+                assertEquals("Hello.", first.text)
+                assertFalse(first.isFinal)
+
+                val second = awaitItem()
+                assertEquals("World with no end", second.text)
+                assertTrue(second.isFinal)
+                assertEquals(1, second.sentenceIndex)
+
+                cancelAndConsumeRemainingEvents()
+            }
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming single sentence marks the only event isFinal`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(tokens = listOf("Hola."))
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                val only = awaitItem()
+                assertEquals("Hola.", only.text)
+                assertEquals(0, only.sentenceIndex)
+                assertTrue(only.isFinal)
+                cancelAndConsumeRemainingEvents()
+            }
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming preamble split across tokens is caught and drops the whole chunk`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            // "The translation of" is split across two token deltas so a
+            // per-sentence-only filter would miss the "translation of"
+            // fragment. The router must check the accumulated buffer.
+            val engine = FakeStreamingEngine(
+                tokens = listOf("The tra", "nslation of the Spanish audio is: Hi", "."),
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(
+                    streamingEnabled = true,
+                    metaTextPatterns = listOf("translation of"),
+                ),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                expectNoEvents()
+                cancelAndConsumeRemainingEvents()
+            }
+            assertEquals(1L, router.totalDiscardedMeta)
+            assertEquals(1L, router.totalTranslated)  // still counts as processed
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming meta-text in a reply with no terminator is caught at flow end`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(
+                tokens = listOf("The audio", " was not provided"),  // no terminator
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(
+                    streamingEnabled = true,
+                    metaTextPatterns = listOf("not provided"),
+                ),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                expectNoEvents()
+                cancelAndConsumeRemainingEvents()
+            }
+            assertEquals(1L, router.totalDiscardedMeta)
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming engine exception produces AstError and router keeps consuming`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(
+                tokens = emptyList(),
+                throwOnStream = RuntimeException("stream boom"),
+            )
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.AstError>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                val err = awaitItem()
+                assertTrue(err.message.contains("stream boom"))
+                cancelAndConsumeRemainingEvents()
+            }
+            assertEquals(1, engine.translateCalls.get())
+            assertEquals(1L, router.totalErrors)
+            assertEquals(0L, router.totalTranslated)
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming path still respects the RMS pre-filter`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(tokens = listOf("should not run."))
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true, rmsThreshold = 500.0),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            val silence = AudioEvent.ChunkReady(
+                samples = ShortArray(16_000),  // rms = 0
+                durationMs = 1000,
+                peak = 0,
+                timestampNs = 42L,
+            )
+            bus.emit(silence)
+            advanceUntilIdle()
+
+            assertEquals(0, engine.translateCalls.get())
+            assertEquals(1L, router.totalDiscardedLowEnergy)
+            router.cancel()
+        }
+
+    @Test
+    fun `streaming multiple terminators in one delta are all drained in that iteration`() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Regression guard: the inner while-loop must extract every
+            // terminator in one delta before yielding for the next token.
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(tokens = listOf("A. B. C."))
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+                assertEquals("A.", awaitItem().text)
+                assertEquals("B.", awaitItem().text)
+                val third = awaitItem()
+                assertEquals("C.", third.text)
+                assertTrue(third.isFinal)
+                cancelAndConsumeRemainingEvents()
+            }
             router.cancel()
         }
 }
