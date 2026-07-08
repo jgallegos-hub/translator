@@ -316,33 +316,232 @@ que `feed()` internamente para no divergir), y `resetAll()` (que es
 
 ---
 
-## Siguiente: Fase 6 — Streaming AST
+---
 
-El siguiente cuello de latencia real es Gemma AST full-utterance
-(~2.8 s por chunk). LiteRT-LM 0.12.0 expone `AudioStreamingEnabled` en
-`EngineConfig` que — en teoría — permite alimentar audio a Gemma en
-tiempo real y recibir tokens conforme se generan, en vez de esperar
-el chunk completo + esperar la traducción completa. Esto colapsa dos
-esperas serializadas en una sola con solapamiento parcial.
+## Fase 6: Optimización de latencia ✅ IMPLEMENTADA (julio 2026) — pending device validation
 
-Plan de Fase 6:
-1. **Investigación LiteRT-LM streaming API**: leer el source del SDK
-   (o issues/PRs) para confirmar qué garantía ofrece `AudioStreamingEnabled`
-   — ¿es truly streaming en input (chunks parciales), en output
-   (partial tokens), o ambos? La documentación es escueta.
-2. **POC de streaming input**: mandar los chunks del `AudioChunker` a
-   Gemma antes de que terminen (partial samples cada ~500 ms) y medir
-   si la traducción sale antes.
-3. **Streaming TTS por oración**: `KokoroTtsEngine` ya divide por
-   oraciones; encolar cada oración al `AudioTrack` apenas termina su
-   inferencia, sin esperar a la última.
-4. **Pre-buffer `AudioTrack`**: escribir ~200 ms de silencio al inicio
-   para tapar la latencia de arranque del stream A2DP y evitar clip
-   inicial.
+Commits: **`20bc326`** (Stage A) + **`937a5bf`** (Stage B) + **`54661d2`**
+(Stage C) + **`c0601a9`** (UI toggles + latency counters).
 
-Objetivo Fase 6: latencia percibida de la primera palabra inglesa
-en ≤ 3 s desde end-of-speech (vs los ~14 s actuales).
+### Investigación del SDK (base de todas las decisiones)
 
-Cuando Fase 6 cierre, entonces sí consolidamos los 5 POCs
-(`audio/`, `vad/`, `chunker/`, `pipeline/`, `ast/`, `tts/`) en
-`translator-android/` como app de producción.
+Tres agentes de research en paralelo (trace del código actual +
+reverse-engineering del AAR local `com.google.ai.edge.litertlm:
+litertlm-android:0.12.0` + docs upstream hasta 0.14) contestaron
+definitivamente la pregunta clave: **¿puede Gemma empezar a procesar
+audio mientras el usuario habla?**
+
+**Respuesta: NO.** Ni 0.12.0 en disco ni las release notes públicas hasta
+0.14 (julio 2026) exponen streaming de audio de entrada. El log nativo
+`AudioStreamingEnabled: false` que veíamos en device es una salida del
+backend LiteRT — no hay setter público en `EngineConfig` para volverlo
+`true`. El chunker debe emitir el WAV completo antes de la primera
+llamada a inferencia.
+
+Lo que **SÍ** existe y no estábamos usando:
+- `Conversation.sendMessageAsync(message, extraContext?): Flow<Message>`
+  — variante Kotlin/coroutine-native que emite tokens de salida
+  incrementalmente.
+- `Session` con `runPrefill(List<InputData>)` + `runDecode()` — permite
+  prefill incremental pero decode todavía debe esperar al final del
+  audio, así que la ganancia real es ~200–400 ms. Se difiere.
+
+Consecuencia: **el 6 s del chunker no se puede recortar por vía de API**.
+Los 2.8 s de Gemma **sí** se pueden solapar con la síntesis de Kokoro
+(Stage A). Los 5 s de Kokoro **sí** se pueden solapar oración-a-oración
+(Stage B). Y los defaults del chunker se pueden retunear porque
+`minChunkMs=3000` era conservador para Whisper — con Gemma 4 E4B se
+puede probar 1500 sin perder calidad significativa (Stage C).
+
+### Stage A — Token streaming Gemma → Kokoro (commit `20bc326`)
+
+Feature flag: `AstConfig.streamingEnabled: Boolean = false` (OFF al merge).
+
+- `GemmaAstEngine.translateStreaming(wav, prompt, onToken)` — nuevo
+  método suspend paralelo al existente `translate`. `LiteRtGemmaAstEngine`
+  lo implementa con
+  `conv.sendMessageAsync(contents).onCompletion { closeCurrentConversation() }.collect { onToken(delta) }`.
+  El cierre en `onCompletion` (no en `collect`) es crítico — cerrar
+  mid-collect racea al finalizer JNI y dispara
+  `FAILED_PRECONDITION: A session already exists` en el siguiente call.
+- `AstChunkRouter.processChunkStreaming` — nuevo helper con scanner de
+  terminadores in-line (`.`, `!`, `?`), buffer acumulador, y **pending
+  buffer trick**: la última oración cerrada se **retiene** hasta que
+  llega otra (y entonces la pending se emite con `isFinal=false`) o
+  hasta que el Flow completa (y se emite con `isFinal=true`). El texto
+  trailing sin terminador después del último `.` se convierte en la
+  oración final.
+- Meta-text filter opera sobre `sb.substring(0, lastCutOffset)` (buffer
+  acumulado) — así `"The tra" + "nslation of: Hi."` (preambulo partido
+  entre dos tokens) se atrapa. Confirmado en el AskUserQuestion como el
+  approach elegido: drop-everything-from-that-chunk on hit; keep
+  draining Flow para que el decoder JNI cierre limpio.
+- `AudioEvent.TranslationReady` gana `sentenceIndex: Int? = null` +
+  `isFinal: Boolean = true` (defaults preservan el shape pre-Fase-6).
+- **8 tests nuevos** en `AstChunkRouterTest`: multi-sentence emission,
+  trailing text becomes final, single-sentence isFinal, preamble split
+  across tokens, preamble without terminator caught at flow-end,
+  streaming exception → AstError, RMS pre-filter still applies,
+  multiple terminators in one delta (regression guard).
+
+### Stage B — Kokoro per-sentence streaming (commit `937a5bf`)
+
+Feature flag: `TtsConfig.streamingEnabled: Boolean = false` (OFF al merge).
+
+- `KokoroTtsEngine.synthesizeStreaming(text, voice, onSentence)` —
+  reusa `splitIntoSentences` + `synthesizeOne` + `concatToInt16`; por
+  cada oración llama `onSentence(pcm, sampleRate, sentenceIndex)`
+  apenas termina el `session.run` ONNX. Aggregate `TtsResult.pcm` queda
+  vacío (caller consumió por callback).
+- **`TtsPlayerSink` interface** — 3 métodos (`beginUtterance`,
+  `endUtterance`, `play`). `TtsAudioPlayer` lo implementa. Router
+  depende de la interfaz, no de la clase concreta → tests con
+  `RecordingSink` sin Android runtime.
+- `TtsAudioPlayer.utteranceDepth: AtomicInteger` — `beginUtterance`
+  incrementa; en el 0→1 setea `ttsPlaying=true`. `endUtterance`
+  decrementa clampeado a 0; en el 1→0 lo baja. `play()` verifica
+  `depth == 0` **dentro del mutex** al entrar: si sí, maneja el flag
+  por-call (path legacy exacto); si no, deja el flag a los bookends
+  para toda la utterance. Evita el flicker `true↔false` entre
+  oraciones consecutivas — sin este truco el `handleMuteRisingEdge`
+  del pipeline dispararía un reset del chunker mid-utterance.
+- `TtsRouter` toma un `player: TtsPlayerSink? = null` opcional
+  (default null preserva todos los tests bus-only existentes).
+  `processTranslationStreaming` detecta boundary por
+  `sourceChunkTimestampNs` cambiando; defensive `endUtterance` para
+  la utterance anterior si nunca llegó su `isFinal` (DROP_OLDEST o
+  Gemma error mid-stream); `beginUtterance` para la nueva.
+- ViewModel gate: `TtsAudioReady` handler skipea `player.play()`
+  cuando `ttsConfig.streamingEnabled = true` (el router ya reprodujo).
+  Sigue ticando `totalSpoken` para métricas.
+- **5 tests nuevos** en `TtsRouterTest`: multi-sentence
+  (`begin/play×3/end`), Stage-A style dos eventos con misma
+  `sourceChunkTs` (1 begin, 1 end, 2 plays), defensive endUtterance
+  cuando llega una utterance nueva sin isFinal previo, engine
+  exception cierra utterance por finally, non-streaming path con
+  player wireado NO toca el sink.
+
+### Stage C — Chunker retune (commit `54661d2`)
+
+Sin flag — cambio de defaults siempre-activo.
+
+- `ChunkerConfig` defaults: **`minChunkMs 3000 → 1500`**, **`silenceEndMs
+  700 → 500`**. `maxChunkMs = 6000` y `preRollMs = 200` sin cambio.
+- Justificación: con Gemma+Kokoro streaming (Stages A+B) la latencia
+  audible ya no está dominada por el chunk boundary sino por el
+  first-sentence emit. Halvear el min-chunk shave ~1.5 s off del
+  end-of-speech → first-audio sin degradar calidad en las 10 frases
+  canónicas del device test. Sliders en la UI siguen wireados por si
+  el operador quiere volver a 3000 / 700 para un tipo de audio
+  específico.
+- Tests: `ChunkerConfigTest` con las 4 nuevas aserciones + la math
+  derivada (`24_000` min-samples y `15` silence-end frames @ 16 kHz /
+  512-block). Los demás `AudioChunkerTest` cases siguen verdes porque
+  usan valores explícitos chicos (32–2000 ms) que no dependen del
+  default.
+
+### Follow-up — UI toggles + latency counters (commit `c0601a9`)
+
+Antes de este commit los dos flags no tenían forma de flippearse en
+runtime sin rebuild, y no había número visible para medir la ganancia.
+Este commit los wirea.
+
+- **Router-side landmarks** (last-value semantics, per-chunk):
+  - `AstChunkRouter.firstTokenLatencyMs: AtomicLong` — set en la
+    PRIMERA delta non-empty del path streaming (detectada con
+    `sb.isEmpty()` at callback entry — el boundary más barato), o
+    después de `translate()` en one-shot. Apples-to-apples.
+  - `TtsRouter.firstAudioLatencyMs: AtomicLong` — set justo antes de
+    `bus.emit(TtsAudioReady)` en one-shot, y en el primer
+    `sink.play(pcm)` de cada utterance nueva en streaming (armado
+    por `firstAudioPending = newUtterance`; el callback graba una
+    vez y clarea el flag).
+  Ambos medidos desde `ChunkReady.timestampNs` transportado por
+  `TranslationReady.sourceChunkTimestampNs` — número end-to-end
+  mic-to-first-output, no solo el engine call.
+- **ViewModel**: `astConfig` / `ttsConfig` a `@Volatile var`;
+  `setAstStreamingEnabled(enabled)` / `setTtsStreamingEnabled(enabled)`
+  actualizan config + UI state, y si el router afectado corre lo
+  cancelan + reconstruyen (pipeline + capture + player + el OTRO
+  router intactos). Si el pipeline está stopped, solo config/state
+  cambian y el próximo `startPipeline` usa el nuevo valor.
+- **UI**: nueva sección **"3½. FASE 6 STREAMING"** entre CHUNK
+  PLAYBACK y TRANSLATIONS. Dos `SwitchRow` (AST / TTS streaming) +
+  panel de latencia (`First token: X ms | First audio: Y ms`,
+  placeholder `—` cuando el valor es 0 para evitar el trap "0 ms =
+  blazing fast" en fresh start).
+
+### Estado + próximo paso
+
+- **Todo mergeado con flags OFF por default**. El first-boot APK
+  behaves like Fase 5 estabilizada. Stage C es siempre-activo → el
+  first-boot ya bajó ~1.5 s solo por el retune del chunker.
+- **~15 tests nuevos** entre stages (8 AST + 5 TTS + 2 chunker),
+  suite total ~102.
+- **Pendiente device validation** con protocolo de 3 rondas:
+  1. Ambos flags OFF → medir baseline (solo Stage C efectivo)
+  2. Solo AST streaming ON → medir bajada de `firstTokenLatencyMs`
+     y `firstAudioLatencyMs`
+  3. AST + TTS streaming ON → medir bajada adicional de
+     `firstAudioLatencyMs`
+- Después de validación exitosa → commit follow-up que flippea los
+  dos defaults a `true`.
+
+### Números esperados (a validar en device)
+
+| Configuración | First token | First audio | Notas |
+|---|---|---|---|
+| Baseline pre-Fase-6 (chunker 3000/700) | ~5.8 s | ~13.5 s | reference |
+| Stage C only (chunker 1500/500) | ~4.3 s | ~12 s | ya en el APK |
+| + Stage A ON | ~2 s | ~10 s | Gemma streaming, Kokoro one-shot |
+| + Stage A + B ON | ~2 s | **~3 s** | Kokoro sentence-1 mientras 2 decodifica |
+
+### Lecciones técnicas:
+- LiteRT-LM 0.12.0 `sendMessageAsync` retorna un cold Flow. `onCompletion`
+  se dispara en éxito Y error, así que es el único lugar seguro para
+  cerrar la `Conversation` sin racear el finalizer JNI.
+- Cada `Message` en el Flow es una DELTA (asunción sin doc oficial —
+  documentada en comentario + log de la primera delta en device para
+  verificar). Si en un release futuro cambian a acumulado, hay que
+  flipear a `msg.substring(fullText.length)`.
+- Meta-text check debe correr sobre el buffer acumulado, NO por
+  oración. Preambulos como "The translation of the Spanish audio is:"
+  se parten entre múltiples emisiones de tokens; per-sentence check
+  los deja pasar.
+- Sinks abstraídos por interfaz (`TtsPlayerSink`) tienen dos beneficios:
+  (a) el router es testeable sin AudioTrack, (b) el rewiring por
+  toggle no requiere mover instancias — solo cambiar el config + la
+  ref del router.
+- Feature flags con default OFF al merge es la única forma segura de
+  shippear cambios de path sin rebuild-para-revertir. El commit que
+  flippea defaults es siempre separado del que introduce la
+  funcionalidad.
+
+---
+
+## Siguiente: Fase 7 — Consolidación en `translator-android/`
+
+Post device validation + flip de defaults, los seis POCs se consolidan
+en una sola app de producción:
+
+- `audio-hw-check/` — validación de USB routing / A2DP pairing
+- `audio-capture-poc/` — Oboe capture + JNI + ring buffer
+- `vad-chunking-poc/` — Silero VAD + chunker
+- `gemma-ast-poc/` — Gemma 4 E4B AST validation
+- `gemma-pipeline-poc/` — el POC actual (Fases 4+5+6)
+
+Estructura target: una app con las capas `audio/`, `vad/`, `chunker/`,
+`pipeline/`, `ast/`, `tts/` copiadas verbatim del POC actual (que ya
+las tiene todas cohabitando). Wiring del ViewModel a un flujo de
+producción sin sliders/toggles de debug (o detrás de un `DEBUG` build
+flavor). Store el modelo en `MANAGE_EXTERNAL_STORAGE` o considerar
+Play Feature Delivery para el download post-install del Gemma
+`.litertlm` de ~3.4 GB.
+
+Fuera del scope de Fase 7 (para más adelante):
+- Selector de voz Kokoro en UI (v1 hardcoded `af_heart`)
+- Modelo Gemma fine-tuned para es-MX (para el issue de slang)
+- Streaming input via `Session.runPrefill` si aparecen tiempos < 2 s
+  en el device test
+- Hardware unidireccional (mic + USB DAC speaker) para el issue de
+  feedback físico

@@ -1,28 +1,42 @@
 # gemma-pipeline-poc
 
-Standalone Android POC for **Fases 4 + 5** of the Travel2Chicago real-time
-ES→EN translator. Integrates Silero VAD + chunker (Fase 3), Gemma 4 E4B AST
-(Fase 0), and Kokoro-82M TTS (Fase 5) into one app — full speech-to-speech
-pipeline in one process.
+Standalone Android POC for **Fases 4 + 5 + 6** of the Travel2Chicago
+real-time ES→EN translator. Integrates Silero VAD + chunker (Fase 3),
+Gemma 4 E4B AST (Fase 0), and Kokoro-82M TTS (Fase 5) into one app —
+full speech-to-speech pipeline in one process — plus optional token +
+per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
+a target ≤ 3 s.
 
-**Status: ✅ Fase 4 + Fase 5 COMPLETADAS** on Xiaomi 15T Pro (junio 2026).
-End-to-end loop validated in device: speak Spanish into the Saramonic USB
-mic → see English text on screen (~3 s) → hear English voice on the JBL
-Go 4 (~14 s wall-clock for the first sentence, then conversational pace).
-See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the six
-fixes applied during device testing, and the four known issues deferred to
-the latency-optimisation pass.
+**Status:**
+- ✅ Fase 4 + Fase 5 COMPLETADAS on Xiaomi 15T Pro (junio 2026).
+- ✅ Fase 6 (streaming) implementada (julio 2026), **pending device
+  validation** — flags default OFF so a fresh install behaves exactly
+  like Fase 5 stabilised. Toggle each stage independently in the UI
+  under "3½. FASE 6 STREAMING" and watch the `First token: X ms` +
+  `First audio: Y ms` counters in the same panel.
+
+See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
+six fixes applied during Fase 5 device testing, the Fase 6 investigation
+findings (LiteRT-LM has NO public audio-input streaming API — the win
+comes from output-token streaming + per-sentence TTS), and the three
+staged optimisations with their feature flags.
 
 ## What it does
 
 1. Oboe captures Spanish audio from the Saramonic USB mic (Fase 2).
 2. Silero VAD v5 (with the mandatory 64-sample context prefix, Fase 3) detects
-   speech and a 3–6 s chunker emits utterances.
+   speech and a 1.5–6 s chunker emits utterances (retuned in Fase 6
+   Stage C; was 3–6 s in Fase 5).
 3. Each chunk is wrapped in a WAV (RIFF/WAVE PCM 16-bit) and sent to Gemma 4
-   E4B via LiteRT-LM (`Backend.GPU()` + `audioBackend=Backend.CPU()`).
-4. The English translation appears in the UI within ~2 s.
-5. Each translation is fed to Kokoro TTS (ONNX Runtime CPU, int8 model) to
-   synthesize PCM at 24 kHz, played back through a dedicated `AudioTrack`.
+   E4B via LiteRT-LM (`Backend.GPU()` + `audioBackend=Backend.CPU()`). With
+   Fase 6 Stage A ON, Gemma's tokens stream out and the router emits one
+   `TranslationReady` per sentence; with it OFF, one event per whole reply.
+4. The English translation appears in the UI within ~2 s (streaming) or
+   ~3 s (one-shot).
+5. Each translation (or each sentence, with Fase 6 Stage B ON) is fed to
+   Kokoro TTS (ONNX Runtime CPU, int8 model) to synthesize PCM at 24 kHz,
+   played back through a dedicated `AudioTrack`. With streaming ON,
+   sentence 1 starts playing while sentences 2..N are still synthesising.
 
 ## Setup before first run
 
@@ -229,6 +243,75 @@ trigger a spurious SPEECH detection immediately after un-mute. In
 production, use a unidirectional mic pointing away from the speaker
 and a wired USB DAC (no BT), which eliminates both the tail and the
 codec re-negotiation latency.
+
+## Fase 6 streaming — how to measure the win
+
+Two feature flags collapse the ~14 s first-audio wall down to a target
+≤ 3 s by pipelining Gemma's output tokens straight into Kokoro's
+per-sentence PCM. Both flags default OFF at merge — the toggle lives in
+the UI so you flip them once and immediately see the number move.
+
+**Stage A — AST streaming** (`AstConfig.streamingEnabled`, UI switch):
+`LiteRtGemmaAstEngine` uses `Conversation.sendMessageAsync(...): Flow<Message>`
+instead of the synchronous `sendMessage`. `AstChunkRouter` scans the
+accumulated buffer for `.`, `!`, `?` and emits ONE `TranslationReady`
+per sentence with `sentenceIndex + isFinal` so downstream can start
+work before Gemma finishes decoding. Meta-text filter runs on the
+accumulated buffer — preambles like "The translation of the Spanish
+audio is:" split across two token deltas still get caught.
+
+**Stage B — TTS streaming** (`TtsConfig.streamingEnabled`, UI switch):
+`KokoroTtsEngine.synthesizeStreaming` yields one PCM chunk per sentence;
+`TtsRouter` hands each to the `TtsPlayerSink` directly. Sink bookends
+(`beginUtterance` / `endUtterance` with an `AtomicInteger` depth
+counter) own the shared `ttsPlaying` mute flag across the whole
+utterance so per-sentence `play()` calls don't flicker the flag between
+sentences — otherwise the pipeline's `handleMuteRisingEdge` would
+trigger a spurious chunker reset mid-utterance.
+
+**Stage C — chunker retune** (always on): `ChunkerConfig` defaults
+`minChunkMs 3000 → 1500` and `silenceEndMs 700 → 500`. Halving the
+min-chunk shaves ~1.5 s off end-of-speech → first-audio without hurting
+translation quality on the 10-phrase canonical device test. The sliders
+in "8. CHUNKER TUNING" are still wired if a specific utterance type
+needs different framing.
+
+**LiteRT-LM 0.14 does NOT support audio-input streaming.** Reverse-
+engineering the local AAR + reading upstream docs confirmed there's no
+`sendAudioFrame(...)` or `AudioStreamingEnabled` setter. Gemma still
+needs the whole chunk before it starts decoding. The chunker retune is
+the only lever on the input-side latency; the two streaming flags help
+on the output side.
+
+**Measurement panel** in the UI ("3½. FASE 6 STREAMING" card):
+- `First token: X ms` — wall-clock from `ChunkReady.timestampNs` to
+  Gemma's first output. In streaming mode = time to first delta; in
+  one-shot = time to the full reply.
+- `First audio: Y ms` — wall-clock from the same anchor to the first
+  PCM handed to the sink / bus. This is the number the user hears.
+
+Placeholder `—` when the value is 0 (no chunk processed since the
+last pipeline start / router restart) to avoid the "0 ms = blazing
+fast" misread.
+
+**Device test protocol** (3 rounds; the same 10 canonical Spanish
+phrases each time):
+1. Both flags OFF — record baseline. Stage C is already on, so
+   this is Fase 5 numbers minus ~1.5 s.
+2. Flip AST streaming ON, TTS streaming OFF. `First token` should
+   drop sharply (~1–1.5 s vs ~2.8 s full reply); `First audio` drops
+   by roughly the same amount because Kokoro still runs full-utterance.
+3. Flip both ON. `First audio` should drop again as Kokoro speaks
+   sentence 1 while sentences 2..N are still synthesising.
+
+Expected end state on Xiaomi 15T Pro (device-dependent):
+
+| Configuration | First token | First audio | Notes |
+|---|---|---|---|
+| Baseline (chunker 3000/700, all off) | ~5.8 s | ~13.5 s | pre-Fase-6 |
+| Stage C only (chunker 1500/500) | ~4.3 s | ~12 s | already in APK |
+| + Stage A ON | ~2 s | ~10 s | Kokoro one-shot |
+| + Stage A + B ON | ~2 s | **~3 s** | streaming end-to-end |
 
 ## Known noise
 
