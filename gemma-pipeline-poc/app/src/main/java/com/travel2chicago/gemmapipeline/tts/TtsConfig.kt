@@ -37,6 +37,27 @@ data class TtsConfig(
      * × cap 4 ≈ 6 s of backlog before DROP_OLDEST kicks in.
      */
     val queueCapacity: Int = 4,
+
+    /**
+     * Fase 6 Stage B — streaming Kokoro TTS.
+     *
+     * When `true`, [TtsRouter] uses [KokoroTtsEngine.synthesizeStreaming]
+     * and hands each per-sentence PCM directly to the [TtsPlayerSink] as
+     * the ONNX inference completes it, so playback of sentence 1 starts
+     * while sentence 2 is still being synthesised. Bookends the playback
+     * with `beginUtterance` / `endUtterance` on the sink so the shared
+     * `ttsPlaying` mute flag stays `true` across the whole utterance and
+     * the VAD doesn't see spurious un-mute edges between sentences.
+     *
+     * When `false` (default) the router uses the legacy full-utterance
+     * `engine.synthesize` path and emits `TtsAudioReady` on the bus for
+     * the ViewModel to play — one call, one begin/end (implicit in
+     * `play()`), same as Fase 5.
+     *
+     * Left OFF at Fase 6 merge so the first-boot APK behaves like Fase 5;
+     * the UI switch flips it on for device testing.
+     */
+    val streamingEnabled: Boolean = false,
 ) {
     val modelPath: String get() = "$modelDirPath/$modelFilename"
     val voicesPath: String get() = "$modelDirPath/$voicesFilename"

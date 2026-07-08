@@ -30,6 +30,24 @@ interface KokoroTtsEngine : AutoCloseable {
     val loadTimeMs: Long
     val availableVoices: Set<String>
     fun synthesize(text: String, voice: String): TtsResult
+
+    /**
+     * Streaming variant used by Fase 6 Stage B. Splits [text] into sentences,
+     * runs ONNX inference on each, and invokes [onSentence] with the per-
+     * sentence int16 PCM as soon as it's ready — so the audio player can
+     * start emitting sentence 1 while the model is still decoding sentence
+     * 2.
+     *
+     * Aggregate [TtsResult.pcm] is intentionally EMPTY on this path: the
+     * caller consumed samples via the callback. `latencyMs` on the return
+     * value is the wall-clock across the entire streaming call (useful for
+     * router metrics).
+     */
+    suspend fun synthesizeStreaming(
+        text: String,
+        voice: String,
+        onSentence: suspend (pcm: ShortArray, sampleRate: Int, sentenceIndex: Int) -> Unit,
+    ): TtsResult
 }
 
 /**
@@ -86,6 +104,35 @@ class KokoroOnnxEngine private constructor(
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
         Log.i(TAG, "synthesize: '${text.take(60)}' → ${merged.size} samples in ${elapsedMs}ms ($voice, ${sentences.size} sentence(s))")
         return TtsResult(pcm = merged, sampleRate = sampleRate, latencyMs = elapsedMs)
+    }
+
+    override suspend fun synthesizeStreaming(
+        text: String,
+        voice: String,
+        onSentence: suspend (pcm: ShortArray, sampleRate: Int, sentenceIndex: Int) -> Unit,
+    ): TtsResult {
+        check(!closed) { "Engine is closed" }
+        require(text.isNotBlank()) { "text must not be blank" }
+        if (!voices.has(voice)) {
+            throw IllegalArgumentException(
+                "Unknown voice '$voice'. Available: ${voices.availableVoices}",
+            )
+        }
+
+        val startedNs = System.nanoTime()
+        val sentences = splitIntoSentences(text)
+        var totalSamples = 0
+        for ((idx, sentence) in sentences.withIndex()) {
+            val floatPcm = synthesizeOne(sentence, voice) ?: continue
+            val int16 = concatToInt16(listOf(floatPcm))
+            totalSamples += int16.size
+            onSentence(int16, sampleRate, idx)
+        }
+        val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
+        Log.i(TAG, "synthesizeStreaming: '${text.take(60)}' → $totalSamples samples across ${sentences.size} sentence(s) in ${elapsedMs}ms ($voice)")
+        // Empty aggregate — the caller consumed samples via [onSentence]
+        // and the router uses only [latencyMs] here.
+        return TtsResult(pcm = ShortArray(0), sampleRate = sampleRate, latencyMs = elapsedMs)
     }
 
     private fun synthesizeOne(sentence: String, voice: String): FloatArray? {

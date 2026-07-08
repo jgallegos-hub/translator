@@ -9,8 +9,37 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "TtsAudioPlayer"
+
+/**
+ * Abstraction over the sink [TtsRouter] writes PCM to. `TtsAudioPlayer` is
+ * the production impl (Android `AudioTrack`); tests can swap in a fake to
+ * assert call ordering without touching the Android media stack.
+ *
+ * The `beginUtterance` / `endUtterance` pair exists so a multi-sentence
+ * utterance (Fase 6 Stage A splits Gemma's reply into per-sentence
+ * `TranslationReady` events; Stage B streams each sentence's PCM as it
+ * synthesises) can be treated as ONE mute window from the VAD's point of
+ * view — otherwise the `ttsPlaying` flag would flicker `true→false→true`
+ * between adjacent `play()` calls and the pipeline's mute-rising-edge
+ * handler would fire spurious chunker resets.
+ */
+interface TtsPlayerSink {
+    /** Increment utterance depth. On the 0→1 transition, raise the shared
+     *  VAD-mute flag. Safe to call from any thread. Idempotent under
+     *  balanced pairing with [endUtterance]. */
+    fun beginUtterance()
+
+    /** Decrement utterance depth (clamped at 0). On the 1→0 transition,
+     *  lower the VAD-mute flag. Safe to call from any thread. */
+    fun endUtterance()
+
+    /** Write [pcm] to the sink, suspending until it's been handed to the
+     *  OS audio stack. Concurrent calls are serialised internally. */
+    suspend fun play(pcm: ShortArray)
+}
 
 /**
  * Dedicated audio sink for TTS PCM at 24 kHz (Kokoro's native rate). Kept
@@ -41,10 +70,16 @@ class TtsAudioPlayer(
      * wiring.
      */
     private val ttsPlaying: AtomicBoolean = AtomicBoolean(false),
-) : AutoCloseable {
+) : TtsPlayerSink, AutoCloseable {
 
     private var track: AudioTrack? = null
     private val mutex = Mutex()
+
+    /** Utterance-bookend depth. `beginUtterance` increments, `endUtterance`
+     *  decrements (clamped at 0). While `> 0`, per-call `play()` DOES NOT
+     *  touch [ttsPlaying] — the bookends own the flag for the entire
+     *  utterance so adjacent sentences don't produce false un-mute edges. */
+    private val utteranceDepth = AtomicInteger(0)
 
     @Volatile var isInitialized: Boolean = false
         private set
@@ -86,13 +121,36 @@ class TtsAudioPlayer(
      * the internal Mutex — the second caller waits until the first finishes
      * speaking.
      */
-    suspend fun play(pcm: ShortArray) = mutex.withLock {
+    override fun beginUtterance() {
+        val newDepth = utteranceDepth.incrementAndGet()
+        if (newDepth == 1) {
+            ttsPlaying.set(true)
+            Log.i(TAG, "beginUtterance: VAD mute ON (depth=$newDepth)")
+        }
+    }
+
+    override fun endUtterance() {
+        // Clamp at 0 defensively — unbalanced calls (e.g. router bug or
+        // DROP_OLDEST removing the isFinal event) must not drive the depth
+        // negative and stick the VAD in a permanently-muted state.
+        val newDepth = utteranceDepth.updateAndGet { d -> maxOf(0, d - 1) }
+        if (newDepth == 0) {
+            ttsPlaying.set(false)
+            Log.i(TAG, "endUtterance: VAD mute OFF")
+        }
+    }
+
+    override suspend fun play(pcm: ShortArray) = mutex.withLock {
         val t = track ?: error("TtsAudioPlayer not initialised — call init() first")
         if (pcm.isEmpty()) return@withLock
-        // Raise the flag BEFORE the first sample hits the DAC so the VAD
-        // pipeline mutes in time; lower it in `finally` so cancellations
-        // don't leave the mic gated shut.
-        ttsPlaying.set(true)
+        // If we're INSIDE a beginUtterance/endUtterance bookend, the flag
+        // is owned by that pair for the entire utterance — do not touch
+        // it here or adjacent per-sentence play() calls would drop the
+        // flag between sentences and give VAD a spurious un-mute edge.
+        // Legacy (non-streaming) callers hit the standalone branch and
+        // manage the flag per call, exactly like Fase 5.
+        val standalone = utteranceDepth.get() == 0
+        if (standalone) ttsPlaying.set(true)
         try {
             // Write in ~100 ms chunks so a cancellation lands within ~100 ms.
             val chunkSize = (sampleRate / 10).coerceAtLeast(256)
@@ -111,7 +169,7 @@ class TtsAudioPlayer(
                 off += written
             }
         } finally {
-            ttsPlaying.set(false)
+            if (standalone) ttsPlaying.set(false)
         }
     }
 

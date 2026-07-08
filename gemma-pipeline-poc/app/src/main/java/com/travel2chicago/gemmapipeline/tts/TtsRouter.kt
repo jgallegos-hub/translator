@@ -34,6 +34,17 @@ class TtsRouter(
     private val engine: KokoroTtsEngine,
     private val config: TtsConfig,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * Fase 6 Stage B — when non-null AND [TtsConfig.streamingEnabled] is
+     * `true`, the router drives the sink directly (per-sentence
+     * `beginUtterance` / `play` / `endUtterance`) instead of emitting
+     * `TtsAudioReady` for the ViewModel to play. When `null` OR streaming
+     * is off, the router falls back to the Fase 5 bus-emit path — the
+     * ViewModel picks up `TtsAudioReady` and calls `player.play()` itself.
+     * Leaving this at the default `null` keeps every existing test's
+     * bus-only assertions valid unchanged.
+     */
+    private val player: TtsPlayerSink? = null,
 ) {
     private val channel: Channel<AudioEvent.TranslationReady> =
         Channel(capacity = config.queueCapacity)
@@ -147,12 +158,31 @@ class TtsRouter(
         }
     }
 
+    /**
+     * The `sourceChunkTimestampNs` of the utterance whose bookend is
+     * currently open, or `null` if no utterance is in progress. Used by
+     * the streaming path to detect utterance boundaries when multiple
+     * per-sentence [AudioEvent.TranslationReady] events arrive for the
+     * same source chunk (Fase 6 Stage A). Only touched from the single
+     * consumer coroutine — no atomicity needed, but `@Volatile` keeps
+     * writes visible if the router is later re-wired across dispatchers.
+     */
+    @Volatile private var openUtteranceTs: Long? = null
+
     private suspend fun processTranslation(tr: AudioEvent.TranslationReady) {
         val text = tr.text.trim()
         if (text.isEmpty()) {
             Log.w(TAG, "Empty translation, skipping")
             return
         }
+        if (config.streamingEnabled && player != null) {
+            processTranslationStreaming(tr, text, player)
+        } else {
+            processTranslationOneShot(tr, text)
+        }
+    }
+
+    private suspend fun processTranslationOneShot(tr: AudioEvent.TranslationReady, text: String) {
         val result = try {
             engine.synthesize(text, config.voice)
         } catch (t: Throwable) {
@@ -178,6 +208,85 @@ class TtsRouter(
                 timestampNs = System.nanoTime(),
             ),
         )
+    }
+
+    /**
+     * Fase 6 Stage B — streaming path.
+     *
+     * Detects utterance boundaries by watching [tr.sourceChunkTimestampNs]:
+     *  - When it changes from the previously-open utterance, open a new
+     *    one (`beginUtterance`). If the previous one never received an
+     *    `isFinal=true` event (DROP_OLDEST removed it, or Gemma errored),
+     *    close it defensively first so the sink's depth counter stays
+     *    balanced.
+     *  - When [tr.isFinal] is `true`, close the utterance
+     *    (`endUtterance`) after synthesis completes.
+     *
+     * Between those boundaries, every per-sentence PCM produced by
+     * [KokoroTtsEngine.synthesizeStreaming] is handed directly to
+     * [TtsPlayerSink.play]. A lightweight `TtsAudioReady` is also emitted
+     * per sentence for UI/metrics — the ViewModel branches on
+     * `TtsConfig.streamingEnabled` and skips its own `player.play()` in
+     * that path, so the samples are NOT played twice.
+     */
+    private suspend fun processTranslationStreaming(
+        tr: AudioEvent.TranslationReady,
+        text: String,
+        sink: TtsPlayerSink,
+    ) {
+        if (tr.sourceChunkTimestampNs != openUtteranceTs) {
+            val prev = openUtteranceTs
+            if (prev != null) {
+                Log.w(TAG, "Streaming: utterance ts=$prev never terminated; endUtterance defensively")
+                sink.endUtterance()
+            }
+            openUtteranceTs = tr.sourceChunkTimestampNs
+            sink.beginUtterance()
+        }
+
+        val result = try {
+            engine.synthesizeStreaming(text, config.voice) { pcm, sr, _ ->
+                sink.play(pcm)
+                bus.emit(
+                    AudioEvent.TtsAudioReady(
+                        samples = pcm,
+                        sampleRate = sr,
+                        sourceText = text,
+                        sourceTranslationTimestampNs = tr.timestampNs,
+                        // Per-sentence latency isn't meaningful mid-stream —
+                        // the aggregate lands on the isFinal event's own
+                        // synthesizedCount increment.
+                        latencyMs = 0L,
+                        timestampNs = System.nanoTime(),
+                    ),
+                )
+            }
+        } catch (t: Throwable) {
+            errorCount.incrementAndGet()
+            Log.e(TAG, "Kokoro synthesizeStreaming() failed for text='${text.take(60)}'", t)
+            emitError(
+                "Kokoro synthesizeStreaming failed: ${t.javaClass.simpleName}: ${t.message}",
+                tr,
+            )
+            // On error we still balance the bookend so the sink doesn't get
+            // stuck muted. isFinal treatment: if the failing event was
+            // supposed to close the utterance, do it now; if not, the next
+            // event with a different sourceChunkTimestampNs will trigger the
+            // defensive endUtterance path above.
+            if (tr.isFinal) {
+                openUtteranceTs = null
+                sink.endUtterance()
+            }
+            return
+        }
+
+        synthesizedCount.incrementAndGet()
+        totalLatencyMs.addAndGet(result.latencyMs)
+
+        if (tr.isFinal) {
+            openUtteranceTs = null
+            sink.endUtterance()
+        }
     }
 
     private suspend fun emitError(message: String, tr: AudioEvent.TranslationReady) {

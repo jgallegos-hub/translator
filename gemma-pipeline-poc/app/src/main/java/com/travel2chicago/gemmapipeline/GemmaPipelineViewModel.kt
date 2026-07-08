@@ -433,7 +433,11 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         // surfaces at start-pipeline time, not at app launch.
         runCatching { ttsPlayer.init() }
             .onFailure { log("[ERROR] TTS player init failed: ${it.message}") }
-        val ttsR = TtsRouter(bus, k, ttsConfig)
+        // Pass the player as a TtsPlayerSink so the router can drive
+        // beginUtterance/play/endUtterance directly when streaming is on.
+        // With streaming off, the router falls back to bus-emit and the
+        // ViewModel plays TtsAudioReady as before — no double-play.
+        val ttsR = TtsRouter(bus, k, ttsConfig, player = ttsPlayer)
         ttsR.start(viewModelScope)
         ttsRouter = ttsR
 
@@ -667,16 +671,28 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 log("TTS ready (${event.latencyMs}ms, ${event.samples.size} samp @${event.sampleRate}Hz): " +
                     event.sourceText.take(60))
-                // Fire-and-forget playback. TtsAudioPlayer's internal Mutex
-                // serialises overlapping play() calls, so two TtsAudioReady
-                // events arriving back-to-back are spoken in order.
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        ttsPlayer.play(event.samples)
-                        _state.update { it.copy(totalSpoken = it.totalSpoken + 1) }
-                    } catch (t: Throwable) {
-                        log("[ERROR] TTS playback failed: ${t.javaClass.simpleName}: ${t.message}")
+                // When Stage B streaming is on, the router already handed
+                // the samples to the sink (`beginUtterance` / `play` /
+                // `endUtterance` in TtsRouter.processTranslationStreaming),
+                // so this event is metrics-only — playing again would
+                // duplicate the audio. When streaming is off, the router
+                // never touched the player and it's up to us to play.
+                if (!ttsConfig.streamingEnabled) {
+                    // Fire-and-forget playback. TtsAudioPlayer's internal
+                    // Mutex serialises overlapping play() calls, so two
+                    // TtsAudioReady events arriving back-to-back are spoken
+                    // in order.
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            ttsPlayer.play(event.samples)
+                            _state.update { it.copy(totalSpoken = it.totalSpoken + 1) }
+                        } catch (t: Throwable) {
+                            log("[ERROR] TTS playback failed: ${t.javaClass.simpleName}: ${t.message}")
+                        }
                     }
+                } else {
+                    // Router already played. Just tick the spoken counter.
+                    _state.update { it.copy(totalSpoken = it.totalSpoken + 1) }
                 }
             }
             is AudioEvent.TtsError -> {
