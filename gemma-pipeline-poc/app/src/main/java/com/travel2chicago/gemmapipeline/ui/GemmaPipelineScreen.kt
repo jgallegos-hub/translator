@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -210,6 +211,47 @@ fun GemmaPipelineScreen(
                 InfoRow("Chunks emitted", "${state.chunksEmitted}")
                 InfoRow("Last chunk", "${state.lastChunkDurationMs} ms, peak ${state.lastChunkPeak}")
                 InfoRow("Ring overflow", "${state.overflowCount}")
+            }
+        }
+
+        item {
+            SectionCard(title = "3½. FASE 6 STREAMING") {
+                Text(
+                    "Toggle each stage independently. Router restarts on the " +
+                        "next event; the pipeline itself keeps running.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "AST streaming (Gemma → per-sentence)",
+                    checked = state.astStreamingEnabled,
+                    onCheckedChange = { viewModel.setAstStreamingEnabled(it) },
+                )
+                SwitchRow(
+                    label = "TTS streaming (Kokoro → per-sentence PCM)",
+                    checked = state.ttsStreamingEnabled,
+                    onCheckedChange = { viewModel.setTtsStreamingEnabled(it) },
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        "First token: ${if (state.firstTokenLatencyMs > 0) "${state.firstTokenLatencyMs} ms" else "—"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "First audio: ${if (state.firstAudioLatencyMs > 0) "${state.firstAudioLatencyMs} ms" else "—"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Text(
+                    "Both are wall-clock from ChunkReady.timestampNs. Watch " +
+                        "them drop as Stage A → A+B → A+B+chunker-retune go on.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -507,6 +549,32 @@ private fun ProbabilityBar(prob: Float) {
                 .fillMaxWidth(animated)
                 .background(color),
         )
+    }
+}
+
+/**
+ * Compact label + material Switch row. Used for the Fase 6 streaming
+ * toggles; keeps the pattern that the sliders use — Column-per-control,
+ * label on the left of a Row, control on the right.
+ */
+@Composable
+private fun SwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

@@ -64,6 +64,13 @@ class AstChunkRouter(
     private val errorCount = AtomicLong(0)
     private val lowEnergyDiscardCount = AtomicLong(0)
     private val metaTextDiscardCount = AtomicLong(0)
+    /**
+     * Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output —
+     * the first token in the streaming path, or the return of `translate()`
+     * in the one-shot path. Last-value semantics (updated per chunk). Zero
+     * means "no chunk processed since start / restart".
+     */
+    private val firstTokenLatencyMsAtomic = AtomicLong(0)
 
     val isRunning: Boolean
         get() = producerJob?.isActive == true && consumerJob?.isActive == true
@@ -76,6 +83,11 @@ class AstChunkRouter(
     val totalDiscardedLowEnergy: Long get() = lowEnergyDiscardCount.get()
     /** Translations dropped AFTER Gemma because the reply matched a meta-text pattern. */
     val totalDiscardedMeta: Long get() = metaTextDiscardCount.get()
+    /** Latency from `ChunkReady.timestampNs` to Gemma's first output for the
+     *  MOST RECENT processed chunk. Meaningful across both streaming and
+     *  one-shot paths — in one-shot mode it's ~= totalGemmaLatencyMs of the
+     *  chunk; in streaming it's the time to the first token. */
+    val firstTokenLatencyMs: Long get() = firstTokenLatencyMsAtomic.get()
     val averageLatencyMs: Double get() {
         val n = translatedCount.get()
         return if (n > 0) totalLatencyMs.get().toDouble() / n else 0.0
@@ -263,6 +275,10 @@ class AstChunkRouter(
             return
         }
 
+        // One-shot: "first token" == "full reply". Record now so the UI can
+        // compare against the streaming path apples-to-apples.
+        firstTokenLatencyMsAtomic.set((System.nanoTime() - chunk.timestampNs) / 1_000_000)
+
         translatedCount.incrementAndGet()
         totalLatencyMs.addAndGet(result.latencyMs)
 
@@ -353,6 +369,15 @@ class AstChunkRouter(
         val result = try {
             engine.translateStreaming(wav, config.prompt) { delta ->
                 if (dropRestOfChunk) return@translateStreaming
+                // Record first-token latency exactly once per chunk — on the
+                // FIRST non-empty delta observed. `sb.isEmpty()` is the
+                // cheapest way to detect that boundary; `delta` itself is
+                // guaranteed non-empty by LiteRtGemmaAstEngine.
+                if (sb.isEmpty()) {
+                    firstTokenLatencyMsAtomic.set(
+                        (System.nanoTime() - chunk.timestampNs) / 1_000_000,
+                    )
+                }
                 sb.append(delta)
 
                 // One delta may contain multiple terminators (e.g. Gemma

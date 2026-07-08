@@ -90,6 +90,12 @@ data class GemmaPipelineUiState(
     val totalDiscardedLowEnergy: Long = 0,
     /** Replies dropped AFTER Gemma because they matched a meta-text pattern. */
     val totalDiscardedMeta: Long = 0,
+    /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. */
+    val astStreamingEnabled: Boolean = false,
+    /** Fase 6 Stage A — from `AstChunkRouter.firstTokenLatencyMs`.
+     *  Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output
+     *  (first token in streaming, full reply in one-shot). */
+    val firstTokenLatencyMs: Long = 0,
     val translations: List<TranslationEntry> = emptyList(),
 
     val totalSamplesCaptured: Long = 0,
@@ -118,6 +124,12 @@ data class GemmaPipelineUiState(
     val ttsAvgLatencyMs: Double = 0.0,
     val lastSpokenText: String = "",
     val lastTtsDurationMs: Int = 0,
+    /** Fase 6 Stage B — mirrors [TtsConfig.streamingEnabled]. */
+    val ttsStreamingEnabled: Boolean = false,
+    /** Fase 6 Stage B — from `TtsRouter.firstAudioLatencyMs`.
+     *  Wall-clock ms from `ChunkReady.timestampNs` to first PCM handed to
+     *  the sink / bus. The end-to-end user-facing latency number. */
+    val firstAudioLatencyMs: Long = 0,
 
     val logs: List<String> = emptyList(),
     val error: String? = null,
@@ -143,8 +155,17 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<GemmaPipelineUiState> = _state.asStateFlow()
 
     private val audioConfig = AudioEngineConfig()
-    private val astConfig = AstConfig()
-    private val ttsConfig = TtsConfig()
+    /**
+     * Mutable so the UI toggle for Fase 6 Stage A streaming can flip
+     * `streamingEnabled` at runtime. Any downstream `AstChunkRouter` built
+     * off this reference reads it at construction — flipping the flag
+     * requires reconstructing the router, which
+     * [setAstStreamingEnabled] does.
+     */
+    @Volatile private var astConfig = AstConfig()
+    /** Same mutability + restart contract as [astConfig] but for Fase 6
+     *  Stage B streaming. See [setTtsStreamingEnabled]. */
+    @Volatile private var ttsConfig = TtsConfig()
     private val bus = AudioEventBus(bufferCapacity = 128)
     private val nativeEngine: NativeAudioEngine = NativeAudioEngine.create(audioConfig)
     private val deviceManager = AudioDeviceManager(app, bus)
@@ -464,6 +485,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 ttsAvgLatencyMs = 0.0,
                 lastSpokenText = "",
                 lastTtsDurationMs = 0,
+                firstTokenLatencyMs = 0,
+                firstAudioLatencyMs = 0,
                 totalSamplesCaptured = 0,
                 overflowCount = 0,
                 error = null,
@@ -583,6 +606,57 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         pipeline?.updateChunkerConfig(cfg)
     }
 
+    // ── Fase 6 streaming toggles ─────────────────────────────────────────────
+
+    /**
+     * Flip the Stage A (Gemma token streaming) flag. Updates the mutable
+     * config + UI state, then — if the AST router is currently running —
+     * tears it down and reconstructs with the new config so the branch in
+     * `AstChunkRouter.processChunk` picks up the change on the very next
+     * `ChunkReady`. Pipeline itself + capture + TTS all stay running.
+     *
+     * If the pipeline is stopped, only the config/state are updated; the
+     * next `startPipeline` will use the new value.
+     */
+    fun setAstStreamingEnabled(enabled: Boolean) {
+        if (astConfig.streamingEnabled == enabled) return
+        astConfig = astConfig.copy(streamingEnabled = enabled)
+        _state.update { it.copy(astStreamingEnabled = enabled) }
+        log("AST streaming toggled → $enabled")
+        val g = gemmaEngine
+        val oldRouter = router
+        if (g != null && oldRouter != null) {
+            oldRouter.cancel()
+            val newRouter = AstChunkRouter(
+                bus, g, astConfig, sampleRate = audioConfig.format.sampleRate,
+            )
+            newRouter.start(viewModelScope)
+            router = newRouter
+            log("AST router restarted (streamingEnabled=$enabled)")
+        }
+    }
+
+    /**
+     * Same restart pattern as [setAstStreamingEnabled] but for Stage B
+     * (Kokoro per-sentence streaming). Rebuilds only the TTS router.
+     * The player is preserved across restarts — it holds AudioTrack state.
+     */
+    fun setTtsStreamingEnabled(enabled: Boolean) {
+        if (ttsConfig.streamingEnabled == enabled) return
+        ttsConfig = ttsConfig.copy(streamingEnabled = enabled)
+        _state.update { it.copy(ttsStreamingEnabled = enabled) }
+        log("TTS streaming toggled → $enabled")
+        val k = kokoroEngine
+        val oldRouter = ttsRouter
+        if (k != null && oldRouter != null) {
+            oldRouter.cancel()
+            val newRouter = TtsRouter(bus, k, ttsConfig, player = ttsPlayer)
+            newRouter.start(viewModelScope)
+            ttsRouter = newRouter
+            log("TTS router restarted (streamingEnabled=$enabled)")
+        }
+    }
+
     // ── Event handling ──────────────────────────────────────────────────────
 
     private fun handleEvent(event: AudioEvent) {
@@ -639,9 +713,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         astQueueSize = r?.queueSize ?: 0,
                         totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
                         totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
+                        firstTokenLatencyMs = r?.firstTokenLatencyMs ?: it.firstTokenLatencyMs,
                     )
                 }
-                log("Translation #$nextIdx (${event.latencyMs}ms): ${event.text.take(80)}")
+                log("Translation #$nextIdx (${event.latencyMs}ms, firstToken=${r?.firstTokenLatencyMs ?: 0}ms): ${event.text.take(80)}")
             }
             is AudioEvent.AstError -> {
                 val r = router
@@ -667,9 +742,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         ttsDropped = tr?.totalDropped ?: it.ttsDropped,
                         lastSpokenText = event.sourceText,
                         lastTtsDurationMs = durationMs,
+                        firstAudioLatencyMs = tr?.firstAudioLatencyMs ?: it.firstAudioLatencyMs,
                     )
                 }
-                log("TTS ready (${event.latencyMs}ms, ${event.samples.size} samp @${event.sampleRate}Hz): " +
+                log("TTS ready (${event.latencyMs}ms, firstAudio=${tr?.firstAudioLatencyMs ?: 0}ms, ${event.samples.size} samp @${event.sampleRate}Hz): " +
                     event.sourceText.take(60))
                 // When Stage B streaming is on, the router already handed
                 // the samples to the sink (`beginUtterance` / `play` /

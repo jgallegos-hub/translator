@@ -57,6 +57,15 @@ class TtsRouter(
     private val droppedCount = AtomicLong(0)
     private val totalLatencyMs = AtomicLong(0)
     private val errorCount = AtomicLong(0)
+    /**
+     * Wall-clock ms from the source `ChunkReady.timestampNs` (carried on
+     * `TranslationReady.sourceChunkTimestampNs`) to the moment we handed
+     * the FIRST PCM of the utterance to the sink / bus. Last-value
+     * semantics. Zero = "no utterance played yet". Measures the full
+     * mic-to-first-audio window, letting the UI compare Stage A / A+B / off
+     * apples-to-apples.
+     */
+    private val firstAudioLatencyMsAtomic = AtomicLong(0)
 
     val isRunning: Boolean
         get() = producerJob?.isActive == true && consumerJob?.isActive == true
@@ -65,6 +74,8 @@ class TtsRouter(
     val totalSynthesized: Long get() = synthesizedCount.get()
     val totalDropped: Long get() = droppedCount.get()
     val totalErrors: Long get() = errorCount.get()
+    /** ms from `ChunkReady.timestampNs` to first PCM handed to sink/bus. */
+    val firstAudioLatencyMs: Long get() = firstAudioLatencyMsAtomic.get()
     val averageLatencyMs: Double get() {
         val n = synthesizedCount.get()
         return if (n > 0) totalLatencyMs.get().toDouble() / n else 0.0
@@ -198,6 +209,12 @@ class TtsRouter(
         synthesizedCount.incrementAndGet()
         totalLatencyMs.addAndGet(result.latencyMs)
 
+        // One-shot: emit is the moment PCM is available for the ViewModel to
+        // play. Chunk timestamp is on the TranslationReady we consumed.
+        firstAudioLatencyMsAtomic.set(
+            (System.nanoTime() - tr.sourceChunkTimestampNs) / 1_000_000,
+        )
+
         bus.emit(
             AudioEvent.TtsAudioReady(
                 samples = result.pcm,
@@ -234,7 +251,8 @@ class TtsRouter(
         text: String,
         sink: TtsPlayerSink,
     ) {
-        if (tr.sourceChunkTimestampNs != openUtteranceTs) {
+        val newUtterance = tr.sourceChunkTimestampNs != openUtteranceTs
+        if (newUtterance) {
             val prev = openUtteranceTs
             if (prev != null) {
                 Log.w(TAG, "Streaming: utterance ts=$prev never terminated; endUtterance defensively")
@@ -243,10 +261,20 @@ class TtsRouter(
             openUtteranceTs = tr.sourceChunkTimestampNs
             sink.beginUtterance()
         }
+        // Latency landmark: record the utterance's first sink.play. If this
+        // TranslationReady starts a new utterance, arm the recorder; the
+        // callback below fires it exactly once on the first PCM chunk.
+        var firstAudioPending = newUtterance
 
         val result = try {
             engine.synthesizeStreaming(text, config.voice) { pcm, sr, _ ->
                 sink.play(pcm)
+                if (firstAudioPending) {
+                    firstAudioLatencyMsAtomic.set(
+                        (System.nanoTime() - tr.sourceChunkTimestampNs) / 1_000_000,
+                    )
+                    firstAudioPending = false
+                }
                 bus.emit(
                     AudioEvent.TtsAudioReady(
                         samples = pcm,
