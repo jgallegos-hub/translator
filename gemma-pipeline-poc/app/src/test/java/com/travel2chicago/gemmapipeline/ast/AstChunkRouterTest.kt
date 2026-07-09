@@ -519,9 +519,12 @@ class AstChunkRouterTest {
         runTest(UnconfinedTestDispatcher()) {
             val bus = AudioEventBus()
             // Exact phrase Gemma produced in device that slipped past the
-            // original six-pattern list; the new "translation of" / "the
-            // translation" / "the audio" entries in the default config
-            // are what catches it.
+            // original six-pattern list; the "translation of" / "the
+            // translation of" / "the audio is" entries in the default
+            // config are what catches it. (Post-device-validation the
+            // bare "the translation" / "the audio" patterns were narrowed
+            // to avoid false positives on real translations that mention
+            // the words "translation" or "audio".)
             val engine = FakeEngine(
                 nextResult = AstResult(
                     "The translation of the Spanish audio is: 'I'm going to the store.'",

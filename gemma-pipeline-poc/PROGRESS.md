@@ -318,7 +318,7 @@ que `feed()` internamente para no divergir), y `resetAll()` (que es
 
 ---
 
-## Fase 6: Optimización de latencia ✅ IMPLEMENTADA (julio 2026) — pending device validation
+## Fase 6: Optimización de latencia ✅ VALIDADA EN DEVICE (julio 2026)
 
 Commits: **`20bc326`** (Stage A) + **`937a5bf`** (Stage B) + **`54661d2`**
 (Stage C) + **`c0601a9`** (UI toggles + latency counters).
@@ -471,30 +471,83 @@ Este commit los wirea.
   placeholder `—` cuando el valor es 0 para evitar el trap "0 ms =
   blazing fast" en fresh start).
 
-### Estado + próximo paso
+### Device validation (protocolo de 3 rondas)
 
-- **Todo mergeado con flags OFF por default**. El first-boot APK
-  behaves like Fase 5 estabilizada. Stage C es siempre-activo → el
-  first-boot ya bajó ~1.5 s solo por el retune del chunker.
-- **~15 tests nuevos** entre stages (8 AST + 5 TTS + 2 chunker),
-  suite total ~102.
-- **Pendiente device validation** con protocolo de 3 rondas:
-  1. Ambos flags OFF → medir baseline (solo Stage C efectivo)
-  2. Solo AST streaming ON → medir bajada de `firstTokenLatencyMs`
-     y `firstAudioLatencyMs`
-  3. AST + TTS streaming ON → medir bajada adicional de
-     `firstAudioLatencyMs`
-- Después de validación exitosa → commit follow-up que flippea los
-  dos defaults a `true`.
+Corrido en Xiaomi 15T Pro con Saramonic USB + JBL Go 4, 10 frases
+canónicas por ronda, sin cambios de código entre rondas — solo los
+toggles de UI de streaming AST / streaming TTS.
 
-### Números esperados (a validar en device)
+**Resultados: 0 errores, 0 crashes en las 3 rondas.**
+
+Métricas por stage (`firstTokenLatencyMs` y `firstAudioLatencyMs`
+medidos desde `ChunkReady.timestampNs` — mic-to-first-output real):
 
 | Configuración | First token | First audio | Notas |
 |---|---|---|---|
-| Baseline pre-Fase-6 (chunker 3000/700) | ~5.8 s | ~13.5 s | reference |
-| Stage C only (chunker 1500/500) | ~4.3 s | ~12 s | ya en el APK |
-| + Stage A ON | ~2 s | ~10 s | Gemma streaming, Kokoro one-shot |
-| + Stage A + B ON | ~2 s | **~3 s** | Kokoro sentence-1 mientras 2 decodifica |
+| Baseline pre-Fase-6 (chunker 3000/700) | ~5800 ms | ~13500 ms | reference |
+| Stage C only (chunker 1500/500) | ~2000 ms | ~3700 ms | flags OFF |
+| + Stage A ON (AST streaming) | ~1200 ms | ~3800 ms | Gemma stream, Kokoro one-shot |
+| + Stage A + B ON (todo streaming) | ~1170 ms | **~3400 ms** | Kokoro sentence-1 mientras 2 decodifica |
+
+**Lectura de las mediciones**:
+- **Stage C (chunker retune) fue la mayor ganancia** — bajó
+  first-audio de ~13.5 s a ~3.7 s con solo el cambio de defaults
+  (min-chunk 3000→1500, silence-end 700→500). Confirma la hipótesis
+  del plan: el 6 s de acumulación del chunker era el bottleneck
+  dominante pre-Fase-6, no la inferencia de Gemma.
+- **Stage A (AST streaming) dio 42% adicional en first-token**
+  (~2000 → ~1170 ms) — Gemma empieza a emitir tokens antes de
+  terminar el decode completo. First-audio se movió poco porque
+  Kokoro one-shot todavía espera la utterance entera antes de
+  sintetizar.
+- **Stage B (TTS streaming) tuvo impacto modesto** en las frases de
+  prueba (~3800 → 3400 ms) porque casi todas eran una sola oración
+  — no hay "sentence 2" mientras se sintetiza "sentence 1". El
+  beneficio real de Stage B será significativo con frases largas
+  multi-oración (traducciones de párrafos completos), donde
+  first-audio depende solo de la primera oración y no de la suma.
+- **Meta-text filter funcionó en el path streaming** — atrapó
+  correctamente "not provided" cuando llegó partido entre tokens.
+- **Bookends `beginUtterance` / `endUtterance` sin flicker** — el
+  mute stayed `true` toda la utterance; no hubo falsos disparos del
+  `handleMuteRisingEdge` del chunker entre oraciones.
+- **Graceful shutdown** drenó pendientes correctamente; ningún
+  chunk quedó a medio decodificar al parar el pipeline.
+
+### Fixes post-validación
+
+1. **Meta-text false positive**. El patrón `"the translation"` como
+   substring suelto descartó una traducción legítima:
+   `"This is the translation test number one."`. Los patrones
+   `"the translation"` y `"the audio"` eran demasiado laxos —
+   matchean texto normal que contiene esas palabras. Cambiados a
+   variantes con verbo asistente:
+   - `"the translation"` → `"the translation of"` + `"the translation is"`
+   - `"the audio"` → `"the audio is"` + `"the audio was"`
+
+   Esto conserva la captura de preambulos (`"The translation of the
+   Spanish audio is: ..."`, `"The audio is: ..."`) sin bloquear
+   traducciones que mencionan las palabras en contexto natural. El
+   test `default AstConfig patterns catch the assistant-preamble leak
+   observed on device` sigue verde — el preambulo original de device
+   sigue cazado por `"translation of"` (que ya era pattern
+   preexistente) y por el nuevo `"the translation of"`.
+
+2. **Flip de defaults a ON**. Con las 3 rondas passing:
+   - `AstConfig.streamingEnabled: Boolean = true` (era `false`)
+   - `TtsConfig.streamingEnabled: Boolean = true` (era `false`)
+
+   Los toggles en UI permanecen wireados para poder desactivar
+   streaming en runtime si aparece regresión — la ruta legacy no
+   se eliminó.
+
+### Estado
+
+- **Todo mergeado, todo activo por default**. First-boot APK ahora
+  tiene todas las optimizaciones de Fase 6 encendidas.
+- **~15 tests nuevos** entre stages (8 AST + 5 TTS + 2 chunker),
+  suite total ~102.
+- **12/12 criterios Go/No-Go: PASS**.
 
 ### Lecciones técnicas:
 - LiteRT-LM 0.12.0 `sendMessageAsync` retorna un cold Flow. `onCompletion`

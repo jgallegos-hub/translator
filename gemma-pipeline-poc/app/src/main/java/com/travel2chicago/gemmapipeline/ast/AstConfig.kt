@@ -87,13 +87,14 @@ data class AstConfig(
      * Gemma is still decoding sentence 2. Each event carries `sentenceIndex`
      * (0-based) and `isFinal` (true on the last one).
      *
-     * When `false` (default) the router uses the legacy full-utterance
+     * When `false` the router uses the legacy full-utterance
      * `engine.translate(...)` path — one `ChunkReady` → one `TranslationReady`
-     * with `sentenceIndex = null`, `isFinal = true`. Left off at Fase 6 merge
-     * time so the first-boot APK behaves exactly like Fase 5; the ViewModel
-     * exposes a UI switch to flip it on for device testing.
+     * with `sentenceIndex = null`, `isFinal = true`. Flipped to `true` by
+     * default after Fase 6 device validation (3-round protocol: 0 crashes,
+     * first-token latency dropped from ~2000ms to ~1170ms). The UI switch
+     * still allows disabling it at runtime if a regression appears.
      */
-    val streamingEnabled: Boolean = false,
+    val streamingEnabled: Boolean = true,
 
     val metaTextPatterns: List<String> = listOf(
         // Silence / no-input replies
@@ -109,12 +110,21 @@ data class AstConfig(
         //   "The translation of the Spanish audio is: 'I'm going to the store.'"
         //   "Here is the translation: hello"
         //   "The audio is: hello"
+        //
+        // Post-device-validation tuning: patterns were narrowed to avoid
+        // false positives on legitimate translations that happen to contain
+        // the word "translation" or "audio" (e.g. "This is the translation
+        // test number one." or "Turn off the audio."). Two-word substrings
+        // like "the translation" and "the audio" matched real content; we
+        // now require the assistant-preamble verb ("is" / "was" / "of").
         "translation of",
-        "the translation",
+        "the translation of",
+        "the translation is",
         "spanish audio",
         "translate the",
         "here is the",
-        "the audio",
+        "the audio is",
+        "the audio was",
     ),
 ) {
     init {

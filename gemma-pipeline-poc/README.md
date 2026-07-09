@@ -9,11 +9,13 @@ a target ≤ 3 s.
 
 **Status:**
 - ✅ Fase 4 + Fase 5 COMPLETADAS on Xiaomi 15T Pro (junio 2026).
-- ✅ Fase 6 (streaming) implementada (julio 2026), **pending device
-  validation** — flags default OFF so a fresh install behaves exactly
-  like Fase 5 stabilised. Toggle each stage independently in the UI
-  under "3½. FASE 6 STREAMING" and watch the `First token: X ms` +
-  `First audio: Y ms` counters in the same panel.
+- ✅ Fase 6 (streaming) VALIDADA on device (julio 2026) — 3-round
+  protocol passed with 0 errors. **Both streaming flags default ON**
+  as of this commit; measured latencies: baseline ~13.5 s → Stage C
+  only ~3.7 s → all stages ON ~3.4 s (first-audio, end-to-end). The
+  UI toggles under "3½. FASE 6 STREAMING" remain wired for runtime
+  disabling if a regression appears. Latency counters (`First token`
+  + `First audio`) live in the same panel.
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation
@@ -246,10 +248,11 @@ codec re-negotiation latency.
 
 ## Fase 6 streaming — how to measure the win
 
-Two feature flags collapse the ~14 s first-audio wall down to a target
-≤ 3 s by pipelining Gemma's output tokens straight into Kokoro's
-per-sentence PCM. Both flags default OFF at merge — the toggle lives in
-the UI so you flip them once and immediately see the number move.
+Two feature flags collapse the ~14 s first-audio wall down to ~3.4 s by
+pipelining Gemma's output tokens straight into Kokoro's per-sentence PCM.
+Both flags **default ON** after the Fase 6 device validation — the UI
+toggles are still wired so you can disable either stage at runtime if a
+regression appears.
 
 **Stage A — AST streaming** (`AstConfig.streamingEnabled`, UI switch):
 `LiteRtGemmaAstEngine` uses `Conversation.sendMessageAsync(...): Flow<Message>`
@@ -294,24 +297,30 @@ Placeholder `—` when the value is 0 (no chunk processed since the
 last pipeline start / router restart) to avoid the "0 ms = blazing
 fast" misread.
 
-**Device test protocol** (3 rounds; the same 10 canonical Spanish
-phrases each time):
-1. Both flags OFF — record baseline. Stage C is already on, so
-   this is Fase 5 numbers minus ~1.5 s.
-2. Flip AST streaming ON, TTS streaming OFF. `First token` should
-   drop sharply (~1–1.5 s vs ~2.8 s full reply); `First audio` drops
-   by roughly the same amount because Kokoro still runs full-utterance.
-3. Flip both ON. `First audio` should drop again as Kokoro speaks
-   sentence 1 while sentences 2..N are still synthesising.
+**Device test protocol used for validation** (3 rounds; the same 10
+canonical Spanish phrases each time):
+1. Both flags OFF — baseline. Stage C is already on, so this is
+   Fase 5 numbers minus ~1.5 s of chunker retune.
+2. Flip AST streaming ON, TTS streaming OFF. `First token` drops
+   sharply (Gemma emits tokens as they decode); `First audio` drops
+   by less because Kokoro still runs full-utterance.
+3. Flip both ON. `First audio` drops again as Kokoro speaks
+   sentence 1 while sentences 2..N are still synthesising —
+   noticeable with multi-sentence translations, marginal with
+   single-sentence ones.
 
-Expected end state on Xiaomi 15T Pro (device-dependent):
+Measured on Xiaomi 15T Pro during validation (July 2026):
 
 | Configuration | First token | First audio | Notes |
 |---|---|---|---|
-| Baseline (chunker 3000/700, all off) | ~5.8 s | ~13.5 s | pre-Fase-6 |
-| Stage C only (chunker 1500/500) | ~4.3 s | ~12 s | already in APK |
-| + Stage A ON | ~2 s | ~10 s | Kokoro one-shot |
-| + Stage A + B ON | ~2 s | **~3 s** | streaming end-to-end |
+| Baseline (chunker 3000/700, all off) | ~5800 ms | ~13500 ms | pre-Fase-6 |
+| Stage C only (chunker 1500/500) | ~2000 ms | ~3700 ms | flags OFF |
+| + Stage A ON (AST streaming) | ~1200 ms | ~3800 ms | Kokoro one-shot |
+| + Stage A + B ON (all streaming) | ~1170 ms | **~3400 ms** | current default |
+
+Biggest win came from Stage C (chunker retune); Stage A drove another
+42% off first-token; Stage B is modest with one-sentence phrases and
+scales up with multi-sentence translations.
 
 ## Known noise
 

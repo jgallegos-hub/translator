@@ -49,15 +49,18 @@ data class TtsConfig(
      * `ttsPlaying` mute flag stays `true` across the whole utterance and
      * the VAD doesn't see spurious un-mute edges between sentences.
      *
-     * When `false` (default) the router uses the legacy full-utterance
+     * When `false` the router uses the legacy full-utterance
      * `engine.synthesize` path and emits `TtsAudioReady` on the bus for
      * the ViewModel to play — one call, one begin/end (implicit in
      * `play()`), same as Fase 5.
      *
-     * Left OFF at Fase 6 merge so the first-boot APK behaves like Fase 5;
-     * the UI switch flips it on for device testing.
+     * Flipped to `true` by default after Fase 6 device validation:
+     * first-audio latency dropped from ~3700ms to ~3400ms (modest with
+     * single-sentence utterances, significant with multi-sentence ones);
+     * bookends held the mute flag steady across sentence boundaries.
+     * The UI switch still allows disabling it at runtime.
      */
-    val streamingEnabled: Boolean = false,
+    val streamingEnabled: Boolean = true,
 ) {
     val modelPath: String get() = "$modelDirPath/$modelFilename"
     val voicesPath: String get() = "$modelDirPath/$voicesFilename"
