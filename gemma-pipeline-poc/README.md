@@ -279,6 +279,16 @@ translation quality on the 10-phrase canonical device test. The sliders
 in "8. CHUNKER TUNING" are still wired if a specific utterance type
 needs different framing.
 
+**MTP / speculative decoding** (`AstConfig.mtpEnabled`, UI switch,
+default ON): sets `ExperimentalFlags.enableSpeculativeDecoding = true`
+before `Engine.initialize()`. Uses the model's built-in Multi-Token
+Prediction drafter to speculate on the next N tokens and verify them
+in a single decode step — advertised as ~2.2× decode speedup. Requires
+a `.litertlm` export built after 2026-05-05 (contains the drafter
+subgraph); older models silently ignore the flag with no crash and no
+gain. The toggle acts as a kill-switch: flipping it only takes effect
+on the next Gemma reload.
+
 **LiteRT-LM 0.14 does NOT support audio-input streaming.** Reverse-
 engineering the local AAR + reading upstream docs confirmed there's no
 `sendAudioFrame(...)` or `AudioStreamingEnabled` setter. Gemma still

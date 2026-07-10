@@ -90,8 +90,14 @@ data class GemmaPipelineUiState(
     val totalDiscardedLowEnergy: Long = 0,
     /** Replies dropped AFTER Gemma because they matched a meta-text pattern. */
     val totalDiscardedMeta: Long = 0,
-    /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. */
-    val astStreamingEnabled: Boolean = false,
+    /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. Default matches
+     *  the config default so first-render UI shows the actual runtime state. */
+    val astStreamingEnabled: Boolean = true,
+    /** Mirrors [AstConfig.mtpEnabled] — Multi-Token Prediction / speculative
+     *  decoding. Takes effect on Gemma (re)load; the UI toggle can flip it
+     *  at runtime as a kill-switch, but the change won't apply until the
+     *  engine is reloaded. */
+    val mtpEnabled: Boolean = true,
     /** Fase 6 Stage A — from `AstChunkRouter.firstTokenLatencyMs`.
      *  Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output
      *  (first token in streaming, full reply in one-shot). */
@@ -124,8 +130,9 @@ data class GemmaPipelineUiState(
     val ttsAvgLatencyMs: Double = 0.0,
     val lastSpokenText: String = "",
     val lastTtsDurationMs: Int = 0,
-    /** Fase 6 Stage B — mirrors [TtsConfig.streamingEnabled]. */
-    val ttsStreamingEnabled: Boolean = false,
+    /** Fase 6 Stage B — mirrors [TtsConfig.streamingEnabled]. Default matches
+     *  the config default so first-render UI shows the actual runtime state. */
+    val ttsStreamingEnabled: Boolean = true,
     /** Fase 6 Stage B — from `TtsRouter.firstAudioLatencyMs`.
      *  Wall-clock ms from `ChunkReady.timestampNs` to first PCM handed to
      *  the sink / bus. The end-to-end user-facing latency number. */
@@ -634,6 +641,30 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             router = newRouter
             log("AST router restarted (streamingEnabled=$enabled)")
         }
+    }
+
+    /**
+     * Multi-Token Prediction / speculative decoding toggle. Unlike the two
+     * streaming toggles above, MTP is bound at `Engine.initialize()` time —
+     * flipping it here updates [AstConfig.mtpEnabled] and the UI state
+     * immediately, and pushes the change to `ExperimentalFlags` right away,
+     * but the effective decode path only switches on the **next Gemma load**.
+     *
+     * Kept as a runtime toggle anyway because a Gemma reload is cheap on
+     * subsequent app launches (~5–10 s with the xnnpack cache warm) and MTP
+     * being a kill-switch is the whole reason for the flag.
+     */
+    @OptIn(com.google.ai.edge.litertlm.ExperimentalApi::class)
+    fun setMtpEnabled(enabled: Boolean) {
+        if (astConfig.mtpEnabled == enabled) return
+        astConfig = astConfig.copy(mtpEnabled = enabled)
+        _state.update { it.copy(mtpEnabled = enabled) }
+        // Push to the SDK-level flag on the fly so a follow-up reload picks it
+        // up without another code path. When disabling we clear the override so
+        // the SDK falls back to its default (no speculation).
+        com.google.ai.edge.litertlm.ExperimentalFlags.enableSpeculativeDecoding =
+            if (enabled) true else null
+        log("MTP toggled → $enabled (takes effect on next Gemma reload)")
     }
 
     /**

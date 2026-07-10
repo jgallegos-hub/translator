@@ -96,6 +96,27 @@ data class AstConfig(
      */
     val streamingEnabled: Boolean = true,
 
+    /**
+     * Multi-Token Prediction (MTP) / speculative decoding for Gemma decode.
+     *
+     * When `true`, [LiteRtGemmaAstEngine.load] sets
+     * `ExperimentalFlags.enableSpeculativeDecoding = true` **before**
+     * `engine.initialize()`. The runtime uses the model's built-in MTP
+     * drafter to speculate on the next N tokens and verify them in a single
+     * decode step — advertised as ~2.2× speedup on decode-heavy workloads
+     * (translation is decode-heavy since prefill is small: audio + short prompt).
+     *
+     * When `false` we DO NOT touch [ExperimentalFlags] at all — SDK default
+     * behaviour (no speculation). Toggle at runtime via the UI if MTP misbehaves
+     * on a particular model or backend; the flag change takes effect on the
+     * next Gemma reload.
+     *
+     * Caveat: the `.litertlm` model file must have been produced **after
+     * 2026-05-05** to embed the MTP drafter; older exports simply ignore
+     * the flag and fall back to standard decode (no crash, no gain).
+     */
+    val mtpEnabled: Boolean = true,
+
     val metaTextPatterns: List<String> = listOf(
         // Silence / no-input replies
         "not provided",

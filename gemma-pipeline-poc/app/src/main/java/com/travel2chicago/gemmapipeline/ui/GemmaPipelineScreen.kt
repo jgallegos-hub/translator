@@ -233,6 +233,18 @@ fun GemmaPipelineScreen(
                     checked = state.ttsStreamingEnabled,
                     onCheckedChange = { viewModel.setTtsStreamingEnabled(it) },
                 )
+                SwitchRow(
+                    label = "MTP / speculative decoding (Gemma decode ~2.2×)",
+                    checked = state.mtpEnabled,
+                    onCheckedChange = { viewModel.setMtpEnabled(it) },
+                )
+                Text(
+                    "MTP requires a Gemma reload to take effect. Needs a " +
+                        ".litertlm model built after 2026-05-05 — older " +
+                        "exports silently ignore the flag.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(6.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(

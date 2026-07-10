@@ -8,6 +8,8 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.flow.onCompletion
@@ -255,12 +257,36 @@ class LiteRtGemmaAstEngine private constructor(
          * Throws [IllegalStateException] if the model file is missing.
          * Throws [RuntimeException] if both GPU and CPU init fail.
          */
+        @OptIn(ExperimentalApi::class)
         fun load(config: AstConfig, cacheDir: String): LiteRtGemmaAstEngine {
             val modelFile = File(config.modelPath)
             check(modelFile.exists() && modelFile.isFile) {
                 "Gemma model not found at ${config.modelPath} — copy from gemma-ast-poc"
             }
             Log.i(TAG, "Model file present: ${modelFile.length()} bytes")
+
+            // Multi-Token Prediction / speculative decoding. When enabled, the
+            // runtime uses the model's built-in MTP drafter to speculate on
+            // the next N tokens and verify them in a single decode step — up
+            // to ~2.2× decode speedup on translation-style workloads.
+            //
+            // Must be set BEFORE `engine.initialize()` — the flag is read
+            // during the initialize() path when the runtime wires up the
+            // drafter subgraph.
+            //
+            // Only touch the flag when explicitly enabled. Setting it to
+            // `false` would override any user-set default outside this class;
+            // leaving it null preserves SDK default (no speculation).
+            //
+            // Requires the .litertlm export to contain the MTP drafter (only
+            // models built after 2026-05-05 have it). If the drafter is
+            // missing, the flag is silently ignored — no crash, no speedup.
+            if (config.mtpEnabled) {
+                ExperimentalFlags.enableSpeculativeDecoding = true
+                Log.i(TAG, "MTP/speculative decoding: enabled (via ExperimentalFlags)")
+            } else {
+                Log.i(TAG, "MTP/speculative decoding: disabled (SDK default path)")
+            }
 
             // GPU → CPU strategy. Each attempt is fully isolated so a failed
             // GPU init can't leak resources into the CPU attempt.
