@@ -44,7 +44,7 @@ staged optimisations with their feature flags.
 
 1. The Gemma model must live at `/sdcard/Download/gemma_model/`:
    ```
-   gemma-4-E4B-it.litertlm
+   gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm
    .litertlm.audio_adapter.xnnpack_cache
    .litertlm.audio_encoder.xnnpack_cache
    .litertlm.static_audio_encoder.xnnpack_cache
@@ -53,11 +53,9 @@ staged optimisations with their feature flags.
    .litertlm_5818495038867434237.bin
    ```
    Reuse the directory from `gemma-ast-poc` (Fase 0). The companion files are
-   required for the GPU backend. The `.litertlm` filename bumped in this
-   commit — the newer export contains the MTP drafter subgraph so
-   `AstConfig.mtpEnabled = true` actually kicks in; the previous
-   `gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm` from Fase 0/5
-   does not have the drafter and MTP silently no-ops on it.
+   required for the GPU backend. We briefly tried the official
+   `gemma-4-E4B-it.litertlm` export (which embeds the MTP drafter) but its
+   AST quality was noticeably worse on device — see [`PROGRESS.md`](PROGRESS.md).
 
 2. The Kokoro TTS model must live at `/sdcard/Download/kokoro_model/`:
    ```
@@ -284,14 +282,16 @@ in "8. CHUNKER TUNING" are still wired if a specific utterance type
 needs different framing.
 
 **MTP / speculative decoding** (`AstConfig.mtpEnabled`, UI switch,
-default ON): sets `ExperimentalFlags.enableSpeculativeDecoding = true`
+**default OFF**): sets `ExperimentalFlags.enableSpeculativeDecoding = true`
 before `Engine.initialize()`. Uses the model's built-in Multi-Token
 Prediction drafter to speculate on the next N tokens and verify them
-in a single decode step — advertised as ~2.2× decode speedup. Requires
-a `.litertlm` export built after 2026-05-05 (contains the drafter
-subgraph); older models silently ignore the flag with no crash and no
-gain. The toggle acts as a kill-switch: flipping it only takes effect
-on the next Gemma reload.
+in a single decode step — advertised as ~2.2× **decode** speedup.
+Turned off after device testing: our AST replies are ~5–10 tokens
+long, so decode is not the bottleneck and MTP's win is negligible.
+Also, our current model export (`gemma4_4b_v09_...`) does not embed the
+drafter subgraph — the flag is a no-op on it. The toggle stays for
+future experiments (longer replies, model swaps); the change takes
+effect on the next Gemma reload.
 
 **LiteRT-LM 0.14 does NOT support audio-input streaming.** Reverse-
 engineering the local AAR + reading upstream docs confirmed there's no

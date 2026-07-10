@@ -17,13 +17,21 @@ data class AstConfig(
     /**
      * Model file name inside [modelDirPath].
      *
-     * Updated to the post-2026-05-05 export that embeds the Multi-Token
-     * Prediction drafter — required for [mtpEnabled] to actually kick in.
-     * The prior filename (`gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm`)
-     * used through Fase 5 does not contain the drafter subgraph, so the
-     * MTP flag would be silently ignored on it.
+     * We briefly bumped this to the official post-2026-05-05 `gemma-4-E4B-it.
+     * litertlm` export (which embeds the MTP drafter) and turned MTP on by
+     * default. Device testing showed:
+     *   - Translations were noticeably WORSE — replies came out in Spanish
+     *     more often, English translations were garbled, latency was
+     *     actually higher.
+     *   - MTP did NOT move first-token latency in either direction: our
+     *     replies are ~5–10 tokens long, and MTP accelerates DECODE, not
+     *     prefill. On short outputs the drafter's win is negligible while
+     *     the model swap ate all the latency budget.
+     *
+     * Reverted to the Fase 0 export. See [mtpEnabled] for the MTP-off
+     * default rationale.
      */
-    val modelFilename: String = "gemma-4-E4B-it.litertlm",
+    val modelFilename: String = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
 
     /**
      * Prompt sent alongside each audio chunk. Validated phrasing from Fase 0
@@ -111,19 +119,25 @@ data class AstConfig(
      * `ExperimentalFlags.enableSpeculativeDecoding = true` **before**
      * `engine.initialize()`. The runtime uses the model's built-in MTP
      * drafter to speculate on the next N tokens and verify them in a single
-     * decode step — advertised as ~2.2× speedup on decode-heavy workloads
-     * (translation is decode-heavy since prefill is small: audio + short prompt).
+     * decode step — advertised as ~2.2× speedup on decode-heavy workloads.
      *
-     * When `false` we DO NOT touch [ExperimentalFlags] at all — SDK default
-     * behaviour (no speculation). Toggle at runtime via the UI if MTP misbehaves
-     * on a particular model or backend; the flag change takes effect on the
-     * next Gemma reload.
+     * **Default is `false`** after device testing:
+     *   - Translation outputs are short (~5–10 tokens). MTP accelerates
+     *     DECODE, not prefill. On short outputs the drafter's win is
+     *     negligible while it adds runtime overhead.
+     *   - Our Fase 0 model export (see [modelFilename]) does not embed the
+     *     MTP drafter subgraph — the flag would be a silent no-op even if
+     *     it did produce a gain.
      *
-     * Caveat: the `.litertlm` model file must have been produced **after
-     * 2026-05-05** to embed the MTP drafter; older exports simply ignore
-     * the flag and fall back to standard decode (no crash, no gain).
+     * The UI toggle is preserved as a kill-switch / experiment lever for
+     * future model swaps or long-form workloads where decode dominates.
+     * When `false` we DO NOT touch [ExperimentalFlags] at all — SDK default.
+     *
+     * Caveat: to actually benefit from MTP the `.litertlm` model file must
+     * have been produced **after 2026-05-05** to embed the drafter; older
+     * exports (including our current one) ignore the flag with no crash.
      */
-    val mtpEnabled: Boolean = true,
+    val mtpEnabled: Boolean = false,
 
     val metaTextPatterns: List<String> = listOf(
         // Silence / no-input replies

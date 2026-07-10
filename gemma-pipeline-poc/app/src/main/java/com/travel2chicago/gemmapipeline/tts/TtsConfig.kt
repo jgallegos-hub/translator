@@ -61,6 +61,27 @@ data class TtsConfig(
      * The UI switch still allows disabling it at runtime.
      */
     val streamingEnabled: Boolean = true,
+
+    /**
+     * Fast/Quality TTS toggle.
+     *
+     * When `true`, [TtsRouter] routes each translation through
+     * [AndroidTtsEngine] (system `android.speech.tts.TextToSpeech`) — the
+     * OS speaks directly to the system audio output, bypassing our
+     * per-sentence PCM handoff to [TtsAudioPlayer]. Typical latency
+     * ~100–300 ms per utterance on the Xiaomi 15T Pro.
+     *
+     * When `false` (default), the router uses [KokoroTtsEngine] as in
+     * Fase 5 — higher voice quality (~1500–2500 ms per sentence) with the
+     * full streaming pipeline described above.
+     *
+     * Streaming ([streamingEnabled]) is a Kokoro-only concept — the Android
+     * TTS path always speaks the whole translation in one call (its own
+     * chunking is opaque to us). When [useFastMode] is on, the streaming
+     * flag is ignored on the render side but its state is preserved so the
+     * user can flip fast mode off and get the streaming behaviour back.
+     */
+    val useFastMode: Boolean = false,
 ) {
     val modelPath: String get() = "$modelDirPath/$modelFilename"
     val voicesPath: String get() = "$modelDirPath/$voicesFilename"

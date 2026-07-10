@@ -239,9 +239,26 @@ fun GemmaPipelineScreen(
                     onCheckedChange = { viewModel.setMtpEnabled(it) },
                 )
                 Text(
-                    "MTP requires a Gemma reload to take effect. Needs a " +
-                        ".litertlm model built after 2026-05-05 — older " +
-                        "exports silently ignore the flag.",
+                    "MTP requires a Gemma reload to take effect. Default OFF — " +
+                        "our replies are short (~5–10 tokens) so decode isn't " +
+                        "the bottleneck, and our current model doesn't embed " +
+                        "the drafter.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "Fast TTS (Android system TTS instead of Kokoro)",
+                    checked = state.ttsFastMode,
+                    onCheckedChange = { viewModel.setTtsFastMode(it) },
+                )
+                Text(
+                    text = when {
+                        state.androidTtsError != null -> "⚠ Android TTS: ${state.androidTtsError}"
+                        !state.androidTtsReady -> "Android TTS initialising…"
+                        state.ttsFastMode -> "Fast mode ON — system TTS (~100–300 ms/utterance)"
+                        else -> "Quality mode — Kokoro (~1.5–2.5 s/sentence, higher voice quality)"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

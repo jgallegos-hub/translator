@@ -43,8 +43,19 @@ class TtsRouter(
      * ViewModel picks up `TtsAudioReady` and calls `player.play()` itself.
      * Leaving this at the default `null` keeps every existing test's
      * bus-only assertions valid unchanged.
+     *
+     * When [TtsConfig.useFastMode] is on, the sink is also used to raise
+     * the VAD-mute flag around each Android TTS `speak` call — the sink's
+     * `play` is not called (there's no PCM to play; the OS handles audio).
      */
     private val player: TtsPlayerSink? = null,
+    /**
+     * Optional Android system TTS engine. When provided AND
+     * [TtsConfig.useFastMode] is `true`, the router routes each translation
+     * through [AndroidTtsEngine.speak] instead of [KokoroTtsEngine].
+     * Default `null` preserves every existing test — Kokoro-only path.
+     */
+    private val androidEngine: AndroidTtsEngine? = null,
 ) {
     private val channel: Channel<AudioEvent.TranslationReady> =
         Channel(capacity = config.queueCapacity)
@@ -186,10 +197,100 @@ class TtsRouter(
             Log.w(TAG, "Empty translation, skipping")
             return
         }
+        // Fast-mode path takes precedence over Kokoro streaming — the two are
+        // mutually exclusive (Android TTS speaks the whole utterance in one
+        // call, no per-sentence handoff).
+        val fast = androidEngine
+        if (config.useFastMode && fast != null) {
+            processTranslationFast(tr, text, fast)
+            return
+        }
         if (config.streamingEnabled && player != null) {
             processTranslationStreaming(tr, text, player)
         } else {
             processTranslationOneShot(tr, text)
+        }
+    }
+
+    /**
+     * Android system TTS path. The OS renders audio directly to the system
+     * output (typically the paired A2DP speaker), so we don't push PCM to
+     * [TtsPlayerSink]. We still open/close the utterance bookend on the
+     * sink (when available) so [TtsAudioPlayer]'s depth counter raises the
+     * shared VAD-mute flag for the duration of playback — otherwise the
+     * mic would re-capture the speaker output as new "speech".
+     *
+     * `firstAudioLatencyMs` is anchored at Android's `onStart` callback,
+     * which fires when the OS starts playing samples (the closest signal
+     * available for "user hears audio now").
+     */
+    private suspend fun processTranslationFast(
+        tr: AudioEvent.TranslationReady,
+        text: String,
+        fast: AndroidTtsEngine,
+    ) {
+        // Streaming from Gemma (Fase 6 Stage A) can produce multiple
+        // TranslationReady events per chunk — for fast mode we still want a
+        // single VAD-mute window that spans all sentences of the same source
+        // chunk. Bookend logic mirrors the streaming Kokoro path.
+        val newUtterance = tr.sourceChunkTimestampNs != openUtteranceTs
+        val sink = player
+        if (newUtterance) {
+            val prev = openUtteranceTs
+            if (prev != null && sink != null) {
+                Log.w(TAG, "Fast: utterance ts=$prev never terminated; endUtterance defensively")
+                sink.endUtterance()
+            }
+            openUtteranceTs = tr.sourceChunkTimestampNs
+            sink?.beginUtterance()
+        }
+
+        val latencyMs = try {
+            fast.speak(text) {
+                // onStart fires from the OS when audio playback begins.
+                firstAudioLatencyMsAtomic.set(
+                    (System.nanoTime() - tr.sourceChunkTimestampNs) / 1_000_000,
+                )
+            }
+        } catch (t: Throwable) {
+            errorCount.incrementAndGet()
+            Log.e(TAG, "Android TTS speak() failed for text='${text.take(60)}'", t)
+            emitError(
+                "Android TTS failed: ${t.javaClass.simpleName}: ${t.message}",
+                tr,
+            )
+            if (tr.isFinal || !config.streamingEnabled) {
+                openUtteranceTs = null
+                sink?.endUtterance()
+            }
+            return
+        }
+
+        synthesizedCount.incrementAndGet()
+        totalLatencyMs.addAndGet(latencyMs)
+
+        // Emit a lightweight TtsAudioReady so the UI/metrics fire the same
+        // way they do for the Kokoro path. Empty samples signal "the OS
+        // already played the audio" — `TtsPlayerSink.play(ShortArray(0))`
+        // is a no-op in `TtsAudioPlayer`, so the ViewModel's non-streaming
+        // handler doesn't double-play or glitch.
+        bus.emit(
+            AudioEvent.TtsAudioReady(
+                samples = ShortArray(0),
+                sampleRate = 0,
+                sourceText = text,
+                sourceTranslationTimestampNs = tr.timestampNs,
+                latencyMs = latencyMs,
+                timestampNs = System.nanoTime(),
+            ),
+        )
+
+        // Close the bookend when the utterance completes. For non-streaming
+        // Gemma every TranslationReady is `isFinal=true` — close immediately.
+        // For streaming Gemma we only close on the last sentence.
+        if (tr.isFinal || !config.streamingEnabled) {
+            openUtteranceTs = null
+            sink?.endUtterance()
         }
     }
 

@@ -18,6 +18,7 @@ import com.travel2chicago.gemmapipeline.audio.NativeAudioEngine
 import com.travel2chicago.gemmapipeline.audio.VadState
 import com.travel2chicago.gemmapipeline.chunker.ChunkerConfig
 import com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline
+import com.travel2chicago.gemmapipeline.tts.AndroidTtsEngine
 import com.travel2chicago.gemmapipeline.tts.KokoroOnnxEngine
 import com.travel2chicago.gemmapipeline.tts.KokoroTtsEngine
 import com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer
@@ -94,10 +95,9 @@ data class GemmaPipelineUiState(
      *  the config default so first-render UI shows the actual runtime state. */
     val astStreamingEnabled: Boolean = true,
     /** Mirrors [AstConfig.mtpEnabled] — Multi-Token Prediction / speculative
-     *  decoding. Takes effect on Gemma (re)load; the UI toggle can flip it
-     *  at runtime as a kill-switch, but the change won't apply until the
-     *  engine is reloaded. */
-    val mtpEnabled: Boolean = true,
+     *  decoding. Default OFF after device testing (see AstConfig for
+     *  rationale). Takes effect on next Gemma load. */
+    val mtpEnabled: Boolean = false,
     /** Fase 6 Stage A — from `AstChunkRouter.firstTokenLatencyMs`.
      *  Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output
      *  (first token in streaming, full reply in one-shot). */
@@ -133,6 +133,12 @@ data class GemmaPipelineUiState(
     /** Fase 6 Stage B — mirrors [TtsConfig.streamingEnabled]. Default matches
      *  the config default so first-render UI shows the actual runtime state. */
     val ttsStreamingEnabled: Boolean = true,
+    /** Mirrors [TtsConfig.useFastMode] — Android system TTS instead of Kokoro. */
+    val ttsFastMode: Boolean = false,
+    /** Whether the Android TTS engine is initialised and ready to speak. */
+    val androidTtsReady: Boolean = false,
+    /** Any error surfaced during Android TTS init (missing en-US data, etc.). */
+    val androidTtsError: String? = null,
     /** Fase 6 Stage B — from `TtsRouter.firstAudioLatencyMs`.
      *  Wall-clock ms from `ChunkReady.timestampNs` to first PCM handed to
      *  the sink / bus. The end-to-end user-facing latency number. */
@@ -198,6 +204,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var router: AstChunkRouter? = null
 
     @Volatile private var kokoroEngine: KokoroTtsEngine? = null
+    @Volatile private var androidTtsEngine: AndroidTtsEngine? = null
     @Volatile private var ttsRouter: TtsRouter? = null
 
     /**
@@ -222,8 +229,11 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         loadSileroModel()
-        // Gemma load is gated by storage permission — we kick it off in
-        // onPermissionsUpdated once storage is granted.
+        // Android system TTS has no permission gate — we can kick it off
+        // right away so it's ready by the time the user toggles Fast mode.
+        loadAndroidTtsEngine()
+        // Gemma + Kokoro loads are gated by storage permission — we kick
+        // them off in onPermissionsUpdated once storage is granted.
     }
 
     override fun onCleared() {
@@ -242,6 +252,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         sileroModel?.close()
         gemmaEngine?.close()
         kokoroEngine?.close()
+        androidTtsEngine?.close()
     }
 
     // ── Permissions ─────────────────────────────────────────────────────────
@@ -432,6 +443,32 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Bring up Android's system `TextToSpeech` engine for the Fast-mode
+     * path. No permission gate — safe to run at ViewModel init. Idempotent.
+     * Failure just leaves [androidTtsEngine] null and surfaces the error in
+     * state; the Kokoro path stays fully usable.
+     */
+    fun loadAndroidTtsEngine() {
+        if (androidTtsEngine != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            log("Android TTS init STARTED")
+            try {
+                val e = AndroidTtsEngine.load(getApplication())
+                androidTtsEngine = e
+                _state.update {
+                    it.copy(androidTtsReady = true, androidTtsError = null)
+                }
+                log("Android TTS READY ✓ in ${e.loadTimeMs}ms")
+            } catch (t: Throwable) {
+                val msg = "Android TTS init failed: ${t.javaClass.simpleName}: ${t.message}"
+                Log.e(TAG, msg, t)
+                _state.update { it.copy(androidTtsReady = false, androidTtsError = msg) }
+                log("[ERROR] $msg")
+            }
+        }
+    }
+
     // ── Pipeline ────────────────────────────────────────────────────────────
 
     fun startPipeline() {
@@ -465,7 +502,11 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         // beginUtterance/play/endUtterance directly when streaming is on.
         // With streaming off, the router falls back to bus-emit and the
         // ViewModel plays TtsAudioReady as before — no double-play.
-        val ttsR = TtsRouter(bus, k, ttsConfig, player = ttsPlayer)
+        val ttsR = TtsRouter(
+            bus, k, ttsConfig,
+            player = ttsPlayer,
+            androidEngine = androidTtsEngine,
+        )
         ttsR.start(viewModelScope)
         ttsRouter = ttsR
 
@@ -677,14 +718,45 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         ttsConfig = ttsConfig.copy(streamingEnabled = enabled)
         _state.update { it.copy(ttsStreamingEnabled = enabled) }
         log("TTS streaming toggled → $enabled")
+        restartTtsRouter("streamingEnabled=$enabled")
+    }
+
+    /**
+     * Fast/Quality TTS toggle. Fast mode routes through
+     * [AndroidTtsEngine.speak] (system TTS, ~100–300 ms/utterance);
+     * Quality mode uses [KokoroTtsEngine] (~1500–2500 ms/sentence with
+     * higher voice quality). Restarts the TTS router so the change lands
+     * on the next translation without needing to stop/start the pipeline.
+     *
+     * No-op if [androidTtsEngine] is not ready and the caller tries to
+     * flip fast mode on — we log a warning and keep the config off. The
+     * user retries after the Android TTS engine finishes initialising.
+     */
+    fun setTtsFastMode(enabled: Boolean) {
+        if (ttsConfig.useFastMode == enabled) return
+        if (enabled && androidTtsEngine == null) {
+            log("[WARN] Cannot enable Fast TTS: Android TTS engine not ready")
+            return
+        }
+        ttsConfig = ttsConfig.copy(useFastMode = enabled)
+        _state.update { it.copy(ttsFastMode = enabled) }
+        log("TTS Fast mode toggled → $enabled")
+        restartTtsRouter("useFastMode=$enabled")
+    }
+
+    private fun restartTtsRouter(reason: String) {
         val k = kokoroEngine
         val oldRouter = ttsRouter
         if (k != null && oldRouter != null) {
             oldRouter.cancel()
-            val newRouter = TtsRouter(bus, k, ttsConfig, player = ttsPlayer)
+            val newRouter = TtsRouter(
+                bus, k, ttsConfig,
+                player = ttsPlayer,
+                androidEngine = androidTtsEngine,
+            )
             newRouter.start(viewModelScope)
             ttsRouter = newRouter
-            log("TTS router restarted (streamingEnabled=$enabled)")
+            log("TTS router restarted ($reason)")
         }
     }
 
