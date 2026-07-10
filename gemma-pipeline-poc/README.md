@@ -44,7 +44,7 @@ staged optimisations with their feature flags.
 
 1. The Gemma model must live at `/sdcard/Download/gemma_model/`:
    ```
-   gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm
+   gemma-4-E4B-it.litertlm
    .litertlm.audio_adapter.xnnpack_cache
    .litertlm.audio_encoder.xnnpack_cache
    .litertlm.static_audio_encoder.xnnpack_cache
@@ -53,7 +53,11 @@ staged optimisations with their feature flags.
    .litertlm_5818495038867434237.bin
    ```
    Reuse the directory from `gemma-ast-poc` (Fase 0). The companion files are
-   required for the GPU backend.
+   required for the GPU backend. The `.litertlm` filename bumped in this
+   commit — the newer export contains the MTP drafter subgraph so
+   `AstConfig.mtpEnabled = true` actually kicks in; the previous
+   `gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm` from Fase 0/5
+   does not have the drafter and MTP silently no-ops on it.
 
 2. The Kokoro TTS model must live at `/sdcard/Download/kokoro_model/`:
    ```

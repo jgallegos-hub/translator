@@ -14,8 +14,16 @@ data class AstConfig(
      */
     val modelDirPath: String = "/sdcard/Download/gemma_model",
 
-    /** Model file name inside [modelDirPath]. */
-    val modelFilename: String = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
+    /**
+     * Model file name inside [modelDirPath].
+     *
+     * Updated to the post-2026-05-05 export that embeds the Multi-Token
+     * Prediction drafter — required for [mtpEnabled] to actually kick in.
+     * The prior filename (`gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm`)
+     * used through Fase 5 does not contain the drafter subgraph, so the
+     * MTP flag would be silently ignored on it.
+     */
+    val modelFilename: String = "gemma-4-E4B-it.litertlm",
 
     /**
      * Prompt sent alongside each audio chunk. Validated phrasing from Fase 0
