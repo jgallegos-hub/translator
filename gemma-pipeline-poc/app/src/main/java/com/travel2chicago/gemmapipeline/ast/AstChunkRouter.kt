@@ -65,6 +65,13 @@ class AstChunkRouter(
     private val lowEnergyDiscardCount = AtomicLong(0)
     private val metaTextDiscardCount = AtomicLong(0)
     /**
+     * Count of Gemma replies where the router had to fall back to using the
+     * full text because the `English: ` marker required by the official AST
+     * prompt was missing. Non-zero means the model is not honouring the
+     * requested output format — worth logging if it climbs over time.
+     */
+    private val englishMarkerMissingCount = AtomicLong(0)
+    /**
      * Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output —
      * the first token in the streaming path, or the return of `translate()`
      * in the one-shot path. Last-value semantics (updated per chunk). Zero
@@ -83,6 +90,9 @@ class AstChunkRouter(
     val totalDiscardedLowEnergy: Long get() = lowEnergyDiscardCount.get()
     /** Translations dropped AFTER Gemma because the reply matched a meta-text pattern. */
     val totalDiscardedMeta: Long get() = metaTextDiscardCount.get()
+    /** Times the router fell back to full-reply because the `English: ` marker
+     *  was missing (only meaningful when [AstConfig.useOfficialAstPrompt] is on). */
+    val totalEnglishMarkerMissing: Long get() = englishMarkerMissingCount.get()
     /** Latency from `ChunkReady.timestampNs` to Gemma's first output for the
      *  MOST RECENT processed chunk. Meaningful across both streaming and
      *  one-shot paths — in one-shot mode it's ~= totalGemmaLatencyMs of the
@@ -265,7 +275,7 @@ class AstChunkRouter(
 
     private suspend fun processChunkOneShot(chunk: AudioEvent.ChunkReady, wav: ByteArray) {
         val result = try {
-            engine.translate(wav, config.prompt)
+            engine.translate(wav, config.activePrompt, config.audioAfterText)
         } catch (t: Throwable) {
             // Don't propagate — one bad chunk shouldn't kill the consumer.
             // The next chunk gets a fresh attempt on the same engine.
@@ -282,15 +292,22 @@ class AstChunkRouter(
         translatedCount.incrementAndGet()
         totalLatencyMs.addAndGet(result.latencyMs)
 
+        // Official-prompt path: strip everything up to and including the
+        // `English: ` marker so the Spanish transcription is not spoken by
+        // Kokoro. If the marker is missing (Gemma ignored the format),
+        // extractEnglishTranslation returns the full reply as-is and bumps
+        // englishMarkerMissingCount — meta-text filter still applies.
+        val translated = extractEnglishTranslation(result.text)
+
         // Post-filter: Gemma sometimes replies with meta-text on near-silent
         // chunks that slipped past the RMS gate. Kill the reply BEFORE it
         // reaches TtsRouter so Kokoro never speaks "please provide the audio".
-        val matched = matchMetaPattern(result.text)
+        val matched = matchMetaPattern(translated)
         if (matched != null) {
             val n = metaTextDiscardCount.incrementAndGet()
             Log.i(
                 TAG,
-                "Translation discarded: meta-text detected ('$matched') text='${result.text.take(80)}' " +
+                "Translation discarded: meta-text detected ('$matched') text='${translated.take(80)}' " +
                     "totalMeta=$n",
             )
             bus.emit(AudioEvent.EngineStatus(
@@ -300,7 +317,7 @@ class AstChunkRouter(
 
         bus.emit(
             AudioEvent.TranslationReady(
-                text = result.text,
+                text = translated,
                 sourceChunkTimestampNs = chunk.timestampNs,
                 sourceDurationMs = chunk.durationMs,
                 sourcePeak = chunk.peak,
@@ -345,6 +362,17 @@ class AstChunkRouter(
         var dropRestOfChunk = false
         var pendingText: String? = null
         var pendingIndex = -1
+        // Official-prompt path: everything before `English: ` is the Spanish
+        // transcription, which we must NOT feed to Kokoro. The gate stays
+        // shut until the marker appears in the accumulated buffer; once open,
+        // [contentStartOffset] is set to the character AFTER the marker and
+        // both sentence-scanning and meta-text checks operate from there.
+        // Legacy prompt path skips the gate entirely (contentStartOffset stays
+        // at 0, englishGateOpen starts true) — every token is treated as
+        // English translation output from the first delta.
+        val expectMarker = config.useOfficialAstPrompt
+        var englishGateOpen = !expectMarker
+        var contentStartOffset = 0
 
         suspend fun emitPendingAsNonFinal() {
             val p = pendingText ?: return
@@ -367,7 +395,7 @@ class AstChunkRouter(
         }
 
         val result = try {
-            engine.translateStreaming(wav, config.prompt) { delta ->
+            engine.translateStreaming(wav, config.activePrompt, config.audioAfterText) { delta ->
                 if (dropRestOfChunk) return@translateStreaming
                 // Record first-token latency exactly once per chunk — on the
                 // FIRST non-empty delta observed. `sb.isEmpty()` is the
@@ -380,6 +408,23 @@ class AstChunkRouter(
                 }
                 sb.append(delta)
 
+                // Official-prompt gate: hold off sentence scanning until the
+                // `English:` marker arrives. Everything before is the Spanish
+                // transcription; passing it downstream would make Kokoro
+                // speak Spanish text with an English voice.
+                if (!englishGateOpen) {
+                    val markerEnd = findEnglishMarkerEnd(sb)
+                    if (markerEnd < 0) return@translateStreaming
+                    englishGateOpen = true
+                    contentStartOffset = markerEnd
+                    lastCutOffset = markerEnd
+                    Log.i(
+                        TAG,
+                        "Streaming: English marker found at offset $markerEnd " +
+                            "(prefix='${sb.substring(0, markerEnd).take(60)}')",
+                    )
+                }
+
                 // One delta may contain multiple terminators (e.g. Gemma
                 // emits a whole clause at once). Drain them all before
                 // yielding back for the next token.
@@ -390,7 +435,11 @@ class AstChunkRouter(
                     lastCutOffset = termIdx + 1
                     if (sentence.isEmpty()) continue
 
-                    val matched = matchMetaPattern(sb.substring(0, lastCutOffset))
+                    // Meta-text check runs on the accumulated English content
+                    // (contentStartOffset .. lastCutOffset), not the whole
+                    // buffer — otherwise Spanish transcription tokens would
+                    // pollute the substring match and produce spurious hits.
+                    val matched = matchMetaPattern(sb.substring(contentStartOffset, lastCutOffset))
                     if (matched != null) {
                         val n = metaTextDiscardCount.incrementAndGet()
                         Log.i(
@@ -430,11 +479,50 @@ class AstChunkRouter(
 
         if (dropRestOfChunk) return
 
-        // Final meta-text check on the entire reply — defensive against
-        // preambles that never contain a terminator ("The audio was not
-        // provided" with no period). This mirrors the one-shot filter's
-        // whole-text semantics.
-        val finalMatched = matchMetaPattern(sb.toString())
+        // Marker never arrived — Gemma ignored the official-prompt format.
+        // Fall back to treating the entire reply as the translation (same
+        // behaviour as the one-shot path's extractEnglishTranslation
+        // fallback). Emit one final event with the whole buffer.
+        if (!englishGateOpen) {
+            val n = englishMarkerMissingCount.incrementAndGet()
+            val fallback = sb.toString().trim()
+            Log.w(
+                TAG,
+                "Streaming: 'English:' marker never appeared (missing #$n). Falling back to " +
+                    "full reply='${fallback.take(80)}'",
+            )
+            bus.emit(AudioEvent.EngineStatus(
+                "AST English marker missing, fell back to full reply (total=$n)"))
+            val matchedFallback = matchMetaPattern(fallback)
+            if (matchedFallback != null) {
+                val m = metaTextDiscardCount.incrementAndGet()
+                Log.i(TAG, "Streaming fallback: meta-text match '$matchedFallback' totalMeta=$m")
+                bus.emit(AudioEvent.EngineStatus(
+                    "AST dropped meta-text reply ('$matchedFallback', total=$m)"))
+                return
+            }
+            if (fallback.isNotEmpty()) {
+                bus.emit(
+                    AudioEvent.TranslationReady(
+                        text = fallback,
+                        sourceChunkTimestampNs = chunk.timestampNs,
+                        sourceDurationMs = chunk.durationMs,
+                        sourcePeak = chunk.peak,
+                        latencyMs = result.latencyMs,
+                        timestampNs = System.nanoTime(),
+                        sentenceIndex = 0,
+                        isFinal = true,
+                    ),
+                )
+            }
+            return
+        }
+
+        // Final meta-text check on the entire English portion — defensive
+        // against preambles that never contain a terminator ("The audio was
+        // not provided" with no period). Uses the accumulated English
+        // substring, not the whole buffer.
+        val finalMatched = matchMetaPattern(sb.substring(contentStartOffset))
         if (finalMatched != null) {
             val n = metaTextDiscardCount.incrementAndGet()
             Log.i(TAG, "Streaming: final meta-text match '$finalMatched' totalMeta=$n")
@@ -483,6 +571,68 @@ class AstChunkRouter(
             // metrics increment but no TranslationReady, same as the
             // one-shot path when Gemma returns "").
         }
+    }
+
+    /**
+     * Case-insensitive scan for the `English:` marker Google's official AST
+     * prompt tells Gemma to emit between the Spanish transcription and the
+     * English translation. Returns the offset **after** the marker (and any
+     * single trailing space) — i.e. the first character of the English
+     * content — or `-1` if the marker is not yet present.
+     *
+     * Accepts `English:` (Google's exact literal from the prompt), and also
+     * `english:` / `ENGLISH:` in case the model varies capitalisation, plus
+     * an optional single space after the colon which the model routinely
+     * emits.
+     */
+    private fun findEnglishMarkerEnd(sb: StringBuilder): Int {
+        // Manual case-insensitive substring search. `indexOf(...,
+        // ignoreCase = true)` on a StringBuilder promotes to CharSequence
+        // via kotlin.text, which allocates a matcher per call — the tight
+        // token-callback loop can hit this hundreds of times per chunk so
+        // we roll our own to keep it allocation-free.
+        val target = "english:"
+        val n = sb.length
+        val m = target.length
+        if (n < m) return -1
+        outer@ for (i in 0..(n - m)) {
+            for (j in 0 until m) {
+                val c = sb[i + j]
+                val lower = if (c in 'A'..'Z') c + 32 else c
+                if (lower != target[j]) continue@outer
+            }
+            var end = i + m
+            if (end < n && sb[end] == ' ') end++
+            return end
+        }
+        return -1
+    }
+
+    /**
+     * One-shot English extraction — the same semantics as the streaming
+     * gate, applied to a fully-decoded reply. When [AstConfig.
+     * useOfficialAstPrompt] is false we skip extraction and return the
+     * text as-is (the legacy prompt already yields English only).
+     *
+     * When the flag is on and the `English:` marker is present, returns the
+     * substring after it (trimmed). When the flag is on and the marker is
+     * missing, logs a warning, bumps [englishMarkerMissingCount], and
+     * returns the whole reply — fallback so a mis-formatted response still
+     * produces something useful rather than silently disappearing.
+     */
+    private fun extractEnglishTranslation(reply: String): String {
+        if (!config.useOfficialAstPrompt) return reply.trim()
+        val sb = StringBuilder(reply)
+        val markerEnd = findEnglishMarkerEnd(sb)
+        if (markerEnd < 0) {
+            val n = englishMarkerMissingCount.incrementAndGet()
+            Log.w(
+                TAG,
+                "One-shot: 'English:' marker missing (fallback #$n). Reply='${reply.take(80)}'",
+            )
+            return reply.trim()
+        }
+        return sb.substring(markerEnd).trim()
     }
 
     /** In-line sentence terminator scan. `.`, `!`, `?` only — no abbreviation

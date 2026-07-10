@@ -34,16 +34,43 @@ data class AstConfig(
     val modelFilename: String = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
 
     /**
-     * Prompt sent alongside each audio chunk. Validated phrasing from Fase 0
-     * — keep terse and explicit so Gemma does not add commentary.
+     * Official Google-recommended AST prompt for Gemma multimodal audio.
      *
-     * The "completely" + "without truncating" wording was added after Fase 4
-     * device testing: with the original prompt, longer utterances (>5 s)
-     * occasionally stopped mid-sentence (e.g. "start a new" instead of
-     * "start a new shift"). The explicit completeness instruction nudges the
-     * sampler to emit a full translation before EOS.
+     * From Google's docs: an AST prompt should ask the model to (a) transcribe
+     * the source-language audio, and (b) translate it, with an explicit
+     * separator between the two so a downstream parser can extract the
+     * translation deterministically.
+     *
+     * The `AstChunkRouter` extracts everything after `"English: "` before
+     * emitting `TranslationReady` — see [useOfficialAstPrompt] and the
+     * router's `extractEnglishTranslation` for the exact parse. If Gemma
+     * ignores the format (no marker in the reply), the router falls back
+     * to using the whole reply as-is and logs a warning.
+     *
+     * Active when [useOfficialAstPrompt] is `true` (default). To A/B against
+     * the legacy prompt, flip [useOfficialAstPrompt] off — [legacyPrompt]
+     * takes over.
      */
     val prompt: String =
+        "Transcribe the following speech segment in Spanish, then translate " +
+            "it into English. When formatting the answer, first output the " +
+            "transcription in Spanish, then one newline, then output the " +
+            "string 'English: ', then the translation in English.",
+
+    /**
+     * Fallback prompt kept for reverting if [useOfficialAstPrompt] is flipped
+     * off after a device regression. This is the Fase 4 → Fase 6 prompt that
+     * shipped and passed device validation with ~2.7 s avg latency and no
+     * Spanish echoes. It asks Gemma to output ONLY the English translation,
+     * so the router does not run the English-marker extraction on this path.
+     *
+     * The "completely" + "without truncating" wording came out of Fase 4
+     * device testing: longer utterances (>5 s) occasionally stopped
+     * mid-sentence (e.g. "start a new" instead of "start a new shift"). The
+     * explicit completeness instruction nudges the sampler to emit a full
+     * translation before EOS.
+     */
+    val legacyPrompt: String =
         "Translate the following Spanish audio to English completely. " +
             "Output the full translated sentence without truncating. " +
             "Respond with only the English translation, no other text or commentary.",
@@ -169,6 +196,36 @@ data class AstConfig(
         "the audio is",
         "the audio was",
     ),
+
+    /**
+     * Google's multimodal Gemma docs: "For optimal performance with multimodal
+     * inputs, place audio content **after** the text in your prompt." A
+     * Google implementation article puts it more bluntly: "Getting this order
+     * wrong will reduce accuracy."
+     *
+     * When `true` (default), `LiteRtGemmaAstEngine` builds
+     * `Contents.of(Content.Text(prompt), Content.AudioBytes(wav))` — text
+     * first, audio last, per official guidance.
+     *
+     * When `false`, the engine uses the legacy Fase 0 order
+     * `Contents.of(Content.AudioBytes(wav), Content.Text(prompt))` that
+     * shipped through Fase 5. Left as a runtime flag so a device regression
+     * on the new order is a single-toggle revert.
+     */
+    val audioAfterText: Boolean = true,
+
+    /**
+     * Selects between [prompt] (Google's official AST prompt asking for
+     * transcription + translation with an `English: ` marker) and
+     * [legacyPrompt] (the Fase 4 prompt asking for English translation only).
+     *
+     * When `true` (default), `AstChunkRouter` uses [prompt] AND runs the
+     * English-marker extraction on Gemma's reply. When `false`, the router
+     * uses [legacyPrompt] and treats the whole reply as English (no
+     * extraction). Kept as a runtime flag to A/B and to revert cleanly if
+     * the official format regresses on device.
+     */
+    val useOfficialAstPrompt: Boolean = true,
 ) {
     init {
         require(modelDirPath.isNotBlank()) { "modelDirPath must not be blank" }
@@ -178,8 +235,12 @@ data class AstConfig(
         require(maxNumTokens in 1..4096) { "maxNumTokens out of range: $maxNumTokens" }
         require(queueCapacity in 1..32) { "queueCapacity out of range: $queueCapacity" }
         require(prompt.isNotBlank()) { "prompt must not be blank" }
+        require(legacyPrompt.isNotBlank()) { "legacyPrompt must not be blank" }
         require(rmsThreshold >= 0.0) { "rmsThreshold must be >= 0, got $rmsThreshold" }
     }
 
     val modelPath: String get() = "$modelDirPath/$modelFilename"
+
+    /** The prompt string actually sent to Gemma, resolved from [useOfficialAstPrompt]. */
+    val activePrompt: String get() = if (useOfficialAstPrompt) prompt else legacyPrompt
 }

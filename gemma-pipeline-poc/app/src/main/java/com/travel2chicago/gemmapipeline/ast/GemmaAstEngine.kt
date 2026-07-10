@@ -46,8 +46,17 @@ interface GemmaAstEngine : AutoCloseable {
      * dispatching this off the main thread (the router uses Dispatchers.IO).
      * Throws if the engine is not loaded, the WAV is malformed, or the
      * underlying LiteRT-LM call fails.
+     *
+     * @param audioAfterText if `true` (default, per Google's multimodal
+     *   guidance) the underlying call is built as `Contents.of(Text(prompt),
+     *   AudioBytes(wav))`. If `false`, the legacy Fase 0 order
+     *   `AudioBytes` → `Text` is used. See [AstConfig.audioAfterText].
      */
-    fun translate(wavBytes: ByteArray, prompt: String): AstResult
+    fun translate(
+        wavBytes: ByteArray,
+        prompt: String,
+        audioAfterText: Boolean = true,
+    ): AstResult
 
     /**
      * Streaming variant used by Fase 6 Stage A. Suspends until Gemma finishes
@@ -67,10 +76,13 @@ interface GemmaAstEngine : AutoCloseable {
      * total wall-clock spent inside the streaming call. Throws on failure;
      * the router treats a thrown exception the same as `translate()` (emit
      * `AstError`, keep the consumer alive).
+     *
+     * @param audioAfterText see [translate].
      */
     suspend fun translateStreaming(
         wavBytes: ByteArray,
         prompt: String,
+        audioAfterText: Boolean = true,
         onToken: suspend (token: String) -> Unit,
     ): AstResult
 }
@@ -131,17 +143,28 @@ class LiteRtGemmaAstEngine private constructor(
 
     override val isLoaded: Boolean get() = !closed
 
-    override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
+    override fun translate(
+        wavBytes: ByteArray,
+        prompt: String,
+        audioAfterText: Boolean,
+    ): AstResult {
         check(!closed) { "Engine is closed" }
         require(wavBytes.size > 44) { "WAV bytes too small (${wavBytes.size}); missing header?" }
         require(prompt.isNotBlank()) { "Prompt must not be blank" }
 
-        // Order matters — audio FIRST, text LAST. See Fase 0 (Fase 0 docs
-        // mention reversed order causes silent failures from AI Edge Gallery).
-        val contents = Contents.of(
-            Content.AudioBytes(wavBytes),
-            Content.Text(prompt),
-        )
+        // Content order matters for multimodal AST accuracy. Google's docs:
+        // "For optimal performance with multimodal inputs, place audio content
+        // AFTER the text in your prompt." Fase 0 shipped the reverse order
+        // (audio first) because AI Edge Gallery seemed to reject text-first
+        // silently at the time — later confirmed that both orders parse but
+        // audio-after-text gives measurably better AST accuracy on device.
+        // The [audioAfterText] flag lets us revert to Fase 0 order (false)
+        // if a device regression appears on the new order.
+        val contents = if (audioAfterText) {
+            Contents.of(Content.Text(prompt), Content.AudioBytes(wavBytes))
+        } else {
+            Contents.of(Content.AudioBytes(wavBytes), Content.Text(prompt))
+        }
 
         // Release the previous Conversation before opening a new one — only
         // one session per Engine is allowed (FAILED_PRECONDITION otherwise).
@@ -167,17 +190,19 @@ class LiteRtGemmaAstEngine private constructor(
     override suspend fun translateStreaming(
         wavBytes: ByteArray,
         prompt: String,
+        audioAfterText: Boolean,
         onToken: suspend (token: String) -> Unit,
     ): AstResult {
         check(!closed) { "Engine is closed" }
         require(wavBytes.size > 44) { "WAV bytes too small (${wavBytes.size}); missing header?" }
         require(prompt.isNotBlank()) { "Prompt must not be blank" }
 
-        // Same content order as translate() — audio FIRST, text LAST.
-        val contents = Contents.of(
-            Content.AudioBytes(wavBytes),
-            Content.Text(prompt),
-        )
+        // Same content-order semantics as translate(). See there for rationale.
+        val contents = if (audioAfterText) {
+            Contents.of(Content.Text(prompt), Content.AudioBytes(wavBytes))
+        } else {
+            Contents.of(Content.AudioBytes(wavBytes), Content.Text(prompt))
+        }
 
         // Same one-Conversation-per-Engine discipline as translate(). We MUST
         // close the prior Conversation before creating this one; we MUST NOT

@@ -98,6 +98,15 @@ data class GemmaPipelineUiState(
      *  decoding. Default OFF after device testing (see AstConfig for
      *  rationale). Takes effect on next Gemma load. */
     val mtpEnabled: Boolean = false,
+    /** Mirrors [AstConfig.audioAfterText] — Google's recommended content
+     *  order (text first, audio last) for multimodal AST accuracy. */
+    val audioAfterText: Boolean = true,
+    /** Mirrors [AstConfig.useOfficialAstPrompt] — Google's transcribe+translate
+     *  prompt with `English:` marker extraction. */
+    val useOfficialAstPrompt: Boolean = true,
+    /** Fallback count — Gemma replies where the `English:` marker was
+     *  missing (only meaningful when [useOfficialAstPrompt] is true). */
+    val englishMarkerMissing: Long = 0,
     /** Fase 6 Stage A — from `AstChunkRouter.firstTokenLatencyMs`.
      *  Wall-clock ms from `ChunkReady.timestampNs` to Gemma's first output
      *  (first token in streaming, full reply in one-shot). */
@@ -523,6 +532,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 astErrors = 0,
                 totalDiscardedLowEnergy = 0,
                 totalDiscardedMeta = 0,
+                englishMarkerMissing = 0,
                 translations = emptyList(),
                 ttsPlaying = false,
                 mutedMicFrames = 0,
@@ -671,6 +681,38 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         astConfig = astConfig.copy(streamingEnabled = enabled)
         _state.update { it.copy(astStreamingEnabled = enabled) }
         log("AST streaming toggled → $enabled")
+        restartAstRouter("streamingEnabled=$enabled")
+    }
+
+    /**
+     * Google's multimodal-content-order recommendation (text first, audio
+     * last). See [AstConfig.audioAfterText]. Restart the router so the flag
+     * flip lands on the next chunk without a full pipeline stop/start.
+     */
+    fun setAudioAfterText(enabled: Boolean) {
+        if (astConfig.audioAfterText == enabled) return
+        astConfig = astConfig.copy(audioAfterText = enabled)
+        _state.update { it.copy(audioAfterText = enabled) }
+        log("Audio-after-text toggled → $enabled")
+        restartAstRouter("audioAfterText=$enabled")
+    }
+
+    /**
+     * Toggles between Google's official AST prompt (transcribe + translate
+     * with `English:` marker) and the legacy Fase 4 English-only prompt.
+     * The router's English-marker extraction is gated on the same flag, so
+     * flipping it here rewires both the prompt sent to Gemma and the way
+     * the router parses the reply.
+     */
+    fun setUseOfficialAstPrompt(enabled: Boolean) {
+        if (astConfig.useOfficialAstPrompt == enabled) return
+        astConfig = astConfig.copy(useOfficialAstPrompt = enabled)
+        _state.update { it.copy(useOfficialAstPrompt = enabled) }
+        log("Official AST prompt toggled → $enabled")
+        restartAstRouter("useOfficialAstPrompt=$enabled")
+    }
+
+    private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router
         if (g != null && oldRouter != null) {
@@ -680,7 +722,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             )
             newRouter.start(viewModelScope)
             router = newRouter
-            log("AST router restarted (streamingEnabled=$enabled)")
+            log("AST router restarted ($reason)")
         }
     }
 
@@ -816,6 +858,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         astQueueSize = r?.queueSize ?: 0,
                         totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
                         totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
+                        englishMarkerMissing = r?.totalEnglishMarkerMissing ?: it.englishMarkerMissing,
                         firstTokenLatencyMs = r?.firstTokenLatencyMs ?: it.firstTokenLatencyMs,
                     )
                 }
@@ -829,6 +872,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         totalDropped = r?.totalDropped ?: it.totalDropped,
                         totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
                         totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
+                        englishMarkerMissing = r?.totalEnglishMarkerMissing ?: it.englishMarkerMissing,
                     )
                 }
                 log("[ERROR] AST: ${event.message}")

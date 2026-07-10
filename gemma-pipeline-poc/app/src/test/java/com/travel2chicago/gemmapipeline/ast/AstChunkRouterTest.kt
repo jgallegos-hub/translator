@@ -66,7 +66,11 @@ class AstChunkRouterTest {
         override val backendUsed: String = "FAKE"
         override val loadTimeMs: Long = 0L
 
-        override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
+        override fun translate(
+            wavBytes: ByteArray,
+            prompt: String,
+            audioAfterText: Boolean,
+        ): AstResult {
             translateCalls.incrementAndGet()
             // The chunk encodes its seed in every sample (see [chunk] helper).
             // Skip the 44-byte WAV header to peek at the first int16 sample.
@@ -82,6 +86,7 @@ class AstChunkRouterTest {
         override suspend fun translateStreaming(
             wavBytes: ByteArray,
             prompt: String,
+            audioAfterText: Boolean,
             onToken: suspend (String) -> Unit,
         ): AstResult {
             translateCalls.incrementAndGet()
@@ -111,12 +116,17 @@ class AstChunkRouterTest {
         override val isLoaded: Boolean = true
         override val backendUsed: String = "FAKE-STREAM"
         override val loadTimeMs: Long = 0L
-        override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
+        override fun translate(
+            wavBytes: ByteArray,
+            prompt: String,
+            audioAfterText: Boolean,
+        ): AstResult {
             error("translate() called on streaming stub — test misconfiguration")
         }
         override suspend fun translateStreaming(
             wavBytes: ByteArray,
             prompt: String,
+            audioAfterText: Boolean,
             onToken: suspend (String) -> Unit,
         ): AstResult {
             translateCalls.incrementAndGet()
@@ -143,6 +153,7 @@ class AstChunkRouterTest {
         rmsThreshold: Double = 0.0,
         metaTextPatterns: List<String> = emptyList(),
         streamingEnabled: Boolean = false,
+        useOfficialAstPrompt: Boolean = false,
     ) = AstConfig(
         modelDirPath = "/sdcard/unused-in-test",
         prompt = "Translate.",
@@ -153,6 +164,12 @@ class AstChunkRouterTest {
         rmsThreshold = rmsThreshold,
         metaTextPatterns = metaTextPatterns,
         streamingEnabled = streamingEnabled,
+        // Default OFF in tests: FakeEngine replies don't include the
+        // `English:` marker, so leaving the flag on would send every
+        // reply through the fallback path (marker-missing) and change
+        // baseline behaviour. Tests that specifically exercise the
+        // English-extraction path override this to true.
+        useOfficialAstPrompt = useOfficialAstPrompt,
     )
 
     @Test
@@ -392,10 +409,20 @@ class AstChunkRouterTest {
             override val isLoaded: Boolean = true
             override val backendUsed: String = "FAKE"
             override val loadTimeMs: Long = 0L
-            override fun translate(wavBytes: ByteArray, prompt: String): AstResult {
+            override fun translate(
+                wavBytes: ByteArray,
+                prompt: String,
+                audioAfterText: Boolean,
+            ): AstResult {
                 n += 1
                 return AstResult("t$n", latencyMs = (n * 100L), backendUsed = "FAKE")
             }
+            override suspend fun translateStreaming(
+                wavBytes: ByteArray,
+                prompt: String,
+                audioAfterText: Boolean,
+                onToken: suspend (String) -> Unit,
+            ): AstResult = error("translateStreaming unused in this test")
             override fun close() {}
         }
         val router = AstChunkRouter(bus, engine, config(),

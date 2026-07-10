@@ -248,6 +248,34 @@ fun GemmaPipelineScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 SwitchRow(
+                    label = "Audio-after-text (Google's recommended order)",
+                    checked = state.audioAfterText,
+                    onCheckedChange = { viewModel.setAudioAfterText(it) },
+                )
+                Text(
+                    "Google's multimodal docs: place audio AFTER text for " +
+                        "best AST accuracy. Legacy Fase 0 order was audio-first.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "Official AST prompt (transcribe + translate, English: marker)",
+                    checked = state.useOfficialAstPrompt,
+                    onCheckedChange = { viewModel.setUseOfficialAstPrompt(it) },
+                )
+                Text(
+                    if (state.useOfficialAstPrompt)
+                        "Router extracts text after 'English:' before emit. " +
+                            "Marker-missing fallbacks: ${state.englishMarkerMissing}."
+                    else
+                        "Using legacy Fase 4 prompt (English-only output, " +
+                            "no extraction).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
                     label = "Fast TTS (Android system TTS instead of Kokoro)",
                     checked = state.ttsFastMode,
                     onCheckedChange = { viewModel.setTtsFastMode(it) },
