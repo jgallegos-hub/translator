@@ -543,11 +543,164 @@ medidos desde `ChunkReady.timestampNs` — mic-to-first-output real):
 
 ### Estado
 
-- **Todo mergeado, todo activo por default**. First-boot APK ahora
-  tiene todas las optimizaciones de Fase 6 encendidas.
+- **Fases 4/5/6 core mergeadas y validadas en device**. First-boot APK
+  tiene Stage A/B/C encendidos por default.
 - **~15 tests nuevos** entre stages (8 AST + 5 TTS + 2 chunker),
   suite total ~102.
-- **12/12 criterios Go/No-Go: PASS**.
+- **12/12 criterios Go/No-Go: PASS** para el core de Fase 6.
+
+---
+
+## Post-Fase-6: investigación y optimizaciones basadas en docs oficiales
+
+Después del device validation de Fase 6 encontramos margen extra
+investigando la documentación oficial de Google para Gemma multimodal
++ el AAR local `com.google.ai.edge.litertlm:0.12.0`. Cuatro cambios
+implementados y mergeados; los tres últimos siguen pendientes de
+device validation.
+
+### 1. MTP / speculative decoding — investigado y descartado
+
+Commit **`b99c771`** (feature) + **`6ed4e94`** (default OFF tras
+device test).
+
+`ExperimentalFlags.enableSpeculativeDecoding = true` está disponible
+en LiteRT-LM 0.12.0 (verificado por reverse-engineering del AAR:
+`ExperimentalFlags` es un `object` con la propiedad `Boolean?`, y
+`ExperimentalApi` es la anotación de opt-in). Cuando true, el runtime
+usa el drafter MTP embebido en el modelo para especular la siguiente
+tanda de tokens y verificarlos en un decode step único — anunciado
+como ~2.2× speedup en workloads decode-heavy.
+
+**Descartado tras device test**:
+- Nuestros outputs de traducción son cortos (~5–10 tokens). MTP
+  acelera DECODE, no prefill. En outputs cortos la ganancia real es
+  despreciable frente al overhead.
+- Nuestro export `.litertlm` de Fase 0 no lleva embebido el drafter
+  MTP (solo modelos post-2026-05-05 lo tienen), así que el flag sería
+  un no-op silencioso incluso si la ganancia fuera real.
+
+`AstConfig.mtpEnabled: Boolean = false` como default. El toggle de UI
+queda como palanca para experimentos futuros (workloads de output
+largo, model swaps).
+
+### 2. Modelo oficial `gemma-4-E4B-it.litertlm` — probado y descartado
+
+Commits **`ff745a7`** (bump) + **`6ed4e94`** (revert).
+
+Probamos brevemente el export oficial `gemma-4-E4B-it.litertlm`
+(post-2026-05-05, con drafter MTP embebido). Device testing:
+- **Traducciones peores** — respuestas en español más frecuentes,
+  inglés garbled, mayor latencia sostenida.
+- **MTP no movió first-token latency** en ninguna dirección — por lo
+  mismo del punto anterior.
+
+Revertido a `gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm`
+(el de Fase 0). Documentado en KDoc + README para no re-probar por
+inercia.
+
+### 3. Orden multimodal audio-after-text — implementado, pending device
+
+Commit **`aafcce7`**.
+
+Google's multimodal Gemma docs (textual): "For optimal performance
+with multimodal inputs, place audio content **after** the text in your
+prompt." Un artículo de implementación añade: "Getting this order
+wrong will reduce accuracy."
+
+Nuestro código de Fase 0 → Fase 6 usaba `Contents.of(AudioBytes,
+Text)` — audio primero. Cambiado a `Contents.of(Text, AudioBytes)`
+por default. `GemmaAstEngine.translate` + `translateStreaming` ganan
+un parámetro `audioAfterText: Boolean = true`; el router lo pasa
+desde `AstConfig.audioAfterText` (nuevo default true).
+
+Comportamiento en el orden legacy preservado byte-for-byte cuando el
+flag está en false — UI toggle presente para revertir sin rebuild.
+
+### 4. Prompt oficial de AST — implementado, pending device
+
+Commit **`aafcce7`** (mismo commit que el orden multimodal).
+
+Google recomienda un formato específico para AST: pedir a Gemma que
+(a) transcriba el audio en el idioma origen y (b) traduzca, con un
+separador explícito para que un parser downstream pueda extraer solo
+la traducción. Nuestro nuevo default:
+
+```
+Transcribe the following speech segment in Spanish, then translate
+it into English. When formatting the answer, first output the
+transcription in Spanish, then one newline, then output the string
+'English: ', then the translation in English.
+```
+
+El router extrae todo lo que viene después de `English:` antes de
+emitir `TranslationReady`:
+- **One-shot**: `extractEnglishTranslation(reply)` — case-insensitive
+  scan, retorna substring después del marker, fallback al reply
+  completo si el marker falta (bumpea contador de diagnóstico).
+- **Streaming**: gate booleano `englishGateOpen`. Cada delta scanea
+  el buffer con `findEnglishMarkerEnd` (char-scan allocation-free);
+  hasta que el marker aparece, tokens acumulan pero no se emite
+  ninguna `TranslationReady` — evita que Kokoro hable la
+  transcripción en español. Una vez visto el marker, sentence scan
+  + meta-text check operan solo sobre la porción inglesa. Si el
+  marker nunca llega, un fallback en end-of-flow emite el buffer
+  completo como último evento (con guarda de meta-text).
+
+`AstConfig.useOfficialAstPrompt: Boolean = true` (nuevo default);
+`AstConfig.legacyPrompt` preserva el prompt Fase 4 English-only.
+Toggle en UI. Contador `englishMarkerMissing` surface para
+diagnóstico si el modelo empieza a saltarse el formato.
+
+### 5. Android system TTS como Fast mode — implementado, pending device
+
+Commit **`6ed4e94`**.
+
+Alternativa rápida a Kokoro: `AndroidTtsEngine` wrappea
+`android.speech.tts.TextToSpeech` con `Locale.US` +
+`UtteranceProgressListener`. `speak(text, onStart)` retorna al llegar
+`onDone`; `onStart` es el anchor de `firstAudioLatencyMs`. Load
+~100 ms (`~1500 ms` Kokoro). Init en paralelo con Kokoro al bootear
+la ViewModel (sin permission gate).
+
+- **Fast mode** (Android TTS): OS renderiza a la salida del sistema
+  directamente → no pasa por nuestro `TtsAudioPlayer`. Bookends
+  (`beginUtterance` / `endUtterance`) siguen activándose sobre el
+  sink compartido para mantener el flag de mute VAD levantado
+  durante la playback → el mic no re-captura la salida del speaker.
+- **Quality mode** (Kokoro, default): pipeline actual sin cambios.
+
+`TtsConfig.useFastMode: Boolean = false` (default OFF; usuario elige
+Fast mode cuando velocidad > calidad de voz). `TtsRouter` recibe un
+`androidEngine: AndroidTtsEngine? = null` opcional y branchea sobre
+`config.useFastMode`. Toggle en UI, con status text que reporta el
+estado de init del Android TTS.
+
+**Latencias esperadas (a validar en device)**:
+- Kokoro (Quality mode): ~1.5–2.5 s/oración
+- Android TTS (Fast mode): ~100–300 ms/utterance
+
+### Estado — pendiente device validation
+
+- Commit `b99c771` (MTP feature) mergeado; MTP en `false` post-test.
+- Commit `ff745a7` (modelo oficial) revertido en `6ed4e94`.
+- Commit `6ed4e94` — MTP default OFF + Fast TTS toggle listo.
+- Commit `aafcce7` — audio-after-text order + prompt AST oficial +
+  English marker extraction listos.
+
+**Siguiente**: device validation de los 3 cambios activos que
+tocan calidad/latencia:
+1. **Orden audio-after-text** — validar que la accuracy sube (o al
+   menos no baja) en las 10 frases canónicas contra el orden legacy.
+2. **Prompt AST oficial + extracción** — validar en device que Gemma
+   respeta el formato `English: ...` mayoría del tiempo. Ver el
+   contador `englishMarkerMissing` en UI para detectar si el
+   fallback se activa seguido (implica que Gemma ignora el formato).
+   Evaluar si first-audio sube por el gate (esperado: mismo o
+   marginalmente mayor porque el marker llega en el mismo Flow).
+3. **Fast TTS mode** — encender el toggle, medir
+   `firstAudioLatencyMs` bajado a ~500 ms (target). Evaluar
+   inteligibilidad de la voz sistema vs Kokoro para uso en viaje.
 
 ### Lecciones técnicas:
 - LiteRT-LM 0.12.0 `sendMessageAsync` retorna un cold Flow. `onCompletion`

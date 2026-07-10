@@ -10,18 +10,33 @@ a target ≤ 3 s.
 **Status:**
 - ✅ Fase 4 + Fase 5 COMPLETADAS on Xiaomi 15T Pro (junio 2026).
 - ✅ Fase 6 (streaming) VALIDADA on device (julio 2026) — 3-round
-  protocol passed with 0 errors. **Both streaming flags default ON**
-  as of this commit; measured latencies: baseline ~13.5 s → Stage C
-  only ~3.7 s → all stages ON ~3.4 s (first-audio, end-to-end). The
-  UI toggles under "3½. FASE 6 STREAMING" remain wired for runtime
-  disabling if a regression appears. Latency counters (`First token`
-  + `First audio`) live in the same panel.
+  protocol passed with 0 errors. **Both streaming flags default ON**;
+  measured latencies: baseline ~13.5 s → Stage C only ~3.7 s → all
+  stages ON ~3.4 s (first-audio, end-to-end). The UI toggles under
+  "3½. FASE 6 STREAMING" remain wired for runtime disabling if a
+  regression appears. Latency counters (`First token` + `First
+  audio`) live in the same panel.
+- 🔬 **Post-Fase-6 investigation → 3 changes merged, pending device
+  validation** (July 2026):
+  - **Audio-after-text order** — Google's multimodal docs say text
+    should come before audio in `Contents.of(...)`. Flipped.
+  - **Official Google AST prompt** with `English:` marker + router
+    extraction so Kokoro never speaks the Spanish transcription.
+  - **Android system TTS as Fast mode** — an alternative to Kokoro
+    (~100–300 ms per utterance vs ~1.7 s Kokoro), routed via a new
+    `AndroidTtsEngine`. UI toggle picks Fast (Android) or Quality
+    (Kokoro, default).
+- ❌ **Investigated + dropped** in the same round: MTP / speculative
+  decoding (short outputs don't benefit) and the official
+  `gemma-4-E4B-it.litertlm` export (worse AST than our Fase 0
+  model). Both revert commits merged; toggles preserved for future
+  experiments.
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation
 findings (LiteRT-LM has NO public audio-input streaming API — the win
-comes from output-token streaming + per-sentence TTS), and the three
-staged optimisations with their feature flags.
+comes from output-token streaming + per-sentence TTS), and the four
+post-Fase-6 investigations with their feature flags.
 
 ## What it does
 
@@ -335,6 +350,60 @@ Measured on Xiaomi 15T Pro during validation (July 2026):
 Biggest win came from Stage C (chunker retune); Stage A drove another
 42% off first-token; Stage B is modest with one-sentence phrases and
 scales up with multi-sentence translations.
+
+## Post-Fase-6 optimisations (pending device validation)
+
+Four investigations landed after the Fase 6 device tests, mining
+Google's official multimodal Gemma docs + the local LiteRT-LM 0.12.0
+AAR. Two shipped, two were dropped after testing; UI toggles for
+everything under "3½. FASE 6 STREAMING".
+
+**Merged + pending device validation**:
+
+- **Audio-after-text order** (`AstConfig.audioAfterText`, default ON).
+  Google's docs: "For optimal performance with multimodal inputs, place
+  audio content AFTER the text in your prompt. Getting this order wrong
+  will reduce accuracy." Fase 0 shipped audio-first for compat reasons
+  that no longer apply — now `Contents.of(Content.Text(prompt),
+  Content.AudioBytes(wav))` by default. Legacy order is one toggle away.
+
+- **Official Google AST prompt** (`AstConfig.useOfficialAstPrompt`,
+  default ON). The prompt asks Gemma to output the Spanish
+  transcription, then a newline, then `English: `, then the English
+  translation. The router extracts everything after `English:` before
+  emitting `TranslationReady` so Kokoro never speaks the Spanish
+  transcription. Streaming path holds a gate — no sentence emission
+  until the marker arrives; if it never arrives (Gemma ignored the
+  format), an end-of-flow fallback treats the whole reply as the
+  translation. `englishMarkerMissing` counter surfaces in the UI for
+  diagnosis. Legacy Fase 4 English-only prompt kept as
+  `AstConfig.legacyPrompt` — one toggle away.
+
+- **Fast TTS mode** (`TtsConfig.useFastMode`, default OFF).
+  `AndroidTtsEngine` wraps `android.speech.tts.TextToSpeech` with
+  `Locale.US` — Android's system TTS renders straight to the system
+  output (~100–300 ms/utterance vs Kokoro's ~1.5–2.5 s). Bookends
+  (`beginUtterance` / `endUtterance`) still fire on the sink so the
+  VAD-mute flag stays raised during playback — mic doesn't re-capture
+  the speaker output. UI status text reports Android TTS init state
+  and expected latency range for the active mode. Default OFF because
+  the user chooses Fast mode when speed > voice quality.
+
+**Investigated + dropped**:
+
+- **MTP / speculative decoding** (`AstConfig.mtpEnabled`, default
+  OFF). `ExperimentalFlags.enableSpeculativeDecoding = true` was
+  available and wired in, but our translation outputs are ~5–10
+  tokens — MTP accelerates decode, not prefill, so the win on short
+  outputs is negligible. Our current Fase 0 model export also
+  doesn't embed the drafter, so the flag was a silent no-op anyway.
+  Toggle preserved for future model swaps / long-form workloads.
+
+- **`gemma-4-E4B-it.litertlm` model export** (bumped then reverted).
+  The official post-2026-05-05 export was tested and produced
+  noticeably worse AST — Spanish echoes, garbled English, higher
+  latency. Reverted to the Fase 0 `gemma4_4b_v09_...` model. See
+  [PROGRESS.md](PROGRESS.md) for the full write-up.
 
 ## Known noise
 
