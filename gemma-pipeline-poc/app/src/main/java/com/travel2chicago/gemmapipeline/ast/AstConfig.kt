@@ -85,6 +85,23 @@ data class AstConfig(
     val preferGpu: Boolean = true,
 
     /**
+     * Use GPU for the audio encoder path (`EngineConfig.audioBackend`).
+     *
+     * LiteRT-LM 0.14+ ships NPU/GPU audio acceleration; through Fase 5/6 we
+     * ran on 0.12 where `audioBackend = Backend.CPU()` was the only path
+     * validated in Fase 0, and audio prefill dominated the per-chunk
+     * latency (~800 ms). GPU audio should cut that meaningfully on the
+     * Dimensity 9400+.
+     *
+     * When `true` (default in Fase 7), the engine load path tries
+     * `audioBackend = Backend.GPU()` first and falls back to
+     * `Backend.CPU()` if the GPU audio init throws — same pattern as the
+     * main [preferGpu] fallback. Set `false` to force the legacy CPU
+     * audio path if a device regression appears on GPU audio.
+     */
+    val audioBackendGpu: Boolean = true,
+
+    /**
      * Bounded queue capacity for the chunk → Gemma channel. One inference
      * takes ~2 s; a typical chunk is 3–6 s of audio. With capacity 4 we
      * tolerate ~16 s of conversational backlog before the channel drops

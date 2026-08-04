@@ -2,6 +2,7 @@ package com.travel2chicago.gemmapipeline.ast
 
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
@@ -10,6 +11,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
+import com.google.ai.edge.litertlm.LogSeverity
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.flow.onCompletion
@@ -88,17 +90,24 @@ interface GemmaAstEngine : AutoCloseable {
 }
 
 /**
- * Production wrapper around LiteRT-LM 0.12.0 for Gemma 4 E4B AST.
+ * Production wrapper around LiteRT-LM **0.15.0** for Gemma 4 E4B AST.
+ * Bumped from 0.12.0 in Fase 7 to pick up NPU/GPU audio acceleration and
+ * `Engine.setNativeMinLogSeverity` (which finally lets us silence the
+ * dispatch chatter documented as "Known noise" in the README).
  *
- * Mirrors the exact configuration validated in Fase 0 (`gemma-ast-poc/
- * GemmaTestViewModel.kt` lines 305–346):
- *   - `EngineConfig(modelPath, backend=GPU|CPU, audioBackend=Backend.CPU(),
- *     maxNumTokens=1024, cacheDir=app.externalFilesDir)`
+ * Mirrors the exact configuration validated in Fase 0 with two Fase 7
+ * changes:
+ *   - `EngineConfig(modelPath, backend=GPU|CPU, audioBackend=GPU|CPU,
+ *     maxNumTokens=1024, cacheDir=app.externalFilesDir)` — audio is now
+ *     GPU-preferred by default (see [AstConfig.audioBackendGpu]).
  *   - Low-temperature sampler for translation-style determinism
  *     (temp=0.1, topK=10, topP=0.95).
- *   - `Contents.of(Content.AudioBytes(wav), Content.Text(prompt))` — audio
- *     FIRST, text LAST.
- *   - Synchronous `conv.sendMessage(contents): Message` → `.toString().trim()`.
+ *   - `Contents.of(Content.Text(prompt), Content.AudioBytes(wav))` — text
+ *     FIRST, audio LAST (Google's multimodal recommendation, adopted
+ *     post-Fase-6).
+ *   - Synchronous `conv.sendMessage(contents): Message` → `.toString().trim()`
+ *     for the one-shot path; `conv.sendMessageAsync(contents): Flow<Message>`
+ *     for the token-streaming path (Fase 6 Stage A).
  *
  * **Conversation lifetime is per-call, not per-engine.** Reusing one
  * `Conversation` for many translations made it accumulate every prior
@@ -288,66 +297,89 @@ class LiteRtGemmaAstEngine private constructor(
             check(modelFile.exists() && modelFile.isFile) {
                 "Gemma model not found at ${config.modelPath} — copy from gemma-ast-poc"
             }
+            Log.i(TAG, "LiteRT-LM SDK version: 0.15.0  (bumped from 0.12.0 in Fase 7)")
             Log.i(TAG, "Model file present: ${modelFile.length()} bytes")
 
-            // Multi-Token Prediction / speculative decoding. When enabled, the
-            // runtime uses the model's built-in MTP drafter to speculate on
-            // the next N tokens and verify them in a single decode step — up
-            // to ~2.2× decode speedup on translation-style workloads.
-            //
-            // Must be set BEFORE `engine.initialize()` — the flag is read
-            // during the initialize() path when the runtime wires up the
-            // drafter subgraph.
-            //
-            // Only touch the flag when explicitly enabled. Setting it to
-            // `false` would override any user-set default outside this class;
-            // leaving it null preserves SDK default (no speculation).
-            //
-            // Requires the .litertlm export to contain the MTP drafter (only
-            // models built after 2026-05-05 have it). If the drafter is
-            // missing, the flag is silently ignored — no crash, no speedup.
+            // Quiet the native `[litert_dispatch.cc:113] No dispatch library
+            // found` chatter that Fase 4 device testing had to document as
+            // "known noise": 0.15 exposes `Engine.setNativeMinLogSeverity`
+            // (added in the 0.13/0.14 releases), so we raise the floor to
+            // WARNING and let real problems still surface. INFO-level
+            // subgraph dispatch messages disappear from logcat.
+            runCatching { Engine.setNativeMinLogSeverity(LogSeverity.WARNING) }
+                .onFailure { Log.w(TAG, "setNativeMinLogSeverity threw — continuing", it) }
+
+            // Multi-Token Prediction / speculative decoding. Must be set
+            // BEFORE `engine.initialize()` — the flag is read during
+            // initialize() when the runtime wires up the drafter subgraph.
+            // 0.15 also exposes `Capabilities(modelPath).hasSpeculativeDecodingSupport()`
+            // so we can log whether the current export actually carries the
+            // drafter; useful to catch "flag on, model doesn't support it,
+            // silent no-op" without a device profiler.
+            val modelHasMtpDrafter = runCatching {
+                Capabilities(modelFile.absolutePath).use { it.hasSpeculativeDecodingSupport() }
+            }.getOrElse {
+                Log.w(TAG, "Capabilities().hasSpeculativeDecodingSupport() threw — assuming false", it)
+                false
+            }
             if (config.mtpEnabled) {
                 ExperimentalFlags.enableSpeculativeDecoding = true
-                Log.i(TAG, "MTP/speculative decoding: enabled (via ExperimentalFlags)")
+                Log.i(
+                    TAG,
+                    "MTP/speculative decoding: flag enabled, model drafter present=$modelHasMtpDrafter",
+                )
             } else {
-                Log.i(TAG, "MTP/speculative decoding: disabled (SDK default path)")
+                Log.i(
+                    TAG,
+                    "MTP/speculative decoding: flag disabled (SDK default). " +
+                        "modelHasMtpDrafter=$modelHasMtpDrafter",
+                )
             }
 
-            // GPU → CPU strategy. Each attempt is fully isolated so a failed
-            // GPU init can't leak resources into the CPU attempt.
-            val attempts: List<Pair<String, () -> Backend>> = if (config.preferGpu) {
-                listOf("GPU" to { Backend.GPU() }, "CPU" to { Backend.CPU() })
-            } else {
-                listOf("CPU" to { Backend.CPU() })
+            // Backend attempts as (main, audio) pairs. Fase 7 adds GPU audio
+            // as the preferred audio path — 0.14+ ships NPU/GPU audio
+            // acceleration and Fase 0 CPU audio was chosen only because it
+            // was the only path validated at the time. Fallback order tries
+            // the most-accelerated combo first and degrades one axis at a
+            // time so a broken GPU audio init doesn't cost us the whole
+            // GPU main path too.
+            data class Attempt(val label: String, val makeMain: () -> Backend, val makeAudio: () -> Backend)
+            val attempts: List<Attempt> = buildList {
+                if (config.preferGpu && config.audioBackendGpu) {
+                    add(Attempt("GPU main + GPU audio", { Backend.GPU() }, { Backend.GPU() }))
+                }
+                if (config.preferGpu) {
+                    add(Attempt("GPU main + CPU audio", { Backend.GPU() }, { Backend.CPU() }))
+                }
+                add(Attempt("CPU main + CPU audio", { Backend.CPU() }, { Backend.CPU() }))
             }
 
             var lastError: Throwable? = null
-            for ((label, makeBackend) in attempts) {
-                val backend = try {
-                    makeBackend()
+            for (attempt in attempts) {
+                val main = try {
+                    attempt.makeMain()
                 } catch (t: Throwable) {
-                    Log.w(TAG, "Backend.$label() factory threw — skipping", t)
+                    Log.w(TAG, "Main backend factory for '${attempt.label}' threw — skipping", t)
+                    lastError = t
+                    continue
+                }
+                val audio = try {
+                    attempt.makeAudio()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Audio backend factory for '${attempt.label}' threw — skipping", t)
                     lastError = t
                     continue
                 }
 
-                Log.i(TAG, "Attempting init with $label backend…")
-                // Known noise during initialize(): LiteRT-LM v0.12.0 emits
-                //   [litert_dispatch.cc:113] No dispatch library found in <modelDirPath>
-                // once per subgraph op (~hundreds of lines). This is harmless —
-                // the dispatch library is an OPTIONAL accelerator; when absent
-                // LiteRT-LM falls back to the declared backend (GPU/CPU) without
-                // any functional degradation. EngineConfig in 0.12.0 exposes
-                // only {modelPath, backend, audioBackend, maxNumTokens, cacheDir}
-                // — there is no `dispatchLibDir` / `litert_dispatch_lib_dir`
-                // field to redirect or silence this path. The log originates
-                // from native code (__android_log_print) so it cannot be
-                // filtered from the Kotlin side. If a future SDK release adds
-                // a dispatch-lib setting, wire it in HERE.
+                Log.i(TAG, "Attempting init: ${attempt.label}")
+                // EngineConfig gained `visionBackend` + `maxNumImages` between
+                // 0.12 and 0.15. We use named args so the new fields fall
+                // back to their SDK defaults (null / SDK-decided) — Gemma AST
+                // never processes images so visionBackend is irrelevant.
                 val engineConfig = EngineConfig(
                     modelPath = modelFile.absolutePath,
-                    backend = backend,
-                    audioBackend = Backend.CPU(),  // audio path is CPU-only — Fase 0 confirmed
+                    backend = main,
+                    audioBackend = audio,
                     maxNumTokens = config.maxNumTokens,
                     cacheDir = cacheDir,
                 )
@@ -357,13 +389,13 @@ class LiteRtGemmaAstEngine private constructor(
                 try {
                     eng.initialize()
                 } catch (t: Throwable) {
-                    Log.w(TAG, "$label initialize() failed", t)
+                    Log.w(TAG, "${attempt.label} initialize() failed", t)
                     runCatching { eng.close() }
                     lastError = t
                     continue
                 }
                 val loadMs = (System.nanoTime() - startedAt) / 1_000_000
-                Log.i(TAG, "$label backend ready in ${loadMs}ms")
+                Log.i(TAG, "${attempt.label} ready in ${loadMs}ms")
 
                 // Pin the sampler so every per-call Conversation uses the
                 // same translation-tuned config (low temperature for
@@ -377,13 +409,14 @@ class LiteRtGemmaAstEngine private constructor(
                 return LiteRtGemmaAstEngine(
                     engine = eng,
                     samplerConfig = samplerConfig,
-                    backendUsed = label,
+                    backendUsed = attempt.label,
                     loadTimeMs = loadMs,
                 )
             }
 
             throw RuntimeException(
-                "Gemma engine init failed on all backends (${attempts.joinToString { it.first }})",
+                "Gemma engine init failed on all backends " +
+                    "(${attempts.joinToString { it.label }})",
                 lastError,
             )
         }

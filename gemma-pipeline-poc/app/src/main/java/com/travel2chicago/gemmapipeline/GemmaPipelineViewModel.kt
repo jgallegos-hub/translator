@@ -101,6 +101,9 @@ data class GemmaPipelineUiState(
     /** Mirrors [AstConfig.audioAfterText] — Google's recommended content
      *  order (text first, audio last) for multimodal AST accuracy. */
     val audioAfterText: Boolean = true,
+    /** Mirrors [AstConfig.audioBackendGpu] — Fase 7 GPU audio encoder.
+     *  Takes effect on next Gemma reload. */
+    val audioBackendGpu: Boolean = true,
     /** Mirrors [AstConfig.useOfficialAstPrompt] — Google's transcribe+translate
      *  prompt with `English:` marker extraction. */
     val useOfficialAstPrompt: Boolean = true,
@@ -682,6 +685,19 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(astStreamingEnabled = enabled) }
         log("AST streaming toggled → $enabled")
         restartAstRouter("streamingEnabled=$enabled")
+    }
+
+    /**
+     * Fase 7 GPU audio encoder toggle. Unlike the router flags, this one
+     * ONLY takes effect on the next Gemma load — the `audioBackend` is
+     * bound at `Engine.initialize()`. Kept as a runtime toggle for the
+     * same kill-switch reason as MTP.
+     */
+    fun setAudioBackendGpu(enabled: Boolean) {
+        if (astConfig.audioBackendGpu == enabled) return
+        astConfig = astConfig.copy(audioBackendGpu = enabled)
+        _state.update { it.copy(audioBackendGpu = enabled) }
+        log("Audio backend GPU toggled → $enabled (takes effect on next Gemma reload)")
     }
 
     /**

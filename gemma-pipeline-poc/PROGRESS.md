@@ -784,24 +784,113 @@ alcanza.
 
 ---
 
-## Siguiente: Fase 7 — Upgrade LiteRT-LM 0.12 → 0.14 (GPU audio)
+## Fase 7 — Upgrade LiteRT-LM 0.12 → 0.15 (agosto 2026)
 
-El primer paso de Fase 7 es bumpear la dependencia LiteRT-LM de
-0.12.0 → 0.14. La 0.14 expone **aceleración GPU para el audio
-encoder** de Gemma — hoy corremos `audioBackend = Backend.CPU()`
-porque era el único path validado en Fase 0, y la inferencia audio
-toma ~2.8 s. GPU audio podría bajar eso significativamente y es la
-única palanca importante que nos queda en el lado del engine.
+Bumpeamos la dependencia `com.google.ai.edge.litertlm:litertlm-android`
+de **`0.12.0` → `0.15.0`** (última versión estable en Google Maven
+al momento; saltamos 0.13 y 0.14 en un solo bump). Motivación:
+0.14 introdujo aceleración GPU/NPU para el audio encoder — hoy
+`audioBackend = Backend.CPU()` es el bottleneck de prefill (~800 ms
+por chunk). Con GPU audio podría bajar a ~200–400 ms.
 
-Riesgos: nuestro código ya usa APIs experimentales de 0.12
-(`sendMessageAsync`, `ExperimentalFlags.enableSpeculativeDecoding`) —
-hay que verificar que sigan compatibles en 0.14. Investigación
-previa a Fase 6 confirmó que ambas existen en 0.14; falta
-compilar + smoke test.
+### Investigación del AAR 0.15.0
 
-Después del upgrade + validación, sigue el plan original de Fase 7:
-**consolidación en `translator-android/`**. Los seis POCs se
-consolidan en una sola app de producción:
+Descargué + descomprimí `litertlm-android-0.15.0.aar` y comparé la
+superficie de API contra 0.12.0. Hallazgos:
+
+**Sin breaking changes para el path que usamos**:
+- `EngineConfig` — gana `visionBackend` + `maxNumImages` entre
+  0.12 y 0.15. Named-arg construction sigue funcionando; los nuevos
+  campos usan defaults (Gemma AST no procesa imágenes → visionBackend
+  irrelevante).
+- `Conversation.sendMessage` y `sendMessageAsync` — añaden params
+  opcionales (`RepetitionPenaltyConfig`, `NoRepeatNgramConfig`,
+  `SuppressTokensConfig`, `ThinkingConfig`, `ResponseFormat`), todos
+  con defaults null. Nuestro `conv.sendMessageAsync(contents).collect
+  { ... }` sigue compilando sin cambios.
+- `ConversationConfig` — muchos campos nuevos (systemInstruction,
+  tools, loraConfig, thinkingConfig, enableResponseFormat, etc.),
+  todos con defaults. `ConversationConfig(samplerConfig = ...)`
+  compila igual.
+- `Backend.GPU()` / `Backend.CPU()` / `Backend.NPU()` /
+  `Backend.GOOGLE_TENSOR()` — sin cambio; `Backend` sigue siendo la
+  abstract factory.
+- `ExperimentalFlags.enableSpeculativeDecoding` — sigue presente
+  (nullable `Boolean`). Nuestro toggle MTP (default OFF) sigue OK.
+- `Content.AudioBytes` / `Content.Text` / `Contents.of(...)` — sin
+  cambio.
+- `SamplerConfig(topK, topP, temperature, seed)` — sin cambio.
+
+**APIs nuevas relevantes wireadas hoy**:
+- **`Engine.setNativeMinLogSeverity(LogSeverity)`** — el setter
+  público que faltaba en 0.12 para silenciar el
+  `[litert_dispatch.cc:113] No dispatch library found` spam.
+  Llamado con `LogSeverity.WARNING` una vez al cargar el engine →
+  el ruido documentado como "Known noise" en README/PROGRESS a
+  través de Fase 6 desaparece de logcat.
+- **`Capabilities(modelPath).hasSpeculativeDecodingSupport()`** —
+  API para preguntarle al modelo si trae embebido el drafter MTP.
+  Lo logueamos al cargar para que futuros swaps de modelo dejen
+  ver si MTP realmente aplica o es no-op silencioso.
+
+**APIs nuevas que NO wireamos** (potencial para más adelante):
+- `Session.runPrefill(List<InputData>)` + `runDecode()`: prefill
+  incremental. Documentado desde 0.12 pero no ganamos mucho hasta
+  que decode también sea streaming — sigue difiriendo.
+- Tool calling (`Tool`, `ToolManager`, `ToolSet`, `ToolProvider`):
+  no aplica a AST audio-only.
+- `RepetitionPenaltyConfig`, `NoRepeatNgramConfig`,
+  `SuppressTokensConfig`: útiles si vemos repeticiones en device;
+  no lo hemos visto hasta ahora.
+- `ThinkingConfig`: para modelos que emiten "thinking channel". El
+  nuestro no.
+- `LogSeverity.VERBOSE` / `DEBUG` — disponibles para revertir el
+  silenciado durante debugging.
+- `AudioStreamingEnabled` (streaming de audio DE ENTRADA): **sigue
+  sin existir** públicamente en 0.15 (verifiqué que no hay setter
+  en `EngineConfig` ni ninguna API que lo tome como parámetro).
+  Confirmación definitiva de que Fase 6 tenía razón al descartarlo.
+
+### Cambios de código
+
+- `gradle/libs.versions.toml`: `litertlm = "0.15.0"`.
+- `AstConfig.audioBackendGpu: Boolean = true` — nuevo flag para el
+  toggle GPU audio con revert automático a CPU.
+- `LiteRtGemmaAstEngine.load()` — reescrito el bloque de attempts:
+  ahora pruebas `(main, audio)` pairs con fallback:
+  1. `GPU main + GPU audio` (target, con `audioBackendGpu = true`)
+  2. `GPU main + CPU audio` (audio fallback)
+  3. `CPU main + CPU audio` (full fallback)
+- Log SDK version al bootear (`"LiteRT-LM SDK version: 0.15.0"`).
+- `Engine.setNativeMinLogSeverity(LogSeverity.WARNING)` una vez al
+  entrar a `load()` (best-effort).
+- `Capabilities(modelPath).hasSpeculativeDecodingSupport()` logueado
+  antes de decidir sobre `ExperimentalFlags.enableSpeculativeDecoding`.
+- ViewModel: `audioBackendGpu` en state + `setAudioBackendGpu`
+  setter (kill-switch — takes effect on next Gemma reload).
+- UI: nuevo `SwitchRow` en la sección "3½. FASE 6 STREAMING"
+  arriba del audio-after-text, con status text explicando el target
+  ~800 ms → 200–400 ms y el fallback automático.
+
+### Pendiente device validation
+
+Todo compila conceptualmente contra la API 0.15 que verifiqué en
+el AAR. Falta smoke test en device para:
+1. Confirmar que el bump 0.12 → 0.15 no rompe el flujo end-to-end.
+2. Medir la latencia real con `GPU main + GPU audio` vs el
+   `GPU main + CPU audio` que teníamos. Objetivo: ver bajar el
+   audio prefill de ~800 ms a ~200–400 ms.
+3. Confirmar que el ruido de dispatch efectivamente desapareció
+   con `setNativeMinLogSeverity(WARNING)`.
+4. Confirmar que `Capabilities.hasSpeculativeDecodingSupport()`
+   reporta `false` para nuestro modelo `gemma4_4b_v09_...` (el
+   drafter no está embebido allí).
+
+### Después del smoke test
+
+Continúa el plan original: **consolidación de los 6 POCs en
+`translator-android/`**. Los seis POCs se consolidan en una sola
+app de producción:
 
 - `audio-hw-check/` — validación de USB routing / A2DP pairing
 - `audio-capture-poc/` — Oboe capture + JNI + ring buffer

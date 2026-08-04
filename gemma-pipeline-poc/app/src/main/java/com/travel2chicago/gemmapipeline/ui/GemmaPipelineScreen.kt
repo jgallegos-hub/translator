@@ -248,6 +248,18 @@ fun GemmaPipelineScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 SwitchRow(
+                    label = "GPU audio encoder (Fase 7 — LiteRT-LM 0.15)",
+                    checked = state.audioBackendGpu,
+                    onCheckedChange = { viewModel.setAudioBackendGpu(it) },
+                )
+                Text(
+                    "Audio prefill on GPU vs CPU (target: ~800 ms → ~200-400 ms). " +
+                        "Requires Gemma reload. Automatic CPU fallback if GPU init fails.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
                     label = "Audio-after-text (Google's recommended order)",
                     checked = state.audioAfterText,
                     onCheckedChange = { viewModel.setAudioAfterText(it) },

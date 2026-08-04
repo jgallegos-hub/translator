@@ -34,10 +34,20 @@ a target ≤ 3 s.
   decoding (short outputs don't benefit) and the official
   `gemma-4-E4B-it.litertlm` export (worse AST than our Fase 0
   model). Both revert commits merged; toggles preserved.
-- 🎯 **Next: Fase 7** — bump LiteRT-LM 0.12 → 0.14 for GPU audio
-  encoder acceleration (Gemma audio inference is our remaining
-  ~2.8 s bottleneck), then consolidate the six POCs into
-  `translator-android/`.
+- 🎯 **Fase 7 — LiteRT-LM 0.12 → 0.15 upgrade done, pending device
+  validation** (August 2026):
+  - `EngineConfig.audioBackend = Backend.GPU()` by default (with
+    automatic CPU fallback), target: audio prefill ~800 ms → ~200–400 ms.
+  - `Engine.setNativeMinLogSeverity(LogSeverity.WARNING)` silences
+    the dispatch-noise chatter that we had to document as "Known
+    noise" through Fase 6.
+  - `Capabilities(modelPath).hasSpeculativeDecodingSupport()` logs
+    whether the current model export embeds the MTP drafter.
+  - Zero breaking changes for our code paths — named-arg
+    construction absorbs the new `EngineConfig` / `ConversationConfig`
+    fields cleanly.
+  - Next after device smoke test: consolidation of the six POCs
+    into `translator-android/`.
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation
@@ -412,22 +422,50 @@ everything under "3½. FASE 6 STREAMING".
   latency. Reverted to the Fase 0 `gemma4_4b_v09_...` model. See
   [PROGRESS.md](PROGRESS.md) for the full write-up.
 
-## Known noise
+## Fase 7 — LiteRT-LM 0.15 upgrade (August 2026)
 
-During `engine.initialize()` LiteRT-LM v0.12.0 emits hundreds of native
-logs of the form:
+Bumped the LiteRT-LM dependency from `0.12.0` to `0.15.0` (the latest
+release published to Google's Maven at the time). Three headline wins
+mined from the AAR API:
 
-```
-[litert_dispatch.cc:113] No dispatch library found in /sdcard/Download/gemma_model
-```
+- **GPU / NPU audio encoder** — `EngineConfig.audioBackend` now accepts
+  `Backend.GPU()`; through Fases 4–6 we ran audio on CPU because that
+  was the only path Fase 0 validated. Audio prefill was ~800 ms /
+  chunk on CPU; GPU audio should cut that meaningfully on the Dimensity
+  9400+. Flag: `AstConfig.audioBackendGpu` (default `true`). Load
+  attempts fall back GPU-main+GPU-audio → GPU-main+CPU-audio →
+  CPU-main+CPU-audio, so a broken audio-GPU init still lets the main
+  path run.
+- **`Engine.setNativeMinLogSeverity(LogSeverity.WARNING)`** — 0.15
+  ships a static setter that finally lets us silence the
+  `[litert_dispatch.cc:113] No dispatch library found` chatter that we
+  had to document as "Known noise" through Fase 6. Called once at load
+  time; INFO-level subgraph dispatch messages disappear from logcat.
+- **`Capabilities(modelPath).hasSpeculativeDecodingSupport()`** — 0.15
+  can be asked whether a specific `.litertlm` export embeds the MTP
+  drafter subgraph. We log the answer at load so future model swaps
+  don't leave MTP silently no-op'ing.
 
-This is **expected and harmless**. The dispatch library is an optional
-accelerator hook; when absent, LiteRT-LM falls back to the declared backend
-(GPU or CPU) without functional degradation. The SDK's `EngineConfig` does
-not expose a setting to point at, disable, or silence this path. The log
-comes from native code (`__android_log_print`), so a Kotlin `Log` filter
-cannot suppress it. See the comment block in `GemmaAstEngine.kt` for the
-exact spot to wire a dispatch-lib config if a future SDK release adds one.
+No breaking changes for the code we use — `EngineConfig` gained
+`visionBackend` + `maxNumImages` but named-arg construction still
+compiles cleanly; `Conversation.sendMessage[Async]` picked up a
+handful of new optional params (RepetitionPenalty, NoRepeatNgram,
+SuppressTokens, ThinkingConfig, ResponseFormat) that all default to
+`null`, so our `conv.sendMessageAsync(contents).collect { … }` call
+site is unchanged. `ExperimentalFlags.enableSpeculativeDecoding` still
+present (nullable `Boolean`).
+
+Pending: device validation of the upgrade + GPU-audio latency measure.
+
+### Old "Known noise" — resolved
+
+Through 0.12, `engine.initialize()` emitted hundreds of native
+`[litert_dispatch.cc:113] No dispatch library found` lines that we
+couldn't silence — `EngineConfig` had no dispatch-lib setting and the
+log came from native `__android_log_print`. 0.15 fixes this via
+`Engine.setNativeMinLogSeverity(LogSeverity.WARNING)`, which we call
+once at load time. INFO-level dispatch noise is gone; real WARNINGs /
+errors still pass through.
 
 ## Go/No-Go criteria (Fase 4 + Fase 5) — 12/12 PASS
 
