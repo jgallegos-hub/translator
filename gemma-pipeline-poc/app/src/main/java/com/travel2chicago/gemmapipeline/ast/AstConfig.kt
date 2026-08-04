@@ -87,19 +87,53 @@ data class AstConfig(
     /**
      * Use GPU for the audio encoder path (`EngineConfig.audioBackend`).
      *
-     * LiteRT-LM 0.14+ ships NPU/GPU audio acceleration; through Fase 5/6 we
-     * ran on 0.12 where `audioBackend = Backend.CPU()` was the only path
-     * validated in Fase 0, and audio prefill dominated the per-chunk
-     * latency (~800 ms). GPU audio should cut that meaningfully on the
-     * Dimensity 9400+.
+     * **Requires LiteRT-LM ≥ 0.14 AND a model export whose audio graph is
+     * GPU-compatible.** Fase 7 attempted the 0.15 upgrade to unlock this
+     * — device testing showed GPU audio never activated with our current
+     * model (silent fallback to CPU) AND first-token latency regressed
+     * from ~1170 ms to ~2000 ms AND the app crashed twice under memory
+     * pressure. Reverted to 0.12.
      *
-     * When `true` (default in Fase 7), the engine load path tries
-     * `audioBackend = Backend.GPU()` first and falls back to
-     * `Backend.CPU()` if the GPU audio init throws — same pattern as the
-     * main [preferGpu] fallback. Set `false` to force the legacy CPU
-     * audio path if a device regression appears on GPU audio.
+     * On 0.12 the audio backend factory can still be constructed as
+     * `Backend.GPU()` but `Engine.initialize()` will throw for the audio
+     * subgraph; the load path's `(main, audio)` fallback chain handles it
+     * gracefully and drops to CPU-audio. Net effect: with 0.12 + our
+     * current model the flag is functionally a no-op — kept as `false`
+     * default so the first attempt in the fallback chain is `GPU main +
+     * CPU audio`, saving one wasted initialize() call.
+     *
+     * Set `true` when re-attempting the SDK upgrade with a compatible
+     * model — the flag flip alone will re-enable the GPU-audio attempt.
      */
-    val audioBackendGpu: Boolean = true,
+    val audioBackendGpu: Boolean = false,
+
+    /**
+     * Full-duplex mode. When `true`, the mic is NEVER muted while Kokoro /
+     * Android TTS is speaking — the chunker keeps collecting audio and
+     * emitting new chunks while translations play back. This lets the user
+     * speak continuously (OpenAI-style barge-in / conversational mode)
+     * without waiting for the previous translation to finish.
+     *
+     * Wired at the [com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline]
+     * level:
+     *   - `handleAudioData` bypasses the `ttsPlaying` check when this is on.
+     *   - `handleMuteRisingEdge` is NOT called at start-of-TTS (no chunker
+     *     flush + no VAD/reassembler reset).
+     *   - `TtsAudioPlayer` bookends (`beginUtterance` / `endUtterance`)
+     *     still fire — the shared `ttsPlaying` flag still tracks playback
+     *     state for the UI, we just stop acting on it in the mic path.
+     *
+     * **Physical constraint**: with an omnidirectional mic + a speaker in
+     * the same room, the mic WILL re-capture the TTS output and feed it
+     * back into Gemma as "speech". Full-duplex mode is only safe with:
+     *   (a) a unidirectional / cardioid mic pointing away from the speaker
+     *       (production hardware for viaje use case), or
+     *   (b) headphones / an isolated speaker (device testing).
+     *
+     * Default `false` = keep the Fase 6 half-duplex behaviour (safe
+     * baseline). Toggle in the UI to A/B on device.
+     */
+    val fullDuplexMode: Boolean = false,
 
     /**
      * Bounded queue capacity for the chunk → Gemma channel. One inference

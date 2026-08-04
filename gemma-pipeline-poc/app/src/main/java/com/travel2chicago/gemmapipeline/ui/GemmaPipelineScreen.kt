@@ -248,13 +248,31 @@ fun GemmaPipelineScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 SwitchRow(
-                    label = "GPU audio encoder (Fase 7 — LiteRT-LM 0.15)",
+                    label = "GPU audio encoder (Fase 7 — needs SDK ≥ 0.14)",
                     checked = state.audioBackendGpu,
                     onCheckedChange = { viewModel.setAudioBackendGpu(it) },
                 )
                 Text(
-                    "Audio prefill on GPU vs CPU (target: ~800 ms → ~200-400 ms). " +
-                        "Requires Gemma reload. Automatic CPU fallback if GPU init fails.",
+                    "Audio prefill on GPU. Currently a no-op on our 0.12 SDK + " +
+                        "Fase 0 model (0.15 upgrade regressed; see PROGRESS.md). " +
+                        "Flag preserved for future SDK re-upgrade.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "Full-duplex mode (mic stays open while TTS speaks)",
+                    checked = state.fullDuplexMode,
+                    onCheckedChange = { viewModel.setFullDuplexMode(it) },
+                )
+                Text(
+                    if (state.fullDuplexMode)
+                        "Full-duplex ON — chunker keeps collecting during TTS. " +
+                            "Needs directional mic OR headphones or the speaker " +
+                            "output will loop back into Gemma."
+                    else
+                        "Half-duplex (default) — mic muted while TTS plays. " +
+                            "Safe with any mic/speaker setup.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -102,8 +102,12 @@ data class GemmaPipelineUiState(
      *  order (text first, audio last) for multimodal AST accuracy. */
     val audioAfterText: Boolean = true,
     /** Mirrors [AstConfig.audioBackendGpu] — Fase 7 GPU audio encoder.
+     *  Default OFF post-revert (needs SDK ≥ 0.14 + compatible model).
      *  Takes effect on next Gemma reload. */
-    val audioBackendGpu: Boolean = true,
+    val audioBackendGpu: Boolean = false,
+    /** Mirrors [AstConfig.fullDuplexMode] — mic keeps capturing while TTS
+     *  speaks. Applied to the pipeline instance on toggle. */
+    val fullDuplexMode: Boolean = false,
     /** Mirrors [AstConfig.useOfficialAstPrompt] — Google's transcribe+translate
      *  prompt with `English:` marker extraction. */
     val useOfficialAstPrompt: Boolean = true,
@@ -499,6 +503,9 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         log("Capture actual sample rate: $actualSr Hz")
         p.setCaptureSampleRate(actualSr)
         p.setTtsPlayingRef(ttsPlaying)
+        // Apply current full-duplex flag before start so the first audio
+        // frames after startPipeline honour the toggle state.
+        p.fullDuplexMode = astConfig.fullDuplexMode
         p.start(viewModelScope)
 
         val r = AstChunkRouter(bus, g, astConfig, sampleRate = audioConfig.format.sampleRate)
@@ -685,6 +692,26 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(astStreamingEnabled = enabled) }
         log("AST streaming toggled → $enabled")
         restartAstRouter("streamingEnabled=$enabled")
+    }
+
+    /**
+     * Full-duplex (barge-in) toggle. When ON, the pipeline stops muting
+     * the mic while TTS speaks — the chunker keeps collecting new audio
+     * and Gemma keeps producing translations while the previous one is
+     * still playing. See [AstConfig.fullDuplexMode] for the physical
+     * caveats.
+     *
+     * Applied to the live pipeline instance immediately — no restart
+     * needed since the pipeline reads `fullDuplexMode` on every audio
+     * frame. If the pipeline is not started yet, the value is stashed in
+     * config + state and picked up on the next `startPipeline`.
+     */
+    fun setFullDuplexMode(enabled: Boolean) {
+        if (astConfig.fullDuplexMode == enabled) return
+        astConfig = astConfig.copy(fullDuplexMode = enabled)
+        _state.update { it.copy(fullDuplexMode = enabled) }
+        pipeline?.fullDuplexMode = enabled
+        log("Full-duplex mode toggled → $enabled")
     }
 
     /**

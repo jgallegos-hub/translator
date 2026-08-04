@@ -81,11 +81,22 @@ class VadChunkingPipeline(
 
     /**
      * Shared flag driven by [com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer].
-     * While `true`, [handleAudioData] drops every incoming frame — the mic is
-     * likely picking up the TTS output through the speaker and re-feeding it
-     * into Gemma. Reset to `null` in [stop] so a fresh [start] can rebind.
+     * While `true` AND [fullDuplexMode] is `false`, [handleAudioData] drops
+     * every incoming frame — the mic is likely picking up the TTS output
+     * through the speaker and re-feeding it into Gemma. Reset to `null` in
+     * [stop] so a fresh [start] can rebind.
      */
     @Volatile private var ttsPlaying: AtomicBoolean? = null
+
+    /**
+     * When `true`, the mic is NEVER muted while TTS is speaking — the chunker
+     * keeps collecting and the VAD keeps running. Used for OpenAI-style
+     * continuous / barge-in conversation. See [com.travel2chicago.gemmapipeline.ast.AstConfig.fullDuplexMode]
+     * for the physical caveats (needs a directional mic or isolated speaker
+     * — omnidirectional-mic + shared-room-speaker will feedback-loop the
+     * TTS output back into Gemma as new "speech").
+     */
+    @Volatile var fullDuplexMode: Boolean = false
 
     /** Frames skipped since [start] because the TTS was speaking. */
     val totalMutedFrames: Long get() = mutedFramesDropped
@@ -186,11 +197,13 @@ class VadChunkingPipeline(
             Log.i(TAG, "First AudioData event received: ${event.samples.size} samples")
         }
 
-        // If TTS is currently talking, drop the frame entirely — the mic
-        // is almost certainly picking up the speaker output. Log only on
-        // the edges (start / end of a mute window) so 30 frames/s of speech
-        // don't spam logcat.
-        val muted = ttsPlaying?.get() == true
+        // Full-duplex mode disables the mute path entirely — mic keeps
+        // capturing, chunker keeps collecting, VAD keeps running while TTS
+        // speaks. See [fullDuplexMode] KDoc for the physical caveat.
+        // TtsAudioPlayer bookends still fire and still write the shared
+        // ttsPlaying flag, so the UI stays accurate — we just stop acting
+        // on the flag here in the mic path.
+        val muted = !fullDuplexMode && ttsPlaying?.get() == true
         if (muted != wasMuted) {
             wasMuted = muted
             if (muted) {

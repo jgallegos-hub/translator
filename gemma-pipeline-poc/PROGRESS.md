@@ -784,7 +784,7 @@ alcanza.
 
 ---
 
-## Fase 7 — Upgrade LiteRT-LM 0.12 → 0.15 (agosto 2026)
+## Fase 7 — Upgrade LiteRT-LM 0.12 → 0.15: intentado y REVERTIDO (agosto 2026)
 
 Bumpeamos la dependencia `com.google.ai.edge.litertlm:litertlm-android`
 de **`0.12.0` → `0.15.0`** (última versión estable en Google Maven
@@ -792,6 +792,48 @@ al momento; saltamos 0.13 y 0.14 en un solo bump). Motivación:
 0.14 introdujo aceleración GPU/NPU para el audio encoder — hoy
 `audioBackend = Backend.CPU()` es el bottleneck de prefill (~800 ms
 por chunk). Con GPU audio podría bajar a ~200–400 ms.
+
+**Revertido tras device testing** — el bump no pasó smoke test:
+
+- **GPU audio no se activó con nuestro modelo**. Aún con el flag
+  `audioBackendGpu = true`, el modelo `gemma4_4b_v09_...` (Fase 0)
+  no expone un audio subgraph compatible con GPU. El fallback
+  automático `(GPU main + GPU audio) → (GPU main + CPU audio)` cae
+  al segundo attempt sin gain observable — igual que estábamos en
+  0.12 solo que con más ciclos gastados en el intento fallido de
+  init GPU-audio.
+- **Regresión de first-token latency**: pasó de ~1170 ms (Fase 6
+  medido) a ~2000 ms sostenido en 0.15. No investigado a fondo —
+  puede ser cambios en el scheduler interno del runtime, la nueva
+  ruta de `sendMessageAsync` con más params opcionales, o algún
+  cambio en cómo el sampler config se aplica. Sin tiempo para
+  bisectar dentro de una revisión que ya rompe otras cosas.
+- **Dos crashes por presión de memoria** durante uso sostenido.
+  0.15 pesa notablemente más en heap (más clases, más nativo — el
+  AAR pasó de ~15 MB a ~19 MB). En un dispositivo con Gemma
+  4E-B GPU + Silero + Kokoro ONNX + Oboe buffers todos vivos, el
+  headroom era ya justo; los ~4 MB extra fueron suficientes para
+  gatillar OOM en dos runs de ~5-10 minutos.
+
+Neto: SDK más pesado, mismo pipeline de audio, con regresión y
+crashes. **Revertido a `0.12.0`**.
+
+**Preservado del intento**:
+- Flag `AstConfig.audioBackendGpu` con default `false` y KDoc que
+  explica el requerimiento SDK ≥ 0.14 + modelo compatible. El code
+  path en `LiteRtGemmaAstEngine.load()` (la cadena de attempts
+  `(main, audio)`) también se preservó — si algún día
+  re-intentamos el upgrade, es solo flippear el default y bumpear
+  la versión.
+- Los `Engine.setNativeMinLogSeverity` y `Capabilities` (APIs
+  0.14+) que habíamos wireado fueron REMOVIDOS del código —
+  imports + calls — porque no compilan contra 0.12.
+
+**Investigación del AAR 0.15.0 (referencia para el próximo intento)**:
+
+Descargué + descomprimí `litertlm-android-0.15.0.aar` y comparé la
+superficie de API contra 0.12.0. Sigue documentada aquí para el
+próximo intento de upgrade — no es un requisito re-hacerla.
 
 ### Investigación del AAR 0.15.0
 
@@ -851,40 +893,51 @@ superficie de API contra 0.12.0. Hallazgos:
   en `EngineConfig` ni ninguna API que lo tome como parámetro).
   Confirmación definitiva de que Fase 6 tenía razón al descartarlo.
 
-### Cambios de código
+### Estado post-revert (versión estable)
 
-- `gradle/libs.versions.toml`: `litertlm = "0.15.0"`.
-- `AstConfig.audioBackendGpu: Boolean = true` — nuevo flag para el
-  toggle GPU audio con revert automático a CPU.
-- `LiteRtGemmaAstEngine.load()` — reescrito el bloque de attempts:
-  ahora pruebas `(main, audio)` pairs con fallback:
-  1. `GPU main + GPU audio` (target, con `audioBackendGpu = true`)
-  2. `GPU main + CPU audio` (audio fallback)
-  3. `CPU main + CPU audio` (full fallback)
-- Log SDK version al bootear (`"LiteRT-LM SDK version: 0.15.0"`).
-- `Engine.setNativeMinLogSeverity(LogSeverity.WARNING)` una vez al
-  entrar a `load()` (best-effort).
-- `Capabilities(modelPath).hasSpeculativeDecodingSupport()` logueado
-  antes de decidir sobre `ExperimentalFlags.enableSpeculativeDecoding`.
-- ViewModel: `audioBackendGpu` en state + `setAudioBackendGpu`
-  setter (kill-switch — takes effect on next Gemma reload).
-- UI: nuevo `SwitchRow` en la sección "3½. FASE 6 STREAMING"
-  arriba del audio-after-text, con status text explicando el target
-  ~800 ms → 200–400 ms y el fallback automático.
+- SDK vuelve a `0.12.0`. Imports + calls de `Engine.setNativeMinLogSeverity`
+  y `Capabilities` (APIs 0.14+) REMOVIDOS del código para que compile
+  contra 0.12.
+- Flag `AstConfig.audioBackendGpu` preservado con default `false` +
+  KDoc extendido documentando el requerimiento SDK ≥ 0.14 + modelo
+  compatible. La cadena de attempts `(main, audio)` en
+  `LiteRtGemmaAstEngine.load()` también se preservó — sirve tanto
+  para 0.12 (skip la variante GPU-audio cuando el flag es false)
+  como para futuros re-intentos.
+- Ruido `[litert_dispatch.cc:113]` vuelve a estar presente en 0.12
+  — sigue documentado como "Known noise" hasta que hagamos otro
+  intento de upgrade.
+- Toda la mejora funcional de Fase 6 permanece intacta: streaming
+  AST/TTS default ON, chunker retune 1500/500, prompt sin
+  transcripción con marcador `English:`, orden audio-after-text,
+  meta-text filter con prefix window de 60 chars, Android TTS Fast
+  mode toggle.
 
-### Pendiente device validation
+### Full-duplex mode (mismo commit del revert)
 
-Todo compila conceptualmente contra la API 0.15 que verifiqué en
-el AAR. Falta smoke test en device para:
-1. Confirmar que el bump 0.12 → 0.15 no rompe el flujo end-to-end.
-2. Medir la latencia real con `GPU main + GPU audio` vs el
-   `GPU main + CPU audio` que teníamos. Objetivo: ver bajar el
-   audio prefill de ~800 ms a ~200–400 ms.
-3. Confirmar que el ruido de dispatch efectivamente desapareció
-   con `setNativeMinLogSeverity(WARNING)`.
-4. Confirmar que `Capabilities.hasSpeculativeDecodingSupport()`
-   reporta `false` para nuestro modelo `gemma4_4b_v09_...` (el
-   drafter no está embebido allí).
+Se agrega un flag independiente del upgrade: `AstConfig.fullDuplexMode:
+Boolean = false`. Cuando está `true`:
+
+- `VadChunkingPipeline.handleAudioData` ignora el flag `ttsPlaying`
+  compartido — el chunker sigue colectando audio y emitiendo chunks
+  mientras Kokoro / Android TTS habla.
+- No se llama `handleMuteRisingEdge()` al empezar el TTS → no hay
+  flush del chunker + no hay reset del VAD/reassembler.
+- Los bookends `beginUtterance` / `endUtterance` en `TtsAudioPlayer`
+  siguen funcionando y siguen escribiendo el flag `ttsPlaying`
+  compartido — la UI y las métricas ven el estado real de playback,
+  solo dejamos de actuar sobre él en la ruta del mic.
+
+Uso previsto: **modo conversacional estilo OpenAI** — el usuario
+puede hablar continuo mientras las traducciones salen en serie.
+**Requisito físico**: mic direccional / cardioide alejado del
+speaker, O headphones. Con mic omnidireccional + speaker en la misma
+sala, el mic captura el output del TTS y lo re-feedea a Gemma como
+"speech".
+
+Default `false` = comportamiento half-duplex de Fase 6 (baseline
+seguro). Toggle en UI en la sección "3½. FASE 6 STREAMING" con
+status text que explica el trade-off.
 
 ### Después del smoke test
 
