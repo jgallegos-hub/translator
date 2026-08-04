@@ -34,28 +34,26 @@ data class AstConfig(
     val modelFilename: String = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
 
     /**
-     * Official Google-recommended AST prompt for Gemma multimodal audio.
+     * Translation-only prompt with the `English: ` marker that the router's
+     * extraction depends on.
      *
-     * From Google's docs: an AST prompt should ask the model to (a) transcribe
-     * the source-language audio, and (b) translate it, with an explicit
-     * separator between the two so a downstream parser can extract the
-     * translation deterministically.
+     * The Google-recommended AST format asks for transcription-then-translation
+     * ("Transcribe the following speech segment in Spanish, then translate…")
+     * — device testing showed Gemma dutifully emitted 22–72 characters of
+     * Spanish text before the `English:` marker on every chunk, adding
+     * ~1–2 s of wasted decode per translation. We keep the marker (so the
+     * router's `extractEnglishTranslation` still works) but explicitly
+     * instruct the model NOT to include the Spanish transcription, cutting
+     * the entire wasted prefix.
      *
-     * The `AstChunkRouter` extracts everything after `"English: "` before
-     * emitting `TranslationReady` — see [useOfficialAstPrompt] and the
-     * router's `extractEnglishTranslation` for the exact parse. If Gemma
-     * ignores the format (no marker in the reply), the router falls back
-     * to using the whole reply as-is and logs a warning.
-     *
-     * Active when [useOfficialAstPrompt] is `true` (default). To A/B against
-     * the legacy prompt, flip [useOfficialAstPrompt] off — [legacyPrompt]
-     * takes over.
+     * Active when [useOfficialAstPrompt] is `true` (default). If Gemma
+     * still emits Spanish somehow, the router's `English:` extraction plus
+     * marker-missing fallback keep the pipeline safe.
      */
     val prompt: String =
-        "Transcribe the following speech segment in Spanish, then translate " +
-            "it into English. When formatting the answer, first output the " +
-            "transcription in Spanish, then one newline, then output the " +
-            "string 'English: ', then the translation in English.",
+        "Translate the following Spanish speech into English. " +
+            "Output only the string 'English: ' followed by the translation " +
+            "in English. Do not include the original Spanish text.",
 
     /**
      * Fallback prompt kept for reverting if [useOfficialAstPrompt] is flipped
@@ -196,6 +194,23 @@ data class AstConfig(
         "the audio is",
         "the audio was",
     ),
+
+    /**
+     * Meta-text patterns only match when they appear inside the FIRST
+     * [metaTextPrefixChars] of the reply (after English marker extraction).
+     * Rationale: assistant preambles like "The translation of the Spanish
+     * audio is: ..." always come at the start of the reply. Matching
+     * anywhere in the text produces false positives — e.g. `"the
+     * translation is"` blocked the legitimate reply "They tell me how
+     * the translation is going". A short prefix window keeps preamble
+     * detection but excludes mid-sentence mentions of the same words.
+     *
+     * 60 chars = ~10 words, which comfortably covers every preamble
+     * observed on device without slicing into normal sentence content.
+     * Set to `Int.MAX_VALUE` to restore full-text matching (legacy
+     * behaviour before the false-positive fix).
+     */
+    val metaTextPrefixChars: Int = 60,
 
     /**
      * Google's multimodal Gemma docs: "For optimal performance with multimodal

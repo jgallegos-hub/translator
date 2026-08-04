@@ -646,10 +646,26 @@ class AstChunkRouter(
         return -1
     }
 
+    /**
+     * Meta-text substring check, scoped to a **prefix window**.
+     *
+     * Assistant preambles ("The translation of the Spanish audio is: ...",
+     * "Here is the translation: ...") always start the reply. Checking the
+     * entire text produced false positives on legitimate translations that
+     * happen to contain the same phrases mid-sentence — e.g.
+     * `"the translation is"` blocked "They tell me how the translation is
+     * going". Restricting the match to the first [AstConfig.metaTextPrefixChars]
+     * (default 60) keeps preamble detection intact while removing that class
+     * of false positive.
+     */
     private fun matchMetaPattern(text: String): String? {
         if (config.metaTextPatterns.isEmpty()) return null
-        val lower = text.trim().lowercase()
-        if (lower.isEmpty()) return null
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        val window = if (trimmed.length > config.metaTextPrefixChars)
+            trimmed.substring(0, config.metaTextPrefixChars)
+        else trimmed
+        val lower = window.lowercase()
         return config.metaTextPatterns.firstOrNull { pat -> lower.contains(pat) }
     }
 

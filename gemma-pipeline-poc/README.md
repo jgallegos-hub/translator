@@ -16,21 +16,28 @@ a target ≤ 3 s.
   "3½. FASE 6 STREAMING" remain wired for runtime disabling if a
   regression appears. Latency counters (`First token` + `First
   audio`) live in the same panel.
-- 🔬 **Post-Fase-6 investigation → 3 changes merged, pending device
-  validation** (July 2026):
-  - **Audio-after-text order** — Google's multimodal docs say text
-    should come before audio in `Contents.of(...)`. Flipped.
-  - **Official Google AST prompt** with `English:` marker + router
-    extraction so Kokoro never speaks the Spanish transcription.
-  - **Android system TTS as Fast mode** — an alternative to Kokoro
-    (~100–300 ms per utterance vs ~1.7 s Kokoro), routed via a new
-    `AndroidTtsEngine`. UI toggle picks Fast (Android) or Quality
-    (Kokoro, default).
-- ❌ **Investigated + dropped** in the same round: MTP / speculative
+- ✅ **Post-Fase-6 changes validated on device** (August 2026):
+  - **Audio-after-text order** — no regression; `English:` marker
+    detected in 100 % of chunks.
+  - **Official AST prompt with router extraction** — extraction
+    fired on every chunk, `englishMarkerMissing` stayed at 0.
+    Follow-up: prompt tightened to skip Spanish transcription
+    (was wasting ~1–2 s of decode per chunk).
+  - **Android system TTS Fast mode** — first-audio ~3.4 s vs
+    Kokoro 3.2–6 s; snappier voice. Fast mode is the travel
+    default; Kokoro stays as the quality option.
+  - **Meta-text filter refined** — now only matches inside the
+    first 60 chars of the reply to eliminate false positives on
+    legitimate translations that mention "translation" / "audio"
+    mid-sentence.
+- ❌ **Investigated + dropped** the same round: MTP / speculative
   decoding (short outputs don't benefit) and the official
   `gemma-4-E4B-it.litertlm` export (worse AST than our Fase 0
-  model). Both revert commits merged; toggles preserved for future
-  experiments.
+  model). Both revert commits merged; toggles preserved.
+- 🎯 **Next: Fase 7** — bump LiteRT-LM 0.12 → 0.14 for GPU audio
+  encoder acceleration (Gemma audio inference is our remaining
+  ~2.8 s bottleneck), then consolidate the six POCs into
+  `translator-android/`.
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation

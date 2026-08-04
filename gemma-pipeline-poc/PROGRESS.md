@@ -702,6 +702,65 @@ tocan calidad/latencia:
    `firstAudioLatencyMs` bajado a ~500 ms (target). Evaluar
    inteligibilidad de la voz sistema vs Kokoro para uso en viaje.
 
+### Device validation resultados (agosto 2026)
+
+Sesión de device testing con los 3 cambios encendidos. Resultado
+general: **todo funciona, dos ajustes finos pendientes**. Commit del
+cierre: **`fde28f5`** (docs) + próximos con los fixes.
+
+**Lo que funciona bien**:
+- **Orden audio-after-text**: sin regresiones observadas. `English:`
+  marker detectado en el 100 % de los chunks — Gemma respeta el
+  formato con el nuevo orden multimodal.
+- **Prompt oficial + extracción**: la extracción en el router (one-shot
+  + streaming gate) funciona en todos los chunks; el contador
+  `englishMarkerMissing` se quedó en 0 durante la sesión completa.
+- **Android TTS Fast mode**: `firstAudioLatencyMs` medido ~3.4 s vs
+  Kokoro 3.2–6 s. La voz del sistema es más ágil (sin el "colchón"
+  de warmup de Kokoro) — Fast mode va a ser el default de viaje;
+  Kokoro queda como opción de calidad para uso estacionario.
+- **Calidad de traducción**: buena con ambos cambios activos (orden
+  + prompt). Sin regresión perceptible vs la baseline pre-cambio.
+
+**Dos problemas encontrados**:
+
+1. **Prompt oficial genera transcripción española desperdiciada**.
+   Los logs muestran offsets de 22–72 caracteres de texto español
+   antes del marcador `English:` en cada chunk. Esto son ~1–2 s de
+   decode que no se traducen en audio — el gate del router los
+   descarta pero Gemma ya los generó. Fix: prompt reescrito para
+   pedir SOLO la traducción con el marcador `English:` al principio,
+   sin la parte de transcripción. Mantiene el marcador (extracción
+   downstream sigue funcionando) pero elimina el texto español
+   desperdiciado. Commit: **próximo**.
+
+2. **Meta-text filter — falso positivo con `"the translation is"`**.
+   La traducción legítima "They tell me how the translation is going"
+   fue descartada. La causa: los patrones matcheaban en cualquier
+   parte del texto, no solo al inicio. Los preambulos de asistente
+   siempre empiezan con "The translation of..." — nunca aparecen
+   mid-sentence. Fix: restringir el match de meta-text a los primeros
+   `metaTextPrefixChars = 60` caracteres del reply (después de
+   extraer el marcador). Preserva la captura de preambulos, elimina
+   los falsos positivos en oraciones normales. Commit: **próximo**.
+
+Ambos fixes son one-liners a nivel arquitectónico y no requieren
+otra ronda de validación completa — device smoke test post-fix
+alcanza.
+
+### Estado final Fase 6
+
+- 5 investigaciones post-Fase-6 completas: 3 shipped + 2 dropped +
+  2 refinamientos post-device.
+- Todo mergeado con toggles en UI para reversal sin rebuild.
+- **Siguiente**: **Fase 7 — Upgrade LiteRT-LM 0.12 → 0.14**
+  (GPU audio acceleration). La 0.14 expone aceleración GPU para el
+  audio encoder de Gemma; hoy corremos audio en CPU (~2.8 s por
+  inferencia). GPU podría bajar eso significativamente. Requiere
+  bump de dependencia + validación de que la API se mantiene
+  compatible (nuestro código ya usa las APIs experimentales de
+  streaming + Session que existen en 0.14).
+
 ### Lecciones técnicas:
 - LiteRT-LM 0.12.0 `sendMessageAsync` retorna un cold Flow. `onCompletion`
   se dispara en éxito Y error, así que es el único lugar seguro para
@@ -725,10 +784,24 @@ tocan calidad/latencia:
 
 ---
 
-## Siguiente: Fase 7 — Consolidación en `translator-android/`
+## Siguiente: Fase 7 — Upgrade LiteRT-LM 0.12 → 0.14 (GPU audio)
 
-Post device validation + flip de defaults, los seis POCs se consolidan
-en una sola app de producción:
+El primer paso de Fase 7 es bumpear la dependencia LiteRT-LM de
+0.12.0 → 0.14. La 0.14 expone **aceleración GPU para el audio
+encoder** de Gemma — hoy corremos `audioBackend = Backend.CPU()`
+porque era el único path validado en Fase 0, y la inferencia audio
+toma ~2.8 s. GPU audio podría bajar eso significativamente y es la
+única palanca importante que nos queda en el lado del engine.
+
+Riesgos: nuestro código ya usa APIs experimentales de 0.12
+(`sendMessageAsync`, `ExperimentalFlags.enableSpeculativeDecoding`) —
+hay que verificar que sigan compatibles en 0.14. Investigación
+previa a Fase 6 confirmó que ambas existen en 0.14; falta
+compilar + smoke test.
+
+Después del upgrade + validación, sigue el plan original de Fase 7:
+**consolidación en `translator-android/`**. Los seis POCs se
+consolidan en una sola app de producción:
 
 - `audio-hw-check/` — validación de USB routing / A2DP pairing
 - `audio-capture-poc/` — Oboe capture + JNI + ring buffer
