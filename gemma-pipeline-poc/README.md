@@ -38,18 +38,38 @@ a target ≤ 3 s.
   Device testing showed GPU audio never activated with our current
   model, first-token latency regressed from ~1170 ms to ~2000 ms,
   and the app crashed twice under memory pressure (0.15 AAR ~4 MB
-  heavier). Back on `0.12.0`. `AstConfig.audioBackendGpu` flag
-  preserved (default `false`) with a KDoc note about the SDK
-  requirement, so a future re-attempt is a one-flag flip. Removed
-  the `Engine.setNativeMinLogSeverity` + `Capabilities` calls that
-  don't compile against 0.12; the dispatch-noise "Known noise" note
-  is back in effect. See [`PROGRESS.md`](PROGRESS.md) for the full
+  heavier). Back on `0.12.0`. Root cause turned out to be upstream:
+  `litert-torch export_hf` doesn't emit the audio-GPU subgraphs
+  (litert-torch issue #1039); even Google's own official model
+  ships `backend_constraint: cpu` in the audio section. **CPU audio
+  at ~800 ms prefill is the current state of the art on-device for
+  Gemma 4** — no SDK bump, model swap, or flag flip will move it
+  until the upstream lands. `AstConfig.audioBackendGpu` flag +
+  attempt-chain scaffolding preserved (default `false`) so
+  re-attempting is a one-flag + one-version-bump change when Google
+  ships the fix. See [`PROGRESS.md`](PROGRESS.md) for the full
   write-up.
-- 🔀 **Full-duplex mode** — new flag `AstConfig.fullDuplexMode`
-  (default OFF). When on, the mic stays open while TTS speaks, so
-  the chunker keeps collecting new utterances and translations
-  stream out continuously (OpenAI-style barge-in). Toggle in UI.
-  Needs a directional mic or headphones to avoid speaker feedback.
+- ✅ **Full-duplex mode validated on device** (August 2026). New flag
+  `AstConfig.fullDuplexMode` (default OFF, toggle in UI). When on,
+  the mic stays open while TTS speaks — chunker keeps collecting,
+  translations stream out continuously (OpenAI-style barge-in).
+  UI badge shows "🎙 VAD live (full-duplex, TTS)" during playback
+  to confirm the mute is bypassed. Needs a directional mic or
+  headphones to avoid speaker feedback.
+- ✅ **POC closure — validation final** (commit `c623e7a`, August 2026).
+  14/14 translations, 0 errors, 0 drops over ~10 minutes of
+  continuous operation. All accumulated features working together:
+  full-duplex, male voice `am_michael` default, Android TTS fast
+  mode, streaming AST+TTS, retuned chunker, translation-only
+  prompt with `English:` marker extraction, meta-text filter with
+  60-char prefix window. **Latencies: first token ~1200 ms, first
+  audio ~3.4 s — 4× improvement end-to-end vs pre-Fase-6 baseline
+  (~14 s → ~3.4 s)**. Known issues (Mexican slang, "It says"-style
+  narrative wrapping, Kokoro on long sentences) documented in
+  PROGRESS.md and non-blocking for field use. **POC is stable and
+  ready for field testing with production hardware**
+  (unidirectional mic + wired USB DAC speaker eliminates both the
+  full-duplex feedback risk and A2DP's ~300 ms playback tail).
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation

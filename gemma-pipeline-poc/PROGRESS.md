@@ -1010,9 +1010,115 @@ Play Feature Delivery para el download post-install del Gemma
 `.litertlm` de ~3.4 GB.
 
 Fuera del scope de Fase 7 (para más adelante):
-- Selector de voz Kokoro en UI (v1 hardcoded `af_heart`)
+- Selector completo de las 54 voces Kokoro (hoy tenemos toggle
+  Male/Female en UI post-cierre)
 - Modelo Gemma fine-tuned para es-MX (para el issue de slang)
 - Streaming input via `Session.runPrefill` si aparecen tiempos < 2 s
   en el device test
 - Hardware unidireccional (mic + USB DAC speaker) para el issue de
   feedback físico
+
+---
+
+## Cierre de POC — validación final en device (agosto 2026)
+
+Commit del cierre: **`c623e7a`** (full-duplex enforcement + male
+voice + GPU-audio finding).
+
+### Device test — pasado
+
+Sesión de ~10 minutos de operación continua en Xiaomi 15T Pro con
+Saramonic USB + JBL Go 4. **14/14 traducciones sin errores, sin
+drops**. Todas las mejoras acumuladas funcionando en conjunto:
+
+| Feature | Estado |
+|---|---|
+| Full-duplex mode | ✅ "VAD live (full-duplex, TTS)" confirmado en UI durante playback; sin mute |
+| Voz masculina `am_michael` | ✅ activa por default |
+| Android TTS fast mode | ✅ funcional como alternativa rápida |
+| Streaming AST (Stage A) | ✅ token-by-token de Gemma |
+| Streaming TTS (Stage B) | ✅ per-sentence de Kokoro |
+| Chunker retuneado (1500/500) | ✅ shave de latencia intacto |
+| Prompt sin transcripción + `English:` marker | ✅ extracción router funcionando |
+| Meta-text filter (prefix 60 chars) | ✅ sin falsos positivos observados |
+
+**Latencias medidas**:
+- First token: ~1200 ms promedio
+- First audio: ~3.4 s promedio
+- **Mejora total end-to-end: 14 s → 3.4 s (4× improvement)**
+
+### Issues conocidos pendientes (no blocking para uso de POC)
+
+1. **Slang mexicano**: Gemma no entiende expresiones coloquiales.
+   Ejemplo observado: "les dan las ganas" → "Les andalganas"
+   (fonetizado en vez de traducido). Requiere fine-tune del modelo
+   para es-MX; fuera de scope del POC.
+
+2. **Meta-text narrativo**: Gemma a veces envuelve la traducción
+   en estilo "It says, '...'" — el filtro de prefix 60 chars no lo
+   atrapa porque "It says" no está en la lista de patterns y no
+   parece preamble asistente estándar. Solución: agregar patterns
+   nuevos ("it says", "the speaker says", "the person says") o
+   pedirle explícitamente al prompt que no narre. Fix simple para
+   la siguiente sesión.
+
+3. **Kokoro lento en frases largas**: síntesis toma ~7–8 s en
+   utterances multi-oración largas. Compensado parcialmente por
+   Stage B streaming (usuario oye sentence 1 mientras 2..N
+   sintetizan), pero el aggregate cost sigue alto.
+
+4. **Voz masculina más rápida**: `am_michael` es agradable pero
+   ~1.5–2 s/oración. Próxima sesión: probar `am_adam`, `am_liam`,
+   `am_puck` para ver si alguno es notablemente más rápido sin
+   pérdida de calidad.
+
+### Hallazgo cerrado — GPU audio
+
+Documentado a fondo en la sección de Fase 7. Resumen:
+
+**No existe hoy para nadie**. Issue [litert-torch #1039](https://github.com/google-ai-edge/litert-torch/issues/1039)
+confirma que `litert-torch export_hf` no exporta las secciones
+`tf_lite_audio_encoder_hw` / `tf_lite_audio_adapter` /
+`tf_lite_end_of_audio`. Incluso el modelo oficial de Google
+(`gemma-4-E4B-it.litertlm`) tiene `backend_constraint: cpu` en la
+sección de audio. **CPU audio a ~800 ms de prefill es el estado
+del arte** en agosto 2026 para Gemma 4 on-device.
+
+Scaffolding preservado (flag `audioBackendGpu` + attempt chain
+`(main, audio)` en `load()`) para re-intentar cuando Google resuelva
+el upstream: sería solo un bump de SDK + swap de modelo + flip del
+flag.
+
+### Estado del POC
+
+**Versión funcional estable, lista para testing en campo con
+hardware de producción.**
+
+El POC en su estado actual cubre todo el pipeline speech-to-speech
+ES→EN con:
+- Latencia end-to-end mejorada 4× vs baseline pre-Fase-6
+- Full-duplex para conversación estilo OpenAI (requiere hardware
+  direccional o headphones)
+- Fallback a Fast TTS cuando se prioriza velocidad sobre calidad
+- Toggles en UI para revertir cualquier feature individualmente en
+  runtime si aparece regresión
+
+**Recomendación para uso en campo**: mic USB unidireccional
+(cardioide, apuntando lejos del speaker) + speaker cableado USB
+DAC. Esta combinación elimina tanto el issue de feedback físico
+en full-duplex como los ~300 ms extra que introduce Bluetooth
+A2DP en el playback.
+
+### Siguientes pasos
+
+1. **Sesión corta de fixes rápidos**: agregar patterns meta-text
+   para el narrativo ("it says", etc.), probar voces masculinas
+   más rápidas.
+2. **Testing de campo**: usar el POC en escenarios reales de
+   viaje (hotel check-in, restaurante, transporte) con hardware
+   de producción. Documentar issues encontrados que el testing
+   controlado no expone.
+3. **Consolidación en `translator-android/`** cuando el testing
+   de campo dé el go — copiar las capas `audio/`, `vad/`,
+   `chunker/`, `pipeline/`, `ast/`, `tts/` verbatim + wiring de
+   producción sin sliders de debug.
