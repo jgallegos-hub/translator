@@ -829,6 +829,56 @@ crashes. **Revertido a `0.12.0`**.
   0.14+) que habíamos wireado fueron REMOVIDOS del código —
   imports + calls — porque no compilan contra 0.12.
 
+### GPU audio no existe para nadie todavía (hallazgo clave)
+
+Después del revert investigamos por qué GPU audio no activaba. La
+respuesta: **no es específico a nuestro modelo — no existe hoy para
+NADIE**.
+
+- **Issue [litert-torch #1039](https://github.com/google-ai-edge/litert-torch/issues/1039)**
+  confirma que la herramienta `litert-torch export_hf` (el pipeline
+  oficial de Google para exportar `.litertlm`) **no exporta las
+  secciones de audio necesarias para GPU**:
+  - `tf_lite_audio_encoder_hw`
+  - `tf_lite_audio_adapter`
+  - `tf_lite_end_of_audio`
+
+  Sin estas secciones en el `.litertlm`, el runtime no tiene los
+  subgraphs GPU del audio encoder y cae a CPU silenciosamente sin
+  importar qué backend se declare.
+
+- **Incluso el modelo oficial de Google** (`gemma-4-E4B-it.litertlm`
+  post-2026-05-05, el que probamos y también descartamos por
+  peor calidad AST) **tiene `backend_constraint: cpu`** en la
+  sección de audio del `.litertlm`. Confirmado inspeccionando el
+  archivo. Es decir: el propio equipo de Google no está shippeando
+  un modelo con audio-GPU habilitado — no es cosa nuestra, no es un
+  problema de Fase 0.
+
+- **El audio encoder en CPU es el estado del arte actual** para
+  Gemma 4 multimodal on-device. Nuestro ~800 ms de audio prefill no
+  es un bug ni un mis-config — es el performance real de la
+  plataforma en agosto 2026. Ningún flag, ningún bump de SDK, ningún
+  swap de modelo entre los publicados hoy va a bajarlo.
+
+**Path forward** (para revisitar cuando Google resuelva #1039):
+1. Esperar que `litert-torch export_hf` habilite el export de las
+   secciones `tf_lite_audio_encoder_hw` + `tf_lite_audio_adapter`
+   + `tf_lite_end_of_audio` (o que salga un modelo oficial ya con
+   esas secciones y `backend_constraint: gpu`).
+2. Cuando pase: bumpear LiteRT-LM a la versión que soporte esas
+   secciones (0.14+ ya tiene la runtime), swap del modelo, y
+   flippear `AstConfig.audioBackendGpu` a `true`. El scaffolding
+   ya está listo.
+3. Mientras tanto: aceptar el ~800 ms de audio prefill como
+   floor y buscar otras palancas (mejor chunker, streaming input
+   si algún día aparece, mic direccional para menos ruido a
+   procesar).
+
+Esto nos deja tranquilos: no hay dinero que dejar sobre la mesa
+en el lado del audio encoder — cerramos ese frente para el POC y
+pasamos a otras cosas.
+
 **Investigación del AAR 0.15.0 (referencia para el próximo intento)**:
 
 Descargué + descomprimí `litertlm-android-0.15.0.aar` y comparé la

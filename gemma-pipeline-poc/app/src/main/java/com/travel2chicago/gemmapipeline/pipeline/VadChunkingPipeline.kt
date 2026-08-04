@@ -95,8 +95,42 @@ class VadChunkingPipeline(
      * for the physical caveats (needs a directional mic or isolated speaker
      * — omnidirectional-mic + shared-room-speaker will feedback-loop the
      * TTS output back into Gemma as new "speech").
+     *
+     * Mutate via [setFullDuplexMode] rather than assigning directly — the
+     * setter also handles the mid-mute edge case (force un-mute if we were
+     * already dropping frames when the flag flipped ON).
      */
-    @Volatile var fullDuplexMode: Boolean = false
+    @Volatile private var fullDuplexModeInternal: Boolean = false
+
+    /** Snapshot for read paths (handleAudioData). Kept as a public read-only
+     *  property to preserve existing callers; write via [setFullDuplexMode]. */
+    val fullDuplexMode: Boolean get() = fullDuplexModeInternal
+
+    /**
+     * Flip the full-duplex flag at runtime.
+     *
+     * If enabling while we were currently in the muted state (a TTS playback
+     * had already fired the rising edge), immediately clear `wasMuted` and
+     * emit an EngineStatus so the UI reflects the un-mute on the NEXT frame
+     * without waiting for a `muted != wasMuted` transition — otherwise the
+     * next frame's `muted` computes to `false` and `wasMuted` is also
+     * false, no transition detected, no user-visible un-mute event.
+     */
+    fun setFullDuplexMode(enabled: Boolean) {
+        val prev = fullDuplexModeInternal
+        fullDuplexModeInternal = enabled
+        val currentlyPlaying = ttsPlaying?.get() == true
+        Log.i(
+            TAG,
+            "setFullDuplexMode: prev=$prev, new=$enabled, ttsPlaying=$currentlyPlaying, wasMuted=$wasMuted",
+        )
+        if (enabled && wasMuted) {
+            wasMuted = false
+            Log.i(TAG, "Full-duplex enabled while muted — force-clearing mute state")
+            bus.emit(AudioEvent.EngineStatus(
+                "VAD un-muted (full-duplex enabled during TTS)"))
+        }
+    }
 
     /** Frames skipped since [start] because the TTS was speaking. */
     val totalMutedFrames: Long get() = mutedFramesDropped

@@ -310,6 +310,50 @@ fun GemmaPipelineScreen(
                     checked = state.ttsFastMode,
                     onCheckedChange = { viewModel.setTtsFastMode(it) },
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Kokoro voice (Quality mode):",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    // Small two-option selector. Full 54-voice picker is a
+                    // post-POC follow-up; two options cover the immediate
+                    // Male/Female need. Selected voice gets the filled
+                    // Button; the other gets OutlinedButton.
+                    val currentVoice = state.kokoroVoice
+                    val voices = listOf(
+                        "am_michael" to "Male (Michael)",
+                        "af_heart" to "Female (Heart)",
+                    )
+                    voices.forEach { (id, label) ->
+                        if (currentVoice == id) {
+                            Button(
+                                onClick = { viewModel.setTtsVoice(id) },
+                                enabled = state.kokoroLoaded && !state.ttsFastMode,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(label) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.setTtsVoice(id) },
+                                enabled = state.kokoroLoaded && !state.ttsFastMode,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(label) }
+                        }
+                    }
+                }
+                if (state.ttsFastMode) {
+                    Text(
+                        "Voice picker is Kokoro-only; Fast mode uses the system TTS voice.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     text = when {
                         state.androidTtsError != null -> "⚠ Android TTS: ${state.androidTtsError}"
@@ -372,11 +416,21 @@ fun GemmaPipelineScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // Actual mic state — reflects BOTH ttsPlaying AND
+                    // fullDuplexMode. Under full-duplex, the mic stays open
+                    // even while TTS speaks — the badge must not lie about
+                    // that or the user thinks the mute is stuck.
+                    val actuallyMuted = state.ttsPlaying && !state.fullDuplexMode
+                    val label = when {
+                        actuallyMuted -> "🔇 VAD muted (TTS)"
+                        state.ttsPlaying && state.fullDuplexMode -> "🎙 VAD live (full-duplex, TTS)"
+                        else -> "🎙 VAD live"
+                    }
                     Text(
-                        if (state.ttsPlaying) "🔇 VAD muted (TTS)" else "🎙 VAD live",
+                        label,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium,
-                        color = if (state.ttsPlaying)
+                        color = if (actuallyMuted)
                             MaterialTheme.colorScheme.tertiary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )

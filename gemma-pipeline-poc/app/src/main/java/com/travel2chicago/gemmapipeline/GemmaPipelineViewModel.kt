@@ -505,7 +505,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         p.setTtsPlayingRef(ttsPlaying)
         // Apply current full-duplex flag before start so the first audio
         // frames after startPipeline honour the toggle state.
-        p.fullDuplexMode = astConfig.fullDuplexMode
+        p.setFullDuplexMode(astConfig.fullDuplexMode)
         p.start(viewModelScope)
 
         val r = AstChunkRouter(bus, g, astConfig, sampleRate = audioConfig.format.sampleRate)
@@ -710,8 +710,14 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         if (astConfig.fullDuplexMode == enabled) return
         astConfig = astConfig.copy(fullDuplexMode = enabled)
         _state.update { it.copy(fullDuplexMode = enabled) }
-        pipeline?.fullDuplexMode = enabled
-        log("Full-duplex mode toggled → $enabled")
+        val p = pipeline
+        if (p != null) {
+            p.setFullDuplexMode(enabled)
+            log("Full-duplex mode toggled → $enabled (applied to live pipeline)")
+        } else {
+            log("Full-duplex mode toggled → $enabled (pipeline not created yet; " +
+                "startPipeline will apply on start)")
+        }
     }
 
     /**
@@ -817,6 +823,28 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * flip fast mode on — we log a warning and keep the config off. The
      * user retries after the Android TTS engine finishes initialising.
      */
+    /**
+     * Kokoro voice selection. Router reads `config.voice` per call, but its
+     * config field is captured at construction — same restart-on-flag-flip
+     * pattern as [setTtsStreamingEnabled] applies here.
+     *
+     * No-op if the target voice isn't in the loaded engine's `availableVoices`
+     * — we log the mismatch and keep the current voice rather than passing an
+     * invalid string that would crash the ONNX session.
+     */
+    fun setTtsVoice(voice: String) {
+        if (ttsConfig.voice == voice) return
+        val available = kokoroEngine?.availableVoices
+        if (available != null && voice !in available) {
+            log("[WARN] TTS voice '$voice' not in engine's ${available.size} available voices — ignoring")
+            return
+        }
+        ttsConfig = ttsConfig.copy(voice = voice)
+        _state.update { it.copy(kokoroVoice = voice) }
+        log("TTS voice changed → $voice")
+        restartTtsRouter("voice=$voice")
+    }
+
     fun setTtsFastMode(enabled: Boolean) {
         if (ttsConfig.useFastMode == enabled) return
         if (enabled && androidTtsEngine == null) {
