@@ -1220,3 +1220,66 @@ post-cierre agregó dos features de UX:
    `am_onyx`, `am_puck`, `am_santa` + `af_heart` femenina. Filtrado
    contra `kokoroEngine.availableVoices` para mostrar sólo las que
    existan en el modelo cargado. Layout scrollable horizontal.
+
+---
+
+## Validación de voz + cierre de sesión (agosto 2026)
+
+Commits: **`ae164d0`** (infra de speed slider + selector multi-voz) →
+**`fe0a20f`** (defaults refinados post-A/B).
+
+### Resultado del A/B en device
+
+Después de probar las 9 voces masculinas americanas del catálogo en
+device con el JBL BT speaker, el usuario eligió como default:
+
+- **Voz**: `am_puck` — mejor cadencia natural + sin cola de reverb en
+  el JBL + latencia por oración de Kokoro comparable a las más
+  rápidas del set masculino.
+- **Speed**: `1.2x` — ~20 % más rápido que baseline `1.0x` sin
+  degradar audiblemente el timbre de `am_puck`. El slider queda
+  expuesto (rango 0.8–1.5x) por si en algún cuarto específico la voz
+  a 1.2x suena forzada.
+
+### UI final
+
+El selector de voz se simplificó a las **dos opciones principales**:
+- **Male (Puck)** — `am_puck`, default
+- **Female (Heart)** — `af_heart`, fallback
+
+Layout `Row` con `weight(1f)` — igual al toggle de dos-botones
+original antes de la expansión. Las otras 8 voces masculinas
+(`am_adam`, `am_michael`, `am_echo`, `am_eric`, `am_fenrir`,
+`am_liam`, `am_onyx`, `am_santa`) quedan removidas del selector. La
+infraestructura de filtrado contra `kokoroEngine.availableVoices`
+sigue en `GemmaPipelineScreen` — re-agregar cualquiera es cuestión
+de una línea en el `allVoices: listOf(...)`.
+
+El speed slider queda visible siempre en el mismo panel:
+- Label live `"TTS Speed: 1.2x"`
+- Rango `0.8x – 1.5x`, step `0.1` (6 posiciones intermedias)
+- Aplicado por oración sin restart del router (via
+  `TtsRouter.setSpeed`)
+- Disabled cuando Kokoro no cargó o Fast mode ON
+
+### Estado del POC — versión estable de campo
+
+| Métrica | Valor final |
+|---|---|
+| Voz default | `am_puck` |
+| Speed default | 1.2x |
+| First token | ~1100–1200 ms |
+| First audio | ~3.4 s end-to-end |
+| Mejora vs baseline | 4× (~14 s → ~3.4 s) |
+| Repeticiones de frase | 0 (bug cerrado en `1d4f2e5`) |
+| Pipeline errors | 0 en sesiones sostenidas |
+| Modos activos | Full-duplex + streaming AST + streaming Kokoro TTS + voz personalizada |
+
+**El POC queda cerrado como versión estable de campo.** Todos los
+features acumulados (audio-after-text, official AST prompt con
+extracción `English:`, meta-text filter con prefix window de 60
+chars + patrones narrativos, streaming AST via prefix-diff, streaming
+Kokoro por oración, full-duplex, speed slider, selector Male/Female)
+están validados en device y expuestos como toggles en la UI para
+revertir cualquiera individualmente si aparece regresión durante
+testing de campo.
