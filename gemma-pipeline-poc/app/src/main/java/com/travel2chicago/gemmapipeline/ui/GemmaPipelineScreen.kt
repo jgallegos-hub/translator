@@ -328,6 +328,7 @@ fun GemmaPipelineScreen(
                     // Button; the other gets OutlinedButton.
                     val currentVoice = state.kokoroVoice
                     val voices = listOf(
+                        "am_adam" to "Male (Adam)",
                         "am_michael" to "Male (Michael)",
                         "af_heart" to "Female (Heart)",
                     )

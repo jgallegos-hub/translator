@@ -227,32 +227,78 @@ class LiteRtGemmaAstEngine private constructor(
 
         val fullText = StringBuilder()
         val startNs = System.nanoTime()
+        var callbackCount = 0
+        var loggedProtocol = false
 
         // Flow<Message> is coroutine-native; `onCompletion` runs on both the
         // success and error branches, guaranteeing we release the
         // Conversation after the JNI decoder has drained. Closing inside
         // `collect` would race with the SDK's own finalisation and can leak
         // the native session.
+        //
+        // Protocol note (bug fix, POC-post-closure device testing):
+        // LiteRT-LM 0.12.0's `sendMessageAsync(...): Flow<Message>` emits
+        // CUMULATIVE messages — each `Message.toString()` is the entire
+        // text decoded so far, NOT the delta since the previous callback.
+        // The initial implementation assumed deltas and appended every
+        // message, which duplicated content progressively — the reply
+        // "Hello world." arrived as three cumulative messages ("Hello",
+        // "Hello world", "Hello world.") and produced
+        // "HelloHello worldHello world." on the bus, then interleaved with
+        // subsequent utterances. Symptom on device: the app repeated the
+        // initial phrase and then cycled old + new in every translation.
+        //
+        // Fix: compute the true delta by prefix-diffing against
+        // [fullText]. Defensive fallback for a hypothetical SDK revision
+        // that emits actual deltas: if the incoming message doesn't start
+        // with what we've already accumulated, treat it as a delta (log
+        // the protocol switch once so we notice).
         conv.sendMessageAsync(contents)
             .onCompletion { closeCurrentConversation() }
             .collect { msg ->
-                // Assumption: each `Message` in the Flow is the DELTA that
-                // was decoded since the previous callback (i.e. one or more
-                // new tokens as text), not the accumulated reply. If a
-                // future SDK revision changes this to "cumulative", the
-                // router will double-count text — flip to a diff strategy
-                // (msg.substring(fullText.length)) then. The first-boot
-                // log line below prints the first delta so we can eyeball
-                // it in device logcat.
-                val delta = msg.toString()
-                if (delta.isNotEmpty()) {
-                    if (fullText.isEmpty()) {
-                        Log.i(TAG, "translateStreaming: first delta '${delta.take(40)}' at ${(System.nanoTime() - startNs) / 1_000_000}ms")
+                val piece = msg.toString()
+                if (piece.isEmpty()) return@collect
+                callbackCount++
+
+                val delta: String = when {
+                    fullText.isEmpty() -> piece
+                    piece.length >= fullText.length &&
+                        startsWithBuffer(piece, fullText) -> {
+                        // Cumulative protocol (LiteRT-LM 0.12.0 default).
+                        piece.substring(fullText.length)
                     }
-                    fullText.append(delta)
-                    onToken(delta)
+                    else -> {
+                        // Delta protocol OR mid-stream reset. Forward as-is.
+                        if (!loggedProtocol) {
+                            loggedProtocol = true
+                            Log.w(
+                                TAG,
+                                "translateStreaming: SDK message does not start with accumulated " +
+                                    "text (fullText.len=${fullText.length}, piece.len=${piece.length}) " +
+                                    "— treating as delta protocol",
+                            )
+                        }
+                        piece
+                    }
                 }
+                if (delta.isEmpty()) return@collect
+
+                if (fullText.isEmpty()) {
+                    Log.i(
+                        TAG,
+                        "translateStreaming: first piece '${piece.take(40)}' " +
+                            "at ${(System.nanoTime() - startNs) / 1_000_000}ms " +
+                            "(protocol will be inferred on next callback)",
+                    )
+                }
+                fullText.append(delta)
+                onToken(delta)
             }
+        Log.i(
+            TAG,
+            "translateStreaming: drained $callbackCount callback(s) → " +
+                "${fullText.length} char(s) total",
+        )
 
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
         val text = fullText.toString().trim()
@@ -269,6 +315,21 @@ class LiteRtGemmaAstEngine private constructor(
         } catch (e: Exception) {
             Log.w(TAG, "engine.close() threw — ignored", e)
         }
+    }
+
+    /**
+     * Allocation-free `piece.startsWith(fullText.toString())` — compares the
+     * first `fullText.length` chars of [piece] against the buffer without
+     * materialising a String from the StringBuilder. Called on every streaming
+     * callback so the intermediate String copy would be measurable.
+     */
+    private fun startsWithBuffer(piece: String, fullText: StringBuilder): Boolean {
+        val n = fullText.length
+        if (piece.length < n) return false
+        for (i in 0 until n) {
+            if (piece[i] != fullText[i]) return false
+        }
+        return true
     }
 
     private fun closeCurrentConversation() {

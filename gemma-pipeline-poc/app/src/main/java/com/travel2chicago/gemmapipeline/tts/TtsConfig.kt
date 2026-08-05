@@ -28,12 +28,14 @@ data class TtsConfig(
     val dictionaryAsset: String = "cmudict_ipa.dict",
     /**
      * Active Kokoro voice. The NPZ ships ~54 voices; UI currently exposes a
-     * two-option toggle (Female = `af_heart`, Male = `am_michael`). Default
-     * flipped to `am_michael` after device testing — the male voice sounds
-     * more natural on the JBL BT speaker and matches the target travel
-     * user better. Full-voice selector is a post-POC follow-up.
+     * two-option toggle (Female = `af_heart`, Male = `am_adam`). Default
+     * flipped to `am_adam` after post-closure device testing — noticeably
+     * snappier than `am_michael` on the JBL BT speaker (shorter phoneme
+     * decays, lower per-sentence Kokoro latency) while still sounding
+     * natural for the travel user. `am_michael` remains selectable via
+     * the UI. Full-voice selector is a post-POC follow-up.
      */
-    val voice: String = "am_michael",
+    val voice: String = "am_adam",
     /** Kokoro outputs PCM at this rate (mono float32 → we convert to int16). */
     val sampleRate: Int = 24_000,
     /** Hard cap on token IDs per ONNX call. Long inputs are split by sentence. */

@@ -244,6 +244,15 @@ data class AstConfig(
         "here is the",
         "the audio is",
         "the audio was",
+        // Narrative-wrapping preambles observed on device — Gemma sometimes
+        // narrates the utterance ("It says 'hello'.", "He says 'good morning'.",
+        // "She says 'thank you'.") instead of translating it directly. The
+        // prefix window filter catches these when they lead the reply; the
+        // extra patterns are needed because the plain "says" phrasing doesn't
+        // hit any of the existing "translation of" / "audio was" rules.
+        "it says",
+        "he says",
+        "she says",
     ),
 
     /**
