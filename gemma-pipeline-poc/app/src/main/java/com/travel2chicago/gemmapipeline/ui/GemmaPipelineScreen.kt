@@ -3,6 +3,7 @@ package com.travel2chicago.gemmapipeline.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -48,6 +50,7 @@ import com.travel2chicago.gemmapipeline.GemmaPipelineViewModel
 import com.travel2chicago.gemmapipeline.TranslationEntry
 import com.travel2chicago.gemmapipeline.audio.AudioDeviceManager
 import com.travel2chicago.gemmapipeline.audio.VadState
+import com.travel2chicago.gemmapipeline.tts.TtsConfig
 
 @Composable
 fun GemmaPipelineScreen(
@@ -316,37 +319,60 @@ fun GemmaPipelineScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // American male catalogue (post-POC voice testing) plus the
+                // female fallback. Each entry is only rendered if it's
+                // actually present in the loaded model's
+                // `voices-v1.0.bin` — the router would throw
+                // IllegalArgumentException("Unknown voice …") otherwise.
+                // Horizontal scroll accommodates the 9 male + 1 female
+                // catalogue without wrapping onto multiple lines.
+                val allVoices = listOf(
+                    "am_adam" to "Adam",
+                    "am_michael" to "Michael",
+                    "am_echo" to "Echo",
+                    "am_eric" to "Eric",
+                    "am_fenrir" to "Fenrir",
+                    "am_liam" to "Liam",
+                    "am_onyx" to "Onyx",
+                    "am_puck" to "Puck",
+                    "am_santa" to "Santa",
+                    "af_heart" to "Heart (F)",
+                )
+                val availableVoices = allVoices.filter { (id, _) ->
+                    // Empty availableVoices means Kokoro hasn't finished
+                    // loading yet — show the full catalogue disabled rather
+                    // than an empty row (avoids UI blink on cold start).
+                    state.kokoroAvailableVoices.isEmpty() || id in state.kokoroAvailableVoices
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                         .padding(top = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // Small two-option selector. Full 54-voice picker is a
-                    // post-POC follow-up; two options cover the immediate
-                    // Male/Female need. Selected voice gets the filled
-                    // Button; the other gets OutlinedButton.
                     val currentVoice = state.kokoroVoice
-                    val voices = listOf(
-                        "am_adam" to "Male (Adam)",
-                        "am_michael" to "Male (Michael)",
-                        "af_heart" to "Female (Heart)",
-                    )
-                    voices.forEach { (id, label) ->
+                    availableVoices.forEach { (id, label) ->
                         if (currentVoice == id) {
                             Button(
                                 onClick = { viewModel.setTtsVoice(id) },
                                 enabled = state.kokoroLoaded && !state.ttsFastMode,
-                                modifier = Modifier.weight(1f),
                             ) { Text(label) }
                         } else {
                             OutlinedButton(
                                 onClick = { viewModel.setTtsVoice(id) },
                                 enabled = state.kokoroLoaded && !state.ttsFastMode,
-                                modifier = Modifier.weight(1f),
                             ) { Text(label) }
                         }
                     }
+                }
+                if (state.kokoroLoaded && availableVoices.size < allVoices.size) {
+                    Text(
+                        "${allVoices.size - availableVoices.size} voice(s) hidden — " +
+                            "not present in loaded voices-v1.0.bin.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 if (state.ttsFastMode) {
                     Text(
@@ -355,6 +381,26 @@ fun GemmaPipelineScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Spacer(Modifier.height(6.dp))
+                // Speed slider — hot-swaps via TtsRouter.setSpeed on every
+                // slider change; the next sentence uses the new value.
+                // Values > 1.0 reduce Kokoro latency by generating fewer
+                // output samples per sentence.
+                Text(
+                    "TTS Speed: ${"%.1f".format(state.ttsSpeed)}x",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = state.ttsSpeed,
+                    onValueChange = { viewModel.setTtsSpeed(it) },
+                    valueRange = TtsConfig.MIN_SPEED..TtsConfig.MAX_SPEED,
+                    // 8 intermediate steps → 0.1 increments across the
+                    // 0.8 – 1.5 range (Slider counts the endpoints as
+                    // separate positions, so steps = intervals - 1 = 6).
+                    steps = 6,
+                    enabled = state.kokoroLoaded && !state.ttsFastMode,
+                )
                 Text(
                     text = when {
                         state.androidTtsError != null -> "⚠ Android TTS: ${state.androidTtsError}"

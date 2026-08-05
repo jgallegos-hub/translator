@@ -1,8 +1,10 @@
 package com.travel2chicago.gemmapipeline.tts
 
+import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.util.Log
 import java.io.File
@@ -29,7 +31,14 @@ interface KokoroTtsEngine : AutoCloseable {
     val isLoaded: Boolean
     val loadTimeMs: Long
     val availableVoices: Set<String>
-    fun synthesize(text: String, voice: String): TtsResult
+
+    /**
+     * @param speed synthesis speed multiplier passed to the ONNX `speed`
+     *   input. Defaults to `1.0f` (no change) so existing tests + callers
+     *   don't need to be updated. See [TtsConfig.speed] for the semantics
+     *   and the int32-vs-float32 export caveat.
+     */
+    fun synthesize(text: String, voice: String, speed: Float = 1.0f): TtsResult
 
     /**
      * Streaming variant used by Fase 6 Stage B. Splits [text] into sentences,
@@ -42,10 +51,13 @@ interface KokoroTtsEngine : AutoCloseable {
      * caller consumed samples via the callback. `latencyMs` on the return
      * value is the wall-clock across the entire streaming call (useful for
      * router metrics).
+     *
+     * @param speed see [synthesize].
      */
     suspend fun synthesizeStreaming(
         text: String,
         voice: String,
+        speed: Float = 1.0f,
         onSentence: suspend (pcm: ShortArray, sampleRate: Int, sentenceIndex: Int) -> Unit,
     ): TtsResult
 }
@@ -76,6 +88,15 @@ class KokoroOnnxEngine private constructor(
     private val voices: VoiceStyles,
     private val sampleRate: Int,
     private val isNewExport: Boolean,
+    /**
+     * Actual dtype of the ONNX `speed` input, discovered at load time.
+     * `FLOAT` (default for both public exports) accepts the full slider
+     * range as-is. `INT32` collapses to `{1, 2}` — the router rounds
+     * before calling; a WARN is logged at load time so the UI-level
+     * follow-up ("slider granularity is coarse on this model") is
+     * discoverable.
+     */
+    private val speedInputType: OnnxJavaType,
     override val loadTimeMs: Long,
 ) : KokoroTtsEngine {
 
@@ -84,7 +105,7 @@ class KokoroOnnxEngine private constructor(
     override val isLoaded: Boolean get() = !closed
     override val availableVoices: Set<String> get() = voices.availableVoices
 
-    override fun synthesize(text: String, voice: String): TtsResult {
+    override fun synthesize(text: String, voice: String, speed: Float): TtsResult {
         check(!closed) { "Engine is closed" }
         require(text.isNotBlank()) { "text must not be blank" }
         if (!voices.has(voice)) {
@@ -97,18 +118,19 @@ class KokoroOnnxEngine private constructor(
         val sentences = splitIntoSentences(text)
         val pcmChunks = ArrayList<FloatArray>(sentences.size)
         for (sentence in sentences) {
-            val pcm = synthesizeOne(sentence, voice) ?: continue
+            val pcm = synthesizeOne(sentence, voice, speed) ?: continue
             pcmChunks += pcm
         }
         val merged = concatToInt16(pcmChunks)
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
-        Log.i(TAG, "synthesize: '${text.take(60)}' → ${merged.size} samples in ${elapsedMs}ms ($voice, ${sentences.size} sentence(s))")
+        Log.i(TAG, "synthesize: '${text.take(60)}' → ${merged.size} samples in ${elapsedMs}ms ($voice, speed=$speed, ${sentences.size} sentence(s))")
         return TtsResult(pcm = merged, sampleRate = sampleRate, latencyMs = elapsedMs)
     }
 
     override suspend fun synthesizeStreaming(
         text: String,
         voice: String,
+        speed: Float,
         onSentence: suspend (pcm: ShortArray, sampleRate: Int, sentenceIndex: Int) -> Unit,
     ): TtsResult {
         check(!closed) { "Engine is closed" }
@@ -123,19 +145,19 @@ class KokoroOnnxEngine private constructor(
         val sentences = splitIntoSentences(text)
         var totalSamples = 0
         for ((idx, sentence) in sentences.withIndex()) {
-            val floatPcm = synthesizeOne(sentence, voice) ?: continue
+            val floatPcm = synthesizeOne(sentence, voice, speed) ?: continue
             val int16 = concatToInt16(listOf(floatPcm))
             totalSamples += int16.size
             onSentence(int16, sampleRate, idx)
         }
         val elapsedMs = (System.nanoTime() - startedNs) / 1_000_000
-        Log.i(TAG, "synthesizeStreaming: '${text.take(60)}' → $totalSamples samples across ${sentences.size} sentence(s) in ${elapsedMs}ms ($voice)")
+        Log.i(TAG, "synthesizeStreaming: '${text.take(60)}' → $totalSamples samples across ${sentences.size} sentence(s) in ${elapsedMs}ms ($voice, speed=$speed)")
         // Empty aggregate — the caller consumed samples via [onSentence]
         // and the router uses only [latencyMs] here.
         return TtsResult(pcm = ShortArray(0), sampleRate = sampleRate, latencyMs = elapsedMs)
     }
 
-    private fun synthesizeOne(sentence: String, voice: String): FloatArray? {
+    private fun synthesizeOne(sentence: String, voice: String, speed: Float): FloatArray? {
         val phonemes = phonemizer.phonemize(sentence)
         if (phonemes.isEmpty()) return null
         val rawTokens = tokenizer.tokenize(phonemes)
@@ -168,17 +190,24 @@ class KokoroOnnxEngine private constructor(
                 FloatBuffer.wrap(voiceVec),
                 longArrayOf(1L, voiceVec.size.toLong()),
             )
-            // Speed type differs across exports — see class doc.
-            speedTensor = if (isNewExport) {
-                OnnxTensor.createTensor(
+            // Speed tensor dtype was captured at load time by inspecting
+            // `session.inputInfo["speed"]`. Both public Kokoro exports use
+            // float32 by convention — int32 covers the (rare) int-quantised
+            // variants; rounding to nearest int collapses the slider to
+            // {1, 2} on those, which is logged at load time so the UI
+            // affordance is discoverable.
+            speedTensor = when (speedInputType) {
+                OnnxJavaType.INT32 -> OnnxTensor.createTensor(
                     env,
-                    IntBuffer.wrap(intArrayOf(1)),
+                    // Round-to-nearest, clamp to {1, 2}. Slider values 0.8–1.4
+                    // → 1; 1.5 → 2. Anything outside the slider range is
+                    // clamped defensively.
+                    IntBuffer.wrap(intArrayOf(kotlin.math.round(speed).toInt().coerceIn(1, 2))),
                     longArrayOf(1L),
                 )
-            } else {
-                OnnxTensor.createTensor(
+                else -> OnnxTensor.createTensor(
                     env,
-                    FloatBuffer.wrap(floatArrayOf(1.0f)),
+                    FloatBuffer.wrap(floatArrayOf(speed)),
                     longArrayOf(1L),
                 )
             }
@@ -259,23 +288,38 @@ class KokoroOnnxEngine private constructor(
             }
             val session = env.createSession(modelBytes, options)
 
-            // Inspect input names to pick the right convention. Older exports
-            // call the tokens input "tokens"; newer ones "input_ids" and use
-            // int32 for "speed". Log the decision so it's visible if a
-            // future export changes the naming.
+            // Inspect input names + speed dtype at load time. Older exports
+            // call the tokens input "tokens"; newer ones "input_ids". Both
+            // typically use float32 for "speed", but some int-quantised
+            // exports use int32 — [synthesizeOne] picks the right buffer
+            // type based on what we discover here.
             var isNewExport = true
+            var speedDtype: OnnxJavaType = OnnxJavaType.FLOAT
             try {
                 val ins = session.inputInfo
                 Log.i(TAG, "Session INPUTS (${ins.size}):")
                 for ((name, info) in ins) Log.i(TAG, "  '$name' → ${info.info}")
                 isNewExport = ins.containsKey(INPUT_IDS_NEW)
+                val speedInfo = ins[INPUT_SPEED]?.info as? TensorInfo
+                if (speedInfo != null) {
+                    speedDtype = speedInfo.type
+                } else {
+                    Log.w(TAG, "Could not read '$INPUT_SPEED' TensorInfo — defaulting to FLOAT")
+                }
                 val outs = session.outputInfo
                 Log.i(TAG, "Session OUTPUTS (${outs.size}):")
                 for ((name, info) in outs) Log.i(TAG, "  '$name' → ${info.info}")
             } catch (t: Throwable) {
-                Log.w(TAG, "Could not enumerate session inputs/outputs — assuming new export", t)
+                Log.w(TAG, "Could not enumerate session inputs/outputs — assuming new export + float speed", t)
             }
-            Log.i(TAG, "Export type: ${if (isNewExport) "NEW (input_ids + speed:int32)" else "OLD (tokens + speed:float32)"}")
+            Log.i(TAG, "Export type: ${if (isNewExport) "NEW (input_ids)" else "OLD (tokens)"}, speed dtype: $speedDtype")
+            if (speedDtype == OnnxJavaType.INT32) {
+                Log.w(
+                    TAG,
+                    "This ONNX export uses INT32 for 'speed'. TTS speed slider will " +
+                        "round to nearest integer — effective range collapses to {1, 2}.",
+                )
+            }
 
             val loadMs = (System.nanoTime() - startedNs) / 1_000_000
             Log.i(TAG, "Kokoro engine ready in ${loadMs}ms (${voices.availableVoices.size} voices)")
@@ -287,6 +331,7 @@ class KokoroOnnxEngine private constructor(
                 voices = voices,
                 sampleRate = config.sampleRate,
                 isNewExport = isNewExport,
+                speedInputType = speedDtype,
                 loadTimeMs = loadMs,
             )
         }

@@ -90,7 +90,36 @@ data class TtsConfig(
      * user can flip fast mode off and get the streaming behaviour back.
      */
     val useFastMode: Boolean = false,
+
+    /**
+     * Kokoro synthesis speed multiplier — passed through to the ONNX model's
+     * `speed` input on every `synthesize` / `synthesizeStreaming` call.
+     *
+     * Range: `0.8` (slower, longer PCM) to `1.5` (faster, shorter PCM). The
+     * UI slider clamps to this range with a `0.1` step. Values > 1.0 reduce
+     * per-sentence latency proportionally (fewer output samples generated)
+     * at the cost of a slightly clipped-sounding voice; values < 1.0 do the
+     * opposite. Default 1.0 = no change vs the ONNX baseline.
+     *
+     * Applied per-call: [TtsRouter] reads `speed` off its own volatile field
+     * (fed by [GemmaPipelineViewModel.setTtsSpeed]) rather than off a
+     * captured config, so slider changes take effect on the NEXT sentence
+     * without needing a router restart. See [TtsRouter.setSpeed].
+     *
+     * The two ONNX exports we support disagree on the speed tensor's dtype:
+     * newer `Kokoro-82M-v1.0-ONNX` uses `float32`, older `kokoro-onnx ≤ 0.4`
+     * uses `float32` too but some int-quantised exports appear as `int32`.
+     * [KokoroOnnxEngine] introspects the input type at load time and picks
+     * `FloatBuffer` / `IntBuffer` accordingly; when the model is `int32`
+     * the slider rounds to the nearest integer and the effective range
+     * collapses to `{1, 2}` — logged as a warning at load time.
+     */
+    val speed: Float = 1.0f,
 ) {
+    companion object {
+        const val MIN_SPEED = 0.8f
+        const val MAX_SPEED = 1.5f
+    }
     val modelPath: String get() = "$modelDirPath/$modelFilename"
     val voicesPath: String get() = "$modelDirPath/$voicesFilename"
 
@@ -106,5 +135,8 @@ data class TtsConfig(
         require(maxTokens in 1..512) { "maxTokens out of range: $maxTokens" }
         require(queueCapacity in 1..32) { "queueCapacity out of range: $queueCapacity" }
         require(voice.isNotBlank()) { "voice must not be blank" }
+        require(speed in MIN_SPEED..MAX_SPEED) {
+            "speed out of range [$MIN_SPEED, $MAX_SPEED], got $speed"
+        }
     }
 }

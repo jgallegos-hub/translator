@@ -63,6 +63,26 @@ class TtsRouter(
     @Volatile private var producerJob: Job? = null
     @Volatile private var consumerJob: Job? = null
 
+    /**
+     * Current Kokoro synthesis speed multiplier. Seeded from [config.speed] at
+     * construction and mutated by [setSpeed] as the UI slider changes — read
+     * on every synthesize call so speed changes apply to the NEXT sentence
+     * without needing a router restart (unlike `voice` / `useFastMode` /
+     * `streamingEnabled`, which change router behaviour more fundamentally
+     * and warrant a rebuild).
+     */
+    @Volatile private var currentSpeed: Float = config.speed
+
+    /**
+     * Update the speed multiplier applied on subsequent synthesize calls.
+     * Value is clamped to [TtsConfig.MIN_SPEED]..[TtsConfig.MAX_SPEED] to
+     * match the UI slider bounds; ONNX-side clamping / rounding for
+     * int32-typed `speed` inputs lives in [KokoroOnnxEngine.synthesizeOne].
+     */
+    fun setSpeed(newSpeed: Float) {
+        currentSpeed = newSpeed.coerceIn(TtsConfig.MIN_SPEED, TtsConfig.MAX_SPEED)
+    }
+
     private val queueDepth = AtomicInteger(0)
     private val synthesizedCount = AtomicLong(0)
     private val droppedCount = AtomicLong(0)
@@ -296,7 +316,7 @@ class TtsRouter(
 
     private suspend fun processTranslationOneShot(tr: AudioEvent.TranslationReady, text: String) {
         val result = try {
-            engine.synthesize(text, config.voice)
+            engine.synthesize(text, config.voice, currentSpeed)
         } catch (t: Throwable) {
             errorCount.incrementAndGet()
             Log.e(TAG, "Kokoro synthesize() failed for text='${text.take(60)}'", t)
@@ -368,7 +388,7 @@ class TtsRouter(
         var firstAudioPending = newUtterance
 
         val result = try {
-            engine.synthesizeStreaming(text, config.voice) { pcm, sr, _ ->
+            engine.synthesizeStreaming(text, config.voice, currentSpeed) { pcm, sr, _ ->
                 sink.play(pcm)
                 if (firstAudioPending) {
                     firstAudioLatencyMsAtomic.set(

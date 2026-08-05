@@ -1122,3 +1122,101 @@ A2DP en el playback.
    de campo dé el go — copiar las capas `audio/`, `vad/`,
    `chunker/`, `pipeline/`, `ast/`, `tts/` verbatim + wiring de
    producción sin sliders de debug.
+
+---
+
+## Post-cierre — bug de repetición corregido + estado estable (agosto 2026)
+
+Commit: **`1d4f2e5`** (fix streaming: cumulative-vs-delta bug + `am_adam`
+voice default + narrative meta-text patterns).
+
+### El bug
+
+Durante el testing de campo post-cierre apareció un síntoma nuevo: la app
+repetía la frase inicial y luego entraba en un ciclo intercalando
+fragmentos viejos con nuevos, incluso con el speaker separado del mic
+(descartando feedback físico).
+
+### Root cause: cumulative-vs-delta en `translateStreaming`
+
+Después de descartar las cuatro sospechas del pipeline de captura
+(pre-roll del chunker, buffer de Oboe, reassembler residual,
+acumulación del `AudioChunker` — todos correctos), descompilé el AAR de
+LiteRT-LM 0.12.0 (`Conversation$JniMessageCallbackImpl` +
+`Contents.toString`) y confirmé que **el SDK 0.12 emite mensajes
+CUMULATIVOS por callback, no deltas**. Cada `Message.toString()` es el
+texto completo decodificado hasta ese momento.
+
+La implementación en `LiteRtGemmaAstEngine.translateStreaming` asumía
+deltas y hacía `sb.append(msg.toString())` en cada callback — una
+respuesta `"Hello world."` que llegaba como tres callbacks cumulativos
+(`"Hello"`, `"Hello world"`, `"Hello world."`) se acumulaba como
+`"HelloHello worldHello world."` en el buffer. El router luego
+identificaba `.` como terminador de oración y emitía fragmentos
+duplicados al bus. Chunk a chunk el patrón se veía exactamente como el
+usuario reportó.
+
+### Fix
+
+Prefix-diff contra el buffer acumulado usando un helper allocation-free
+`startsWithBuffer`. Si un mensaje futuro no empieza con lo ya
+acumulado, fallback defensivo: se trata como delta y se loguea un WARN
+una única vez para señalar el cambio de protocolo. Contrato de
+`onToken(delta)` de la interfaz no cambia — todos los tests existentes
+del router siguen válidos sin modificación.
+
+Logs de diagnóstico añadidos:
+- `translateStreaming: first piece '...' at Nms (protocol will be inferred on next callback)`
+- `translateStreaming: drained N callback(s) → M chars`
+- `translateStreaming: SDK message does not start with accumulated text — treating as delta protocol` (sólo si algún día el SDK cambia).
+
+### Validación post-fix en device
+
+Sesión de testing directo post-commit:
+- **12+ traducciones exitosas** en una sola sesión, 0 repeticiones, 0
+  errores del pipeline.
+- Logs confirmando el protocolo cumulative:
+  `drained 36 callback(s) → 28 chars` — 36 mensajes acumulativos
+  colapsados a 28 caracteres únicos por diff. Sin el fix, esos 36
+  callbacks habrían generado ~500+ caracteres duplicados en el bus.
+
+### Estado estable actual del POC
+
+| Métrica | Valor medido en device |
+|---|---|
+| First token | ~1100–1200 ms consistente |
+| First audio | ~3.4 s end-to-end |
+| Mejora total vs baseline | **4× (~14 s → ~3.4 s)** |
+| Traducciones sin errores | 12+/12+ en sesión post-fix |
+| Repeticiones de frase | **0** (bug cerrado) |
+| Duración de operación continua | 10+ minutos sin crash |
+| Full-duplex mode | Funcionando sin repeticiones |
+| Voz default | `am_adam` (snappier que `am_michael` en JBL) |
+| Calidad de traducción | Buena incluso con audio no perfecto |
+
+### Fixes bundle en el mismo commit
+
+Además del fix streaming:
+- **Voz default `am_adam`** — reemplaza `am_michael`. En el JBL BT
+  speaker suena más natural y con decays de fonema más cortos, lo que
+  reduce latencia por oración de Kokoro. `am_michael` sigue
+  seleccionable en el UI.
+- **Patrones meta-text `"it says"`, `"he says"`, `"she says"`** —
+  atrapan el caso de wrapping narrativo que Gemma a veces produce
+  ("It says 'hello'.") y que los patrones anteriores no cubrían. El
+  prefix window de 60 chars ya existente los filtra al inicio de la
+  respuesta.
+
+### Siguientes pasos (revisión post-fix)
+
+Los siguientes pasos declarados en el cierre siguen válidos. La sesión
+post-cierre agregó dos features de UX:
+
+1. **Speed slider Kokoro** (rango 0.8x–1.5x, step 0.1, default 1.0x) —
+   aplicado por oración sin restart del router; `speed > 1.0` reduce
+   samples generados y por tanto latencia de Kokoro. UI slider live.
+2. **Selector completo de voces masculinas americanas** — `am_adam`,
+   `am_michael`, `am_echo`, `am_eric`, `am_fenrir`, `am_liam`,
+   `am_onyx`, `am_puck`, `am_santa` + `af_heart` femenina. Filtrado
+   contra `kokoroEngine.availableVoices` para mostrar sólo las que
+   existan en el modelo cargado. Layout scrollable horizontal.

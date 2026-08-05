@@ -47,9 +47,15 @@ class TtsRouterTest {
         override val loadTimeMs: Long = 0L
         override val availableVoices: Set<String> = setOf("af_heart")
 
-        override fun synthesize(text: String, voice: String): TtsResult {
+        /** Every synthesize call's speed argument, recorded so a future
+         *  test can assert the router forwarded [TtsRouter.setSpeed] down
+         *  to the engine. */
+        val speedsCalled = java.util.Collections.synchronizedList(ArrayList<Float>())
+
+        override fun synthesize(text: String, voice: String, speed: Float): TtsResult {
             synthesizeCalls.incrementAndGet()
             recordText(text)
+            speedsCalled += speed
             gate?.await()
             throwOnNext?.let { throw it.also { throwOnNext = null } }
             return TtsResult(
@@ -64,10 +70,12 @@ class TtsRouterTest {
         override suspend fun synthesizeStreaming(
             text: String,
             voice: String,
+            speed: Float,
             onSentence: suspend (pcm: ShortArray, sampleRate: Int, sentenceIndex: Int) -> Unit,
         ): TtsResult {
             synthesizeCalls.incrementAndGet()
             recordText(text)
+            speedsCalled += speed
             gate?.await()
             throwOnNext?.let { throw it.also { throwOnNext = null } }
             val sentences = text.split(".").filter { it.isNotBlank() }

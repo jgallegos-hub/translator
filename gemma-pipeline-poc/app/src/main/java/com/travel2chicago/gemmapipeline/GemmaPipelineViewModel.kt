@@ -135,6 +135,23 @@ data class GemmaPipelineUiState(
     val kokoroLoadError: String? = null,
     val kokoroModelExists: Boolean = false,
     val kokoroVoice: String = TtsConfig().voice,
+    /**
+     * Every voice present in the loaded `voices-v1.0.bin`. Empty until
+     * Kokoro finishes loading. The UI voice selector filters its
+     * hard-coded catalogue against this set so an entry never appears
+     * unless the model can render it (avoids the [KokoroTtsEngine]
+     * `IllegalArgumentException("Unknown voice …")` on the next
+     * synthesize call).
+     */
+    val kokoroAvailableVoices: Set<String> = emptySet(),
+    /**
+     * Current Kokoro synthesis speed multiplier, mirrors [TtsConfig.speed].
+     * Applied per-sentence without router restart via
+     * [GemmaPipelineViewModel.setTtsSpeed] → [TtsRouter.setSpeed]. Default
+     * `1.0f` = no change vs the ONNX baseline. UI slider range
+     * `[TtsConfig.MIN_SPEED, TtsConfig.MAX_SPEED]` with step 0.1.
+     */
+    val ttsSpeed: Float = TtsConfig().speed,
 
     // TTS pipeline runtime
     val ttsRouterRunning: Boolean = false,
@@ -445,6 +462,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         kokoroLoading = false,
                         kokoroLoaded = true,
                         kokoroLoadTimeMs = loaded.loadTimeMs,
+                        kokoroAvailableVoices = loaded.availableVoices,
                     )
                 }
                 log("Kokoro LOADED ✓ in ${loaded.loadTimeMs}ms (voices=${loaded.availableVoices.size})")
@@ -843,6 +861,31 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(kokoroVoice = voice) }
         log("TTS voice changed → $voice")
         restartTtsRouter("voice=$voice")
+    }
+
+    /**
+     * Kokoro synthesis speed multiplier — hot-swap; NO router restart. The
+     * router reads its `currentSpeed` field on every synthesize call, so the
+     * change lands on the NEXT sentence (mid-utterance speed changes are
+     * intentionally left to complete at the previous speed to avoid audible
+     * discontinuities in the same sentence). Value is clamped to
+     * `[TtsConfig.MIN_SPEED, TtsConfig.MAX_SPEED]` in both the config and
+     * the router setter — either clamp alone is sufficient; both is
+     * defence-in-depth.
+     */
+    fun setTtsSpeed(speed: Float) {
+        val clamped = speed.coerceIn(TtsConfig.MIN_SPEED, TtsConfig.MAX_SPEED)
+        // Round to the nearest 0.1 step to match the slider granularity.
+        // Prevents drift like 1.1000001 from repeated slider drags.
+        val quantised = (Math.round(clamped * 10f) / 10f).coerceIn(TtsConfig.MIN_SPEED, TtsConfig.MAX_SPEED)
+        if (ttsConfig.speed == quantised) return
+        ttsConfig = ttsConfig.copy(speed = quantised)
+        ttsRouter?.setSpeed(quantised)
+        _state.update { it.copy(ttsSpeed = quantised) }
+        // Verbose enough for the log to be useful in device inspection but
+        // not so noisy that dragging the slider spams — the guard above
+        // filters duplicate values, and the slider step is 0.1.
+        log("TTS speed changed → ${"%.1f".format(quantised)}x")
     }
 
     fun setTtsFastMode(enabled: Boolean) {

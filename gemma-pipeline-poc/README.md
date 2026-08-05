@@ -70,6 +70,28 @@ a target ≤ 3 s.
   ready for field testing with production hardware**
   (unidirectional mic + wired USB DAC speaker eliminates both the
   full-duplex feedback risk and A2DP's ~300 ms playback tail).
+- ✅ **Post-closure streaming bug fix + stable-state validation**
+  (commit `1d4f2e5`, August 2026). Field testing surfaced a phrase
+  repetition bug — the app repeated the initial phrase and
+  interleaved old + new content even with the speaker isolated from
+  the mic. Root cause: LiteRT-LM 0.12.0's
+  `Conversation.sendMessageAsync(...): Flow<Message>` emits
+  **cumulative** messages (each `Message.toString()` = full text so
+  far), not deltas. The prior implementation appended every callback,
+  producing `"Hello" + "Hello world" + "Hello world."` in the buffer
+  → `"HelloHello worldHello world."` on the bus. Verified against
+  the decompiled AAR (`Conversation$JniMessageCallbackImpl`). Fix:
+  prefix-diff via a new allocation-free `startsWithBuffer` helper;
+  defensive fallback for a hypothetical future delta protocol.
+  Bundled in the same commit: `am_michael → am_adam` default voice
+  (snappier phoneme decay on the JBL, lower per-sentence Kokoro
+  latency) and three narrative-wrapping meta-text patterns
+  (`"it says"`, `"he says"`, `"she says"`). **Post-fix validation
+  on device: 12+ translations, 0 repetitions, 0 errors. Logs confirm
+  the cumulative protocol** (`drained 36 callback(s) → 28 chars`).
+  Stable-state metrics: first token ~1100–1200 ms consistent, first
+  audio ~3.4 s, full-duplex working without repeats, 10+ min
+  continuous operation without crash.
 
 See [`PROGRESS.md`](PROGRESS.md) for the full validation results, the
 six fixes applied during Fase 5 device testing, the Fase 6 investigation
