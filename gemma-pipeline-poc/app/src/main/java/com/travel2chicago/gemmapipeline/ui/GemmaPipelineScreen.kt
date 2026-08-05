@@ -3,7 +3,6 @@ package com.travel2chicago.gemmapipeline.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -319,24 +317,17 @@ fun GemmaPipelineScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                // American male catalogue (post-POC voice testing) plus the
-                // female fallback. Each entry is only rendered if it's
-                // actually present in the loaded model's
-                // `voices-v1.0.bin` — the router would throw
-                // IllegalArgumentException("Unknown voice …") otherwise.
-                // Horizontal scroll accommodates the 9 male + 1 female
-                // catalogue without wrapping onto multiple lines.
+                // Trimmed catalogue: post-fix device A/B kept `am_puck` as
+                // the travel default male voice and `af_heart` as the
+                // female fallback. Other `am_*` / `af_*` voices from the
+                // wider Kokoro NPZ can be re-added here if a specific
+                // scenario demands them. Each entry is still filtered
+                // against the loaded model's voices — the router would
+                // throw IllegalArgumentException("Unknown voice …")
+                // otherwise.
                 val allVoices = listOf(
-                    "am_adam" to "Adam",
-                    "am_michael" to "Michael",
-                    "am_echo" to "Echo",
-                    "am_eric" to "Eric",
-                    "am_fenrir" to "Fenrir",
-                    "am_liam" to "Liam",
-                    "am_onyx" to "Onyx",
-                    "am_puck" to "Puck",
-                    "am_santa" to "Santa",
-                    "af_heart" to "Heart (F)",
+                    "am_puck" to "Male (Puck)",
+                    "af_heart" to "Female (Heart)",
                 )
                 val availableVoices = allVoices.filter { (id, _) ->
                     // Empty availableVoices means Kokoro hasn't finished
@@ -347,7 +338,6 @@ fun GemmaPipelineScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
                         .padding(top = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -357,11 +347,13 @@ fun GemmaPipelineScreen(
                             Button(
                                 onClick = { viewModel.setTtsVoice(id) },
                                 enabled = state.kokoroLoaded && !state.ttsFastMode,
+                                modifier = Modifier.weight(1f),
                             ) { Text(label) }
                         } else {
                             OutlinedButton(
                                 onClick = { viewModel.setTtsVoice(id) },
                                 enabled = state.kokoroLoaded && !state.ttsFastMode,
+                                modifier = Modifier.weight(1f),
                             ) { Text(label) }
                         }
                     }

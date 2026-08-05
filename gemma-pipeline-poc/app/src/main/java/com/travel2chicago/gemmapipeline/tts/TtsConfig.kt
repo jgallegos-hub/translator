@@ -28,14 +28,16 @@ data class TtsConfig(
     val dictionaryAsset: String = "cmudict_ipa.dict",
     /**
      * Active Kokoro voice. The NPZ ships ~54 voices; UI currently exposes a
-     * two-option toggle (Female = `af_heart`, Male = `am_adam`). Default
-     * flipped to `am_adam` after post-closure device testing — noticeably
-     * snappier than `am_michael` on the JBL BT speaker (shorter phoneme
-     * decays, lower per-sentence Kokoro latency) while still sounding
-     * natural for the travel user. `am_michael` remains selectable via
-     * the UI. Full-voice selector is a post-POC follow-up.
+     * two-option toggle (Male = `am_puck`, Female = `af_heart`). Default
+     * flipped to `am_puck` after post-fix device A/B (was `am_adam`,
+     * previously `am_michael`) — `am_puck` came out of the wider male
+     * catalogue as the clearest match for the travel user (natural
+     * cadence, no reverb tail on the JBL, per-sentence Kokoro latency
+     * comparable to the fastest of the male set). Full-voice selector
+     * remains a post-POC follow-up if we need to expose the other
+     * `am_*` / `af_*` voices again.
      */
-    val voice: String = "am_adam",
+    val voice: String = "am_puck",
     /** Kokoro outputs PCM at this rate (mono float32 → we convert to int16). */
     val sampleRate: Int = 24_000,
     /** Hard cap on token IDs per ONNX call. Long inputs are split by sentence. */
@@ -113,8 +115,14 @@ data class TtsConfig(
      * `FloatBuffer` / `IntBuffer` accordingly; when the model is `int32`
      * the slider rounds to the nearest integer and the effective range
      * collapses to `{1, 2}` — logged as a warning at load time.
+     *
+     * Default `1.2f` (was `1.0f`) after post-fix device A/B — the ~20 %
+     * speed-up shaves noticeable time off each translated sentence
+     * without audibly degrading `am_puck`'s cadence. Slider still lets
+     * the user dial back to 1.0x (or 0.8x) if the faster voice sounds
+     * off in a specific room.
      */
-    val speed: Float = 1.0f,
+    val speed: Float = 1.2f,
 ) {
     companion object {
         const val MIN_SPEED = 0.8f
