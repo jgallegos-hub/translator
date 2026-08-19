@@ -1386,3 +1386,126 @@ con hardware estándar (mic omnidireccional + speaker en la misma
 habitación); si el AEC del device específico no rinde bien, cambiar
 mic a unidireccional + speaker cableado sigue siendo la ruta más
 robusta (documentada en el cierre previo).
+
+---
+
+## WebRTC AECM software — POC para hardware externo (agosto 2026)
+
+El AEC del HAL sólo procesa el path mic-interno ↔ speaker-interno.
+Cuando el usuario conecta hardware externo (Saramonic USB al mic,
+JBL Go 4 por BT al speaker), el HAL AEC no tiene referencia del
+audio que sale por el path externo y el echo llega al mic sin
+cancelación. Este POC agrega un **AEC por software** (WebRTC AECM)
+que sí puede procesar cualquier combinación de hardware — toma el
+PCM que enviamos al speaker como far-end reference y lo resta del
+capture del mic.
+
+### Investigación previa
+
+Antes de codear, evalué las opciones disponibles:
+
+| Librería | Cobertura | Distribución | Notas |
+|---|---|---|---|
+| [`theeasiestway/android-webrtc-aecm`](https://github.com/theeasiestway/android-webrtc-aecm) | Sólo AECM (mobile) | `.aar` prebuilt en el repo, 4 ABIs | ~128 KB. Wrapper Kotlin: `ru.theeasiestway.libaecm.AEC` |
+| [`juha-h/libwebrtc`](https://github.com/juha-h/libwebrtc) | Sólo AECM | Fuente + `.so` | Sin releases, sin Maven |
+| [`Yishiba/chromium_libwebrtc_audio_preprocessing_for_android`](https://github.com/Yishiba/chromium_libwebrtc_audio_preprocessing_for_android) | **AEC3** + AECM + AGC + NS + VAD | Snapshot WebRTC 2017, sólo armeabi-v7a prebuilt | Requiere recompilar de Chromium |
+
+**No existe Maven Central artifact** para WebRTC AEC en Android —
+todas las opciones requieren vendorear binarios en `app/libs/`.
+
+### Decisión: POC mínimo con AECM (path 4 elegido por el usuario)
+
+Vendoreamos el `.aar` de `theeasiestway/android-webrtc-aecm`
+directamente (`app/libs/libaecm-release.aar`, ~128 KB, 4 ABIs
+incluyendo `arm64-v8a` para el Xiaomi). API concreta:
+
+```java
+public class ru.theeasiestway.libaecm.AEC {
+    public AEC(SamplingFrequency, AggressiveMode)  // 16kHz + HIGH
+    public AEC farendBuffer(short[] farend, int nSamples)         // 160 samples/call
+    public short[] echoCancellation(short[] nearend, int nSamples, int msInSndCardBuf)
+    public AEC prepare()
+    public void close()
+}
+```
+
+### Arquitectura
+
+Nuevo `audio/AecProcessor.kt` que wrappea la librería y maneja
+tres complicaciones que la API cruda no cubre:
+
+1. **Alineación de frames a 10 ms**. AECM requiere exactamente 160
+   samples por llamada a 16 kHz. Ni el output de Kokoro (oraciones
+   completas) ni el drain de Oboe (chunks variables) llegan
+   alineados. Se usan dos `ArrayDeque<Short>` (uno far-end, uno
+   near-end) y se drenan frames de 160 samples en cada llamada.
+2. **Resample 24 → 16 kHz**. Kokoro emite a 24 kHz; AECM corre a 16
+   kHz. Se hace linear interpolation al ratio 3:2. Cruda por
+   estándares DSP pero adecuada para AEC — la referencia no necesita
+   ser perceptualmente limpia, solo estar phase-aligned con lo que
+   el speaker va a emitir.
+3. **Thread-safety**. `TtsAudioPlayer.play()` corre en `Dispatchers.IO`
+   y `VadChunkingPipeline.handleAudioData()` corre en
+   `Dispatchers.Default`. WebRTC AECM no es thread-safe, así que
+   ambos entry points sincronizan sobre un `aecLock` interno.
+
+### Puntos de integración
+
+- **`TtsAudioPlayer.play()`** — antes de `AudioTrack.write()`, llama
+  `aec.bufferFarend(pcm, sampleRate=24000)`. El resampling ocurre
+  dentro del processor.
+- **`VadChunkingPipeline.handleAudioData()`** — después de la
+  decimación 48→16 kHz y ANTES del reassembler, llama
+  `aec.process(pcm)`. Silero + chunker ven el signal limpio.
+
+Ambos son opt-in: la referencia al `AecProcessor` es `@Volatile` y
+nula cuando el flag está OFF. Zero costo con el flag apagado.
+
+### Config + UI
+
+- `AstConfig.webrtcAecEnabled: Boolean = false` — off por default
+  (POC).
+- `GemmaPipelineViewModel.setWebrtcAecEnabled(Boolean)` — hot-swap
+  sin restart del capture (a diferencia del HAL AEC que sí requiere
+  reabrir el stream Oboe). Lazily construye el `AecProcessor` en el
+  primer flip a ON.
+- UI: nuevo `SwitchRow` bajo el HAL AEC, con contador live de
+  `farend` / `nearend` frames procesados para diagnóstico.
+
+### Caveats explícitos del POC
+
+- **Delay hardcoded a 200 ms** (`AecProcessor.DEFAULT_DELAY_MS`) —
+  medio del rango típico BT A2DP (150–300 ms). Auto-estimación
+  desde timestamps pareados es out of scope.
+- **Sólo path Kokoro instrumentado** — el path de Android system
+  TTS (Fast mode) habla directo al audio stack del OS y no tenemos
+  handle al PCM para usarlo como reference. Fast mode + WebRTC AEC
+  es efectivamente no-op.
+- **AECM ≠ AEC3**. AECM tolera ~10 ms de jitter de delay; BT A2DP
+  jittera ±50 ms. **Cancelación esperada sobre BT: 30–50 %**;
+  sobre USB DAC cableado: 80–95 %.
+- **Overhead**: ~10 ms de procesamiento por frame de 10 ms, negligible.
+
+### Cómo medir en device
+
+1. Prender pipeline con hardware externo (Saramonic + JBL).
+2. Toggle full-duplex ON, HAL AEC ON (típico), WebRTC AEC OFF.
+3. Hablar una frase, dejar que Kokoro/Android TTS traduzca, observar
+   si el mic re-captura el output como "nueva speech" (aparece
+   chunk fantasma → traducción de traducción).
+4. Toggle WebRTC AEC ON, repetir. Observar si el ciclo de feedback
+   se corta o se atenúa.
+5. Contadores UI: `farend` frames deben crecer cada vez que Kokoro
+   habla; `nearend` frames deben crecer continuamente mientras el
+   pipeline corre.
+
+### Siguiente paso (si el POC muestra cancelación útil)
+
+- Tunear delay per-device desde el sample-rate real de Oboe + un
+  estimado de A2DP.
+- Considerar upgrade a AEC3 (mejor tolerancia a jitter de delay)
+  — requiere ~1 semana de trabajo (recompilar Chromium para
+  arm64, escribir wrapper JNI desde cero).
+- Si NO muestra cancelación útil sobre BT: revertir el flag a OFF
+  por default (el `.aar` queda vendoreado pero inactivo) y volver a
+  la recomendación de hardware cableado del cierre previo.

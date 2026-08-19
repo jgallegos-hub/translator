@@ -94,6 +94,14 @@ dependencies {
     implementation(libs.onnxruntime.android)
     implementation(libs.litertlm.android)
 
+    // WebRTC AECM (software echo cancellation for external mic + BT speaker
+    // combos, where the HAL AEC in InputPreset::VoiceCommunication doesn't
+    // reach the downstream USB/BT signal path). Prebuilt AAR from
+    // github.com/theeasiestway/android-webrtc-aecm — vendored into app/libs/
+    // because no Maven artifact exists. Exposes `ru.theeasiestway.libaecm.AEC`
+    // (see AecProcessor.kt for the Kotlin wrapper).
+    implementation(files("libs/libaecm-release.aar"))
+
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)

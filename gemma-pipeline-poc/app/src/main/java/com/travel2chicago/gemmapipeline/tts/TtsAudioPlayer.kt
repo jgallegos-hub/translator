@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import com.travel2chicago.gemmapipeline.audio.AecProcessor
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
@@ -70,7 +71,24 @@ class TtsAudioPlayer(
      * wiring.
      */
     private val ttsPlaying: AtomicBoolean = AtomicBoolean(false),
+    /**
+     * Optional software echo canceller. When non-null AND initialised,
+     * [play] pipes each PCM buffer into [AecProcessor.bufferFarend] BEFORE
+     * writing to the `AudioTrack` — the timestamp of that call is the
+     * anchor for the delay estimate the near-end path uses. When null
+     * (or when [AecProcessor.isInitialized] is false), the pump is a
+     * no-op and playback path is unchanged.
+     */
+    @Volatile private var aecProcessor: AecProcessor? = null,
 ) : TtsPlayerSink, AutoCloseable {
+
+    /** Attach an [AecProcessor] after construction. Used by the ViewModel
+     *  when the software AEC toggle flips ON — avoids re-creating the
+     *  player (which owns the `AudioTrack` handle) just to bind the
+     *  processor. Passing `null` detaches. */
+    fun setAecProcessor(processor: AecProcessor?) {
+        aecProcessor = processor
+    }
 
     private var track: AudioTrack? = null
     private val mutex = Mutex()
@@ -143,6 +161,16 @@ class TtsAudioPlayer(
     override suspend fun play(pcm: ShortArray) = mutex.withLock {
         val t = track ?: error("TtsAudioPlayer not initialised — call init() first")
         if (pcm.isEmpty()) return@withLock
+        // Pump the whole sentence as far-end reference BEFORE the first
+        // AudioTrack.write() — the delay estimate the near-end path uses
+        // is measured from here to when the mic re-hears the echo. Doing
+        // it once per play() (not per 100 ms chunk) keeps the reference
+        // stream causally simple; AECM buffers internally so it can
+        // consume the whole utterance in one go even though it processes
+        // in 10 ms frames. No-op when AEC isn't wired in.
+        aecProcessor?.let { proc ->
+            if (proc.isInitialized) proc.bufferFarend(pcm, sampleRate)
+        }
         // If we're INSIDE a beginUtterance/endUtterance bookend, the flag
         // is owned by that pair for the entire utterance — do not touch
         // it here or adjacent per-sentence play() calls would drop the

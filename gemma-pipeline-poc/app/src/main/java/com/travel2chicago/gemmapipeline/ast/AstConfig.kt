@@ -177,6 +177,47 @@ data class AstConfig(
     val aecEnabled: Boolean = true,
 
     /**
+     * Software WebRTC AECM applied on top of the HAL AEC ([aecEnabled]).
+     *
+     * The HAL AEC only reaches the built-in mic + built-in speaker path.
+     * External hardware (USB mic like the Saramonic, BT speaker like the
+     * JBL Go 4) bypasses that AEC — its echo reaches the mic unreduced.
+     * With this flag ON, [com.travel2chicago.gemmapipeline.audio.AecProcessor]
+     * runs a software echo canceller that:
+     *   - takes each Kokoro PCM buffer as far-end reference (from
+     *     [com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer.play],
+     *     resampled 24 → 16 kHz), and
+     *   - filters the mic near-end capture (from
+     *     [com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline],
+     *     already at 16 kHz post-decimation).
+     *
+     * The two AEC layers are complementary: keep [aecEnabled] on for
+     * the built-in path, keep this on for the external path. Both can
+     * be independently toggled.
+     *
+     * ## POC caveats (default `false`)
+     *
+     *   - **Delay hint is hardcoded** at 200 ms (BT A2DP typical). If
+     *     device measurement shows a different value, tune
+     *     `AecProcessor.DEFAULT_DELAY_MS` — auto-estimation is out of
+     *     scope for the POC.
+     *   - **Fast (Android system) TTS is NOT instrumented** — the OS
+     *     speaks directly to the audio stack, we have no PCM handle to
+     *     feed as far-end reference. Software AEC is Kokoro-only in
+     *     this iteration.
+     *   - **WebRTC AECM (not AEC3)** — AECM tolerates ~10 ms delay
+     *     jitter well; A2DP jitters ±50 ms. Expected cancellation over
+     *     BT: 30–50 %; over wired USB DAC: 80–95 %.
+     *   - **Adds ~10 ms of processing latency** per 10 ms frame,
+     *     negligible relative to Gemma / Kokoro.
+     *
+     * Off by default because the layer is unproven on device. Flip on
+     * from the UI, measure, then decide whether to promote to default
+     * or invest in AEC3 for better BT tolerance.
+     */
+    val webrtcAecEnabled: Boolean = false,
+
+    /**
      * Bounded queue capacity for the chunk → Gemma channel. One inference
      * takes ~2 s; a typical chunk is 3–6 s of audio. With capacity 4 we
      * tolerate ~16 s of conversational backlog before the channel drops

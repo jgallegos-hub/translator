@@ -8,6 +8,7 @@ import com.travel2chicago.gemmapipeline.ast.AstChunkRouter
 import com.travel2chicago.gemmapipeline.ast.AstConfig
 import com.travel2chicago.gemmapipeline.ast.GemmaAstEngine
 import com.travel2chicago.gemmapipeline.ast.LiteRtGemmaAstEngine
+import com.travel2chicago.gemmapipeline.audio.AecProcessor
 import com.travel2chicago.gemmapipeline.audio.AudioCaptureManager
 import com.travel2chicago.gemmapipeline.audio.AudioDeviceManager
 import com.travel2chicago.gemmapipeline.audio.AudioEngineConfig
@@ -114,6 +115,16 @@ data class GemmaPipelineUiState(
      *  on the mic capture path. Requires a capture restart to take effect
      *  (the InputPreset is passed at `openStream` time). Default `true`. */
     val aecEnabled: Boolean = true,
+    /** Mirrors [AstConfig.webrtcAecEnabled] — software WebRTC AECM. Runs on
+     *  top of the HAL AEC; needed for external mic + BT speaker combos
+     *  where the HAL path doesn't reach. Default `false` (POC). */
+    val webrtcAecEnabled: Boolean = false,
+    /** Diagnostic: total 10 ms far-end frames handed to WebRTC AECM since
+     *  the processor was initialised. Zero when [webrtcAecEnabled] is
+     *  false or the processor hasn't run yet. */
+    val webrtcAecFarendFrames: Long = 0,
+    /** Diagnostic: total 10 ms near-end frames processed by WebRTC AECM. */
+    val webrtcAecNearendFrames: Long = 0,
     /** Mirrors [AstConfig.useOfficialAstPrompt] — Google's transcribe+translate
      *  prompt with `English:` marker extraction. */
     val useOfficialAstPrompt: Boolean = true,
@@ -247,6 +258,15 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var ttsRouter: TtsRouter? = null
 
     /**
+     * Software WebRTC AECM. Lazily constructed on the first flag flip to
+     * ON so the AECM native library (`libAEC.so`) doesn't load until the
+     * user opts in. When the flag is ON both the player (far-end pump)
+     * and the VAD pipeline (near-end filter) hold a reference; the
+     * processor synchronises internally.
+     */
+    @Volatile private var aecProcessor: AecProcessor? = null
+
+    /**
      * Re-entry guard for [loadGemmaEngine]. Must be set atomically before any
      * other check so two concurrent callers can't both reach `LiteRtGemmaAstEngine.load()`
      * — LiteRT-LM is not thread-safe during init and a double-call would crash
@@ -292,6 +312,18 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         gemmaEngine?.close()
         kokoroEngine?.close()
         androidTtsEngine?.close()
+        aecProcessor?.close()
+    }
+
+    /** Lazily construct + initialise the software AEC processor. Called from
+     *  [startPipeline] and [setWebrtcAecEnabled] when the flag flips ON.
+     *  Idempotent: a second call returns the existing processor. */
+    private fun ensureAecProcessor(): AecProcessor {
+        val existing = aecProcessor
+        if (existing != null) return existing
+        val fresh = AecProcessor().also { it.initialize() }
+        aecProcessor = fresh
+        return fresh
     }
 
     // ── Permissions ─────────────────────────────────────────────────────────
@@ -530,6 +562,16 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         // Apply current full-duplex flag before start so the first audio
         // frames after startPipeline honour the toggle state.
         p.setFullDuplexMode(astConfig.fullDuplexMode)
+        // Software WebRTC AECM: build/init on demand, wire into both the
+        // player (far-end pump) and the pipeline (near-end filter). See
+        // AstConfig.webrtcAecEnabled for the POC scope caveats.
+        if (astConfig.webrtcAecEnabled) {
+            ensureAecProcessor().let { proc ->
+                ttsPlayer.setAecProcessor(proc)
+                p.setAecProcessor(proc)
+                log("WebRTC AEC attached to player + pipeline")
+            }
+        }
         p.start(viewModelScope)
 
         val r = AstChunkRouter(bus, g, astConfig, sampleRate = audioConfig.format.sampleRate)
@@ -773,6 +815,37 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Software WebRTC AECM toggle. Hot-swap: no capture restart needed
+     * because the pipeline reads the AEC processor reference through a
+     * `@Volatile` — flipping it live just changes which frames get the
+     * AEC pass. When flipping ON, lazily builds the processor if it
+     * doesn't exist and attaches it to both the player + pipeline; when
+     * flipping OFF, detaches (the processor instance is kept for a fast
+     * re-attach on the next ON, closed only in `onCleared`).
+     */
+    fun setWebrtcAecEnabled(enabled: Boolean) {
+        if (astConfig.webrtcAecEnabled == enabled) return
+        astConfig = astConfig.copy(webrtcAecEnabled = enabled)
+        _state.update { it.copy(webrtcAecEnabled = enabled) }
+        val p = pipeline
+        if (enabled) {
+            val proc = ensureAecProcessor()
+            ttsPlayer.setAecProcessor(proc)
+            p?.setAecProcessor(proc)
+            log("WebRTC AEC toggled → ON " +
+                "(attached to player${if (p != null) " + pipeline" else "; pipeline will pick up on start"})")
+        } else {
+            ttsPlayer.setAecProcessor(null)
+            p?.setAecProcessor(null)
+            // Reset internal buffers so a re-enable starts from a clean
+            // state (avoids stale farend/nearend causing bogus first
+            // cancellation attempts).
+            aecProcessor?.reset()
+            log("WebRTC AEC toggled → OFF (detached from player + pipeline)")
+        }
+    }
+
+    /**
      * Fase 7 GPU audio encoder toggle. Unlike the router flags, this one
      * ONLY takes effect on the next Gemma load — the `audioBackend` is
      * bound at `Engine.initialize()`. Kept as a runtime toggle for the
@@ -956,6 +1029,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         when (event) {
             is AudioEvent.AudioData -> {
                 val p = pipeline
+                val aec = aecProcessor
                 _state.update {
                     it.copy(
                         totalSamplesCaptured = it.totalSamplesCaptured + event.samples.size,
@@ -965,6 +1039,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         astQueueSize = router?.queueSize ?: 0,
                         ttsPlaying = ttsPlaying.get(),
                         mutedMicFrames = p?.totalMutedFrames ?: it.mutedMicFrames,
+                        webrtcAecFarendFrames = aec?.totalFarendFrames ?: 0L,
+                        webrtcAecNearendFrames = aec?.totalNearendFrames ?: 0L,
                     )
                 }
             }

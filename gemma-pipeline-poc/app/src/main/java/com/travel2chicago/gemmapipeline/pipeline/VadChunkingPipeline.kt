@@ -1,6 +1,7 @@
 package com.travel2chicago.gemmapipeline.pipeline
 
 import android.util.Log
+import com.travel2chicago.gemmapipeline.audio.AecProcessor
 import com.travel2chicago.gemmapipeline.audio.AudioEvent
 import com.travel2chicago.gemmapipeline.audio.AudioEventBus
 import com.travel2chicago.gemmapipeline.audio.AudioFormat
@@ -105,6 +106,23 @@ class VadChunkingPipeline(
     /** Snapshot for read paths (handleAudioData). Kept as a public read-only
      *  property to preserve existing callers; write via [setFullDuplexMode]. */
     val fullDuplexMode: Boolean get() = fullDuplexModeInternal
+
+    /**
+     * Optional software echo canceller. When non-null AND
+     * [AecProcessor.isInitialized] is true, [handleAudioData] pipes the
+     * post-decimation PCM through [AecProcessor.process] BEFORE the
+     * reassembler — Silero + chunker see the AEC-cleaned signal. Null
+     * (default) preserves every pre-AEC path byte-for-byte.
+     */
+    @Volatile private var aecProcessor: AecProcessor? = null
+
+    /** Set/clear the software AEC processor. Safe to call while the
+     *  pipeline is running — the read in [handleAudioData] is volatile
+     *  and both branches are correct. */
+    fun setAecProcessor(processor: AecProcessor?) {
+        aecProcessor = processor
+        Log.i(TAG, "setAecProcessor: ${if (processor == null) "cleared" else "attached"}")
+    }
 
     /**
      * Flip the full-duplex flag at runtime.
@@ -266,8 +284,21 @@ class VadChunkingPipeline(
 
         // Decimate to the target Silero rate if Oboe opened the device at a
         // higher native rate (e.g. 48 kHz → 16 kHz with factor 3 by mean of N).
-        val pcm = if (decimationFactor > 1) decimateMean(event.samples, decimationFactor)
-                  else event.samples
+        val pcmDecimated = if (decimationFactor > 1) decimateMean(event.samples, decimationFactor)
+                           else event.samples
+
+        // Optional software AEC. Runs BEFORE the reassembler so Silero sees
+        // the echo-cancelled signal. Buffers internally in 10 ms frames —
+        // may return an empty array when the input is shorter than one
+        // full frame after buffering; the reassembler handles empty inputs
+        // gracefully. Falls back to the raw decimated PCM when no AEC is
+        // wired in.
+        val proc = aecProcessor
+        val pcm = if (proc != null && proc.isInitialized) {
+            proc.process(pcmDecimated)
+        } else {
+            pcmDecimated
+        }
 
         // First 5 frames: log RMS + peak so we can SEE whether real signal is
         // arriving. p=0.000 with peak ≈ 0 means the mic is muted; p=0.000 with
