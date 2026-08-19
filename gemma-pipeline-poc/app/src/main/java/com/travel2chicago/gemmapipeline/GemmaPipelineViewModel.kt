@@ -106,8 +106,14 @@ data class GemmaPipelineUiState(
      *  Takes effect on next Gemma reload. */
     val audioBackendGpu: Boolean = false,
     /** Mirrors [AstConfig.fullDuplexMode] — mic keeps capturing while TTS
-     *  speaks. Applied to the pipeline instance on toggle. */
-    val fullDuplexMode: Boolean = false,
+     *  speaks. Applied to the pipeline instance on toggle. Default flipped
+     *  to `true` post-cierre; the AEC below makes half-duplex the
+     *  fallback rather than the safe baseline. */
+    val fullDuplexMode: Boolean = true,
+    /** Mirrors [AstConfig.aecEnabled] — HAL-level acoustic echo cancellation
+     *  on the mic capture path. Requires a capture restart to take effect
+     *  (the InputPreset is passed at `openStream` time). Default `true`. */
+    val aecEnabled: Boolean = true,
     /** Mirrors [AstConfig.useOfficialAstPrompt] — Google's transcribe+translate
      *  prompt with `English:` marker extraction. */
     val useOfficialAstPrompt: Boolean = true,
@@ -513,7 +519,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val deviceId = _state.value.selectedInputId ?: 0
-        if (!captureManager.start(deviceId)) {
+        if (!captureManager.start(deviceId, aecEnabled = astConfig.aecEnabled)) {
             log("[ERROR] captureManager.start failed")
             return
         }
@@ -735,6 +741,34 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             log("Full-duplex mode toggled → $enabled (pipeline not created yet; " +
                 "startPipeline will apply on start)")
+        }
+    }
+
+    /**
+     * HAL-level acoustic echo cancellation toggle.
+     *
+     * Unlike [setFullDuplexMode], AEC cannot be flipped on a live capture
+     * stream — the Oboe `InputPreset` is bound at `openStream` time. When
+     * capture is running, we restart it so the change takes effect
+     * immediately; when it's not, the new value lands on the next
+     * `startPipeline`. Restart preserves the deviceId + drain loop; only
+     * the Oboe stream + the audiofx `AcousticEchoCanceler` handle are
+     * torn down and rebuilt.
+     */
+    fun setAecEnabled(enabled: Boolean) {
+        if (astConfig.aecEnabled == enabled) return
+        astConfig = astConfig.copy(aecEnabled = enabled)
+        _state.update { it.copy(aecEnabled = enabled) }
+        if (captureManager.isRunning) {
+            val deviceId = _state.value.selectedInputId ?: 0
+            captureManager.stop()
+            if (!captureManager.start(deviceId, aecEnabled = enabled)) {
+                log("[ERROR] AEC toggle → captureManager.start failed after stop")
+                return
+            }
+            log("AEC toggled → $enabled (capture restarted, deviceId=$deviceId)")
+        } else {
+            log("AEC toggled → $enabled (capture not running; startPipeline will apply)")
         }
     }
 

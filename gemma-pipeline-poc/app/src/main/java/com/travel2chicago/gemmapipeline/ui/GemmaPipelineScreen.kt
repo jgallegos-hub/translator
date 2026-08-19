@@ -268,12 +268,31 @@ fun GemmaPipelineScreen(
                 )
                 Text(
                     if (state.fullDuplexMode)
-                        "Full-duplex ON — chunker keeps collecting during TTS. " +
-                            "Needs directional mic OR headphones or the speaker " +
-                            "output will loop back into Gemma."
+                        "Full-duplex ON (default) — chunker keeps collecting during TTS. " +
+                            "The AEC toggle below removes speaker loopback from the mic; " +
+                            "even so, a highly reverberant room may still need a " +
+                            "directional mic or headphones."
                     else
-                        "Half-duplex (default) — mic muted while TTS plays. " +
-                            "Safe with any mic/speaker setup.",
+                        "Half-duplex — mic muted while TTS plays. Safe fallback " +
+                            "when AEC alone can't suppress the room echo.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "Acoustic echo cancellation (HAL AEC + Java effect)",
+                    checked = state.aecEnabled,
+                    onCheckedChange = { viewModel.setAecEnabled(it) },
+                )
+                Text(
+                    if (state.aecEnabled)
+                        "AEC ON — Oboe capture uses InputPreset.VoiceCommunication " +
+                            "(HAL AEC/NS/AGC) + AcousticEchoCanceler bound to the " +
+                            "stream session. ~10–20 ms added latency."
+                    else
+                        "AEC OFF — Oboe uses InputPreset.Unprocessed (raw mic). " +
+                            "Full-duplex will feed back the speaker unless the mic " +
+                            "is directional or off-axis to the speaker.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

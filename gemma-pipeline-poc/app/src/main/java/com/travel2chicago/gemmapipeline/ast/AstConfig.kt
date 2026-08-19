@@ -130,10 +130,51 @@ data class AstConfig(
      *       (production hardware for viaje use case), or
      *   (b) headphones / an isolated speaker (device testing).
      *
-     * Default `false` = keep the Fase 6 half-duplex behaviour (safe
-     * baseline). Toggle in the UI to A/B on device.
+     * Default flipped to `true` post-cierre after device validation
+     * (14+ traducciones, 0 errores, sessions of 10+ min): with hardware
+     * echo cancellation now on by default via [aecEnabled] (see below),
+     * the feedback risk that used to keep this off is materially
+     * mitigated. Toggle in the UI to revert to half-duplex if a specific
+     * room / speaker combo produces feedback loops the AEC can't
+     * suppress.
      */
-    val fullDuplexMode: Boolean = false,
+    val fullDuplexMode: Boolean = true,
+
+    /**
+     * Hardware acoustic echo cancellation (AEC) on the mic capture path.
+     *
+     * When `true` (default), the Oboe capture stream opens with
+     * `InputPreset::VoiceCommunication` — the AAudio HAL-level
+     * equivalent of `MediaRecorder.AudioSource.VOICE_COMMUNICATION` —
+     * which engages the device's AEC processor to subtract the
+     * loopback of what our own speaker is playing (Kokoro / Android
+     * TTS output) from the mic signal. As a defence-in-depth layer,
+     * [com.travel2chicago.gemmapipeline.audio.AudioCaptureManager]
+     * also attaches an `android.media.audiofx.AcousticEchoCanceler`
+     * to the Oboe stream's session id when the framework reports the
+     * effect is available on this device.
+     *
+     * When `false`, the capture stream opens with the Fase 2 preset
+     * `InputPreset::Unprocessed` — no AEC, no noise suppression, no
+     * AGC. This was the default up to the POC closure so the pipeline
+     * saw pristine mic samples; useful when validating VAD/chunker
+     * tuning without HAL processing interference, or when the user
+     * observes that AEC clips their voice.
+     *
+     * AEC introduces ~10–20 ms of processing latency (negligible
+     * relative to Gemma / Kokoro), and it can subtly change the
+     * amplitude envelope of the mic signal. If the RMS pre-filter
+     * ([com.travel2chicago.gemmapipeline.ast.AstConfig.rmsThreshold])
+     * starts dropping legitimate chunks after AEC is enabled, lower
+     * the threshold before disabling AEC — the trade-off usually
+     * favours keeping AEC on.
+     *
+     * Toggle takes effect on the NEXT capture start (the input preset
+     * is passed at `openStream` time; changing it live requires
+     * closing + reopening the Oboe stream — the ViewModel handles
+     * that by restarting capture when the toggle flips).
+     */
+    val aecEnabled: Boolean = true,
 
     /**
      * Bounded queue capacity for the chunk → Gemma channel. One inference

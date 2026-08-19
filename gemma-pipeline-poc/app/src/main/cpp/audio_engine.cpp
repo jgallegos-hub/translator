@@ -34,12 +34,22 @@ AudioEngine::~AudioEngine() {
     stop_playback();
 }
 
-bool AudioEngine::start_capture(int32_t input_device_id) {
+bool AudioEngine::start_capture(int32_t input_device_id,
+                                int32_t input_preset,
+                                int32_t allocate_session_id) {
     std::lock_guard<std::mutex> lock(stream_mutex_);
     if (capture_stream_) {
         LOGW("start_capture: already running");
         return true;
     }
+
+    // Preset 0 (caller "leave default") maps to the pre-AEC baseline
+    // (Unprocessed) so behaviour matches every callsite that predates the
+    // preset argument. Non-zero values are trusted to be valid Oboe
+    // InputPreset enum ints (validated on the Kotlin side).
+    const oboe::InputPreset preset = (input_preset > 0)
+        ? static_cast<oboe::InputPreset>(input_preset)
+        : oboe::InputPreset::Unprocessed;
 
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
@@ -48,7 +58,7 @@ bool AudioEngine::start_capture(int32_t input_device_id) {
         ->setFormat(oboe::AudioFormat::I16)
         ->setSampleRate(cfg_.sample_rate)
         ->setChannelCount(cfg_.channel_count)
-        ->setInputPreset(oboe::InputPreset::Unprocessed)
+        ->setInputPreset(preset)
         ->setDataCallback(this)
         ->setErrorCallback(this);
     if (input_device_id > 0) {
@@ -56,6 +66,12 @@ bool AudioEngine::start_capture(int32_t input_device_id) {
     }
     if (cfg_.frames_per_callback > 0) {
         builder.setFramesPerCallback(cfg_.frames_per_callback);
+    }
+    // SessionId::Allocate is the ONLY way to get a real (non -1) session id
+    // out of a stream — without it, effect attachment
+    // (`AcousticEchoCanceler.create(sessionId)`) has nothing to bind to.
+    if (allocate_session_id != 0) {
+        builder.setSessionId(oboe::SessionId::Allocate);
     }
 
     std::shared_ptr<oboe::AudioStream> stream;
@@ -65,12 +81,14 @@ bool AudioEngine::start_capture(int32_t input_device_id) {
         return false;
     }
 
-    LOGI("Capture opened: actual sr=%d ch=%d fmt=%d device=%d framesPerBurst=%d",
+    LOGI("Capture opened: actual sr=%d ch=%d fmt=%d device=%d framesPerBurst=%d preset=%d sessionId=%d",
          stream->getSampleRate(),
          stream->getChannelCount(),
          static_cast<int>(stream->getFormat()),
          stream->getDeviceId(),
-         stream->getFramesPerBurst());
+         stream->getFramesPerBurst(),
+         static_cast<int>(preset),
+         static_cast<int>(stream->getSessionId()));
 
     result = stream->requestStart();
     if (result != oboe::Result::OK) {
@@ -187,6 +205,15 @@ int32_t AudioEngine::playback_latency_ms() const {
 int32_t AudioEngine::capture_routed_device_id() const {
     std::lock_guard<std::mutex> lock(stream_mutex_);
     return capture_stream_ ? capture_stream_->getDeviceId() : -1;
+}
+
+int32_t AudioEngine::capture_session_id() const {
+    std::lock_guard<std::mutex> lock(stream_mutex_);
+    if (!capture_stream_) return -1;
+    // Oboe returns SessionId::None (-1) when the stream was opened without
+    // setSessionId(Allocate) — the caller reads that the same way as "no
+    // capture running" (both mean "don't try to attach an effect").
+    return static_cast<int32_t>(capture_stream_->getSessionId());
 }
 
 int32_t AudioEngine::playback_routed_device_id() const {

@@ -58,10 +58,19 @@ Java_com_travel2chicago_gemmapipeline_audio_NativeAudioEngine_nativeDestroy(
 
 JNIEXPORT jboolean JNICALL
 Java_com_travel2chicago_gemmapipeline_audio_NativeAudioEngine_nativeStartCapture(
-    JNIEnv* env, jobject /*thiz*/, jlong handle, jint input_device_id) {
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jint input_device_id,
+    jint input_preset, jint allocate_session_id) {
     auto* engine = handle_to_engine(handle);
     if (!engine) return JNI_FALSE;
-    return engine->start_capture(input_device_id) ? JNI_TRUE : JNI_FALSE;
+    return engine->start_capture(input_device_id, input_preset, allocate_session_id)
+        ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_travel2chicago_gemmapipeline_audio_NativeAudioEngine_nativeCaptureSessionId(
+    JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    auto* engine = handle_to_engine(handle);
+    return engine ? engine->capture_session_id() : -1;
 }
 
 JNIEXPORT void JNICALL

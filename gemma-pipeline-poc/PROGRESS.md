@@ -1283,3 +1283,106 @@ Kokoro por oración, full-duplex, speed slider, selector Male/Female)
 están validados en device y expuestos como toggles en la UI para
 revertir cualquiera individualmente si aparece regresión durante
 testing de campo.
+
+---
+
+## Full-duplex por default + AEC hardware (agosto 2026)
+
+Con full-duplex validado en device (14+ traducciones exitosas, 0
+errores, sesiones de 10+ min) y el timing de streaming ya
+estabilizado, promovimos full-duplex a **default ON** y agregamos
+**cancelación de eco hardware** para que el mic no re-capture el
+audio que el propio speaker acaba de reproducir.
+
+### Cambios
+
+- `AstConfig.fullDuplexMode`: `false` → `true`. El toggle en UI
+  permanece — half-duplex queda como fallback si el AEC no basta en
+  algún cuarto muy reverberante.
+- **Nuevo flag** `AstConfig.aecEnabled: Boolean = true`. Wired a dos
+  capas de AEC que actúan al abrir el stream de captura:
+  1. **HAL-level** (primaria): el `AudioEngine` C++ abre el stream
+     Oboe con `InputPreset::VoiceCommunication` (equivalente AAudio
+     de `MediaRecorder.AudioSource.VOICE_COMMUNICATION`) que engancha
+     el procesador AEC/NS/AGC del HAL del dispositivo. En OFF, se
+     usa el preset previo `Unprocessed` (Fase 2 baseline).
+  2. **Java-side** (defensa en profundidad): al arrancar el
+     capture, `AudioCaptureManager.attachAec()` crea un
+     `android.media.audiofx.AcousticEchoCanceler` bindeado al
+     `SessionId` que Oboe alocó (`SessionId::Allocate` en el
+     `AudioStreamBuilder`). Si el framework reporta
+     `AcousticEchoCanceler.isAvailable() == false`, o si el session
+     id no es válido, se loguea WARN y se sigue solo con el AEC del
+     HAL — la primera capa es suficiente en la mayoría de devices
+     modernos.
+
+### Por qué no usamos `AudioRecord` directamente
+
+La petición inicial mencionaba `AudioRecord.audioSessionId` — pero
+el pipeline usa **Oboe (NDK)**, no `AudioRecord` (Java). La
+traducción correcta es:
+- El equivalente de `MediaRecorder.AudioSource.VOICE_COMMUNICATION`
+  en Oboe es `InputPreset::VoiceCommunication` — mismo path HAL,
+  mismo AEC.
+- El `SessionId` de la stream Oboe (obtenido con
+  `stream->getSessionId()` tras abrir con `SessionId::Allocate`) es
+  el mismo tipo de identificador que `AcousticEchoCanceler.create`
+  acepta, así que la segunda capa Java funciona igual que si
+  fuera un `AudioRecord`.
+
+### Plumbing
+
+- `audio_engine.h/.cpp`: `start_capture` gana dos parámetros
+  (`input_preset`, `allocate_session_id`) + método
+  `capture_session_id()`.
+- `jni_bridge.cpp`: `nativeStartCapture` firma extendida,
+  `nativeCaptureSessionId` nuevo.
+- `NativeAudioEngine.kt`: `startCapture(inputDeviceId, inputPreset,
+  allocateSessionId)`, `captureSessionId()`. Nuevo objeto
+  `InputPreset` con constantes `UNPROCESSED = 9`,
+  `VOICE_COMMUNICATION = 7`, `VOICE_RECOGNITION = 6` — mirror del
+  enum Oboe.
+- `AudioCaptureManager.kt`: recibe `aecEnabled` en `start`, elige
+  preset, aloca session id sólo cuando AEC está ON, ata/libera el
+  effect Java, log de `aecAttached=` para diagnóstico. `stop()`
+  llama `releaseAec()` antes de cerrar el stream — no releasear
+  el effect fuga un handle nativo de audiofx.
+- `GemmaPipelineViewModel`: nuevo `setAecEnabled(Boolean)` que
+  reinicia el capture si está corriendo (el InputPreset se bindea
+  al `openStream`, no se puede cambiar en caliente). `startPipeline`
+  pasa `astConfig.aecEnabled` a `captureManager.start`.
+- `GemmaPipelineScreen`: nuevo `SwitchRow` para AEC, con texto
+  contextual sobre latencia añadida (~10-20 ms) y qué preset queda
+  activo. Texto del switch de full-duplex actualizado para
+  reflejar que el AEC ahora mitiga el feedback.
+
+### Interacción con otros filtros
+
+- **RMS pre-filter** (`AstConfig.rmsThreshold`): el AEC puede
+  reducir sutilmente la amplitud del signal del mic. Si empieza a
+  descartarse audio válido por RMS bajo después de prender AEC,
+  bajar el threshold ANTES que apagar AEC — el trade-off
+  típicamente favorece mantener AEC ON.
+- **VAD (Silero)**: el modelo es robusto a cambios sutiles de
+  ganancia. No debería requerir re-tuning.
+
+### Estado actual del POC
+
+| Feature | Default | Toggle UI |
+|---|---|---|
+| Full-duplex | **ON** ✅ | Sí |
+| AEC hardware | **ON** ✅ | Sí |
+| Streaming AST | ON | Sí |
+| Streaming Kokoro | ON | Sí |
+| Voz | `am_puck` | Sí |
+| Speed | 1.2x | Slider |
+| RMS filter | 500.0 | Slider (existente) |
+| Meta-text filter | activo | (no toggle) |
+
+Todos los toggles quedan en pie para revertir cualquiera
+individualmente durante field testing. La combinación default
+(full-duplex + AEC) es la que ahora recomendamos para uso en campo
+con hardware estándar (mic omnidireccional + speaker en la misma
+habitación); si el AEC del device específico no rinde bien, cambiar
+mic a unidireccional + speaker cableado sigue siendo la ruta más
+robusta (documentada en el cierre previo).

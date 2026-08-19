@@ -6,16 +6,57 @@ package com.travel2chicago.gemmapipeline.audio
  * Lifetime: the `nativeHandle` is allocated in [nativeCreate] and freed in
  * [close]. After [close] all other calls are no-ops.
  */
+/**
+ * Mirror of the subset of `oboe::InputPreset` values we care about. The int
+ * values match the Oboe enum (which in turn matches AAudio /
+ * `MediaRecorder.AudioSource`) so we can pass them straight through JNI
+ * without a translation table.
+ *
+ * `VOICE_COMMUNICATION` is the analog of `MediaRecorder.AudioSource.
+ * VOICE_COMMUNICATION` — it engages the HAL's AEC / noise suppression /
+ * AGC path. `UNPROCESSED` disables all of that (Fase 2 baseline).
+ */
+object InputPreset {
+    const val UNPROCESSED = 9
+    const val VOICE_COMMUNICATION = 7
+    const val VOICE_RECOGNITION = 6
+}
+
 class NativeAudioEngine private constructor(
     private var nativeHandle: Long,
 ) : AutoCloseable {
 
     val isClosed: Boolean get() = nativeHandle == 0L
 
-    fun startCapture(inputDeviceId: Int = 0): Boolean {
+    /**
+     * @param inputDeviceId 0 = system default, otherwise `AudioDeviceInfo.id`
+     * @param inputPreset AAudio input preset (Oboe `InputPreset` enum int).
+     *   Default 0 = leave at Oboe default (Unprocessed). Use
+     *   [InputPreset.VOICE_COMMUNICATION] to enable HAL-level AEC.
+     * @param allocateSessionId when `true`, the Oboe stream opens with
+     *   `SessionId::Allocate` so [captureSessionId] returns a real session
+     *   id that Kotlin can bind `AcousticEchoCanceler` (or other audiofx
+     *   effects) to. Slightly higher startup cost so we only opt in when
+     *   the caller actually intends to attach an effect.
+     */
+    fun startCapture(
+        inputDeviceId: Int = 0,
+        inputPreset: Int = 0,
+        allocateSessionId: Boolean = false,
+    ): Boolean {
         if (isClosed) return false
-        return nativeStartCapture(nativeHandle, inputDeviceId)
+        return nativeStartCapture(
+            nativeHandle,
+            inputDeviceId,
+            inputPreset,
+            if (allocateSessionId) 1 else 0,
+        )
     }
+
+    /** Session id of the currently-open capture stream, or -1 if capture is
+     *  not running or was started without `allocateSessionId = true`. */
+    fun captureSessionId(): Int =
+        if (isClosed) -1 else nativeCaptureSessionId(nativeHandle)
 
     fun stopCapture() {
         if (!isClosed) nativeStopCapture(nativeHandle)
@@ -54,7 +95,13 @@ class NativeAudioEngine private constructor(
         }
     }
 
-    private external fun nativeStartCapture(handle: Long, inputDeviceId: Int): Boolean
+    private external fun nativeStartCapture(
+        handle: Long,
+        inputDeviceId: Int,
+        inputPreset: Int,
+        allocateSessionId: Int,
+    ): Boolean
+    private external fun nativeCaptureSessionId(handle: Long): Int
     private external fun nativeStopCapture(handle: Long)
     private external fun nativeStartPlayback(handle: Long, outputDeviceId: Int): Boolean
     private external fun nativeStopPlayback(handle: Long)

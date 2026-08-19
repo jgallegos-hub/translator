@@ -26,11 +26,30 @@ public:
     AudioEngine(const AudioEngine&) = delete;
     AudioEngine& operator=(const AudioEngine&) = delete;
 
-    bool start_capture(int32_t input_device_id);
+    /**
+     * @param input_device_id 0 = system default; positive = AudioDeviceInfo id
+     * @param input_preset AAudio input preset. Values match `oboe::InputPreset`:
+     *   1=Generic, 5=Camcorder, 6=VoiceRecognition, 7=VoiceCommunication,
+     *   9=Unprocessed, 10=VoicePerformance. 0 = leave at Oboe default. The
+     *   Kotlin side passes 7 (VoiceCommunication) when the AEC toggle is on
+     *   and 9 (Unprocessed) when off.
+     * @param allocate_session_id when non-zero, the stream is opened with
+     *   `SessionId::Allocate` so [capture_session_id] can return a real
+     *   session id for the Kotlin side to attach effects
+     *   (`AcousticEchoCanceler`) to. When zero, session id is `None` (-1).
+     */
+    bool start_capture(int32_t input_device_id,
+                       int32_t input_preset,
+                       int32_t allocate_session_id);
     void stop_capture();
 
     bool start_playback(int32_t output_device_id);
     void stop_playback();
+
+    /** Session id of the currently-open capture stream, or -1 if capture is
+     *  not running / was opened without `SessionId::Allocate`. Meant for the
+     *  Kotlin side to attach `AcousticEchoCanceler` on. */
+    int32_t capture_session_id() const;
 
     std::size_t drain_capture(int16_t* dst, std::size_t max_samples);
     std::size_t enqueue_playback(const int16_t* src, std::size_t count);
