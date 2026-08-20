@@ -70,6 +70,36 @@ a target ≤ 3 s.
   ready for field testing with production hardware**
   (unidirectional mic + wired USB DAC speaker eliminates both the
   full-duplex feedback risk and A2DP's ~300 ms playback tail).
+- 🧪 **AEC investigation — three-way experiment** (August 20, 2026).
+  Consolidating three parallel AEC experiments this week:
+  1. **HAL AEC** (`InputPreset::VoiceCommunication` +
+     `AcousticEchoCanceler`, commit `d9a6f18`): validated **works**
+     with the Xiaomi's built-in mic + speaker (no full-duplex
+     feedback loop). **Does NOT work with external hardware**
+     (Saramonic USB + JBL Go 4 BT) — the HAL has no calibration
+     for external acoustic paths, and `AcousticEchoCanceler.create()`
+     over the Oboe `SessionId` returns `null`. HAL AEC stays default
+     ON (useful for internal path, inocuous for external).
+  2. **WebRTC AECM software** (commit `254ebd4`): POC vendored
+     from `theeasiestway/android-webrtc-aecm` (.aar in `app/libs/`),
+     `AecProcessor` with 24→16 kHz resample + 10 ms frame alignment
+     + hardcoded 200 ms BT A2DP delay, hooks in `TtsAudioPlayer`
+     (far-end) + `VadChunkingPipeline` (near-end). Flag off by
+     default. **Device test pending** — expected 30–50 %
+     cancellation over BT (AECM tolerates only ~10 ms of delay
+     jitter; A2DP jitters ±50 ms).
+  3. **Hardware mic — Cubilux MLC-10 passive cardioid**: rejected —
+     off-axis rejection ~6–10 dB, insufficient to eliminate
+     feedback with the speaker close to the mic. Evaluating
+     **Cubilux ENC (~$48)** with active DSP cancellation as a
+     hardware-level solution that would bypass the SW-AEC delay
+     estimation problem entirely.
+  Also this cycle: `AstConfig.fullDuplexMode` default flipped to
+  ON (`d9a6f18`) after the HAL AEC + internal-hardware validation.
+  **Pending**: (a) device test AECM over BT, (b) resolve external
+  mic + USB hub conflict, (c) evaluate Cubilux ENC. See
+  [`PROGRESS.md`](PROGRESS.md) "AEC investigación — resultados y
+  estado actual" for the full write-up.
 - ✅ **Post-closure streaming bug fix + stable-state validation**
   (commit `1d4f2e5`, August 2026). Field testing surfaced a phrase
   repetition bug — the app repeated the initial phrase and

@@ -1509,3 +1509,85 @@ nula cuando el flag está OFF. Zero costo con el flag apagado.
 - Si NO muestra cancelación útil sobre BT: revertir el flag a OFF
   por default (el `.aar` queda vendoreado pero inactivo) y volver a
   la recomendación de hardware cableado del cierre previo.
+
+---
+
+## AEC investigación — resultados y estado actual (20 agosto 2026)
+
+Consolidación de los tres experimentos de AEC que corrieron en
+paralelo esta semana (HAL, SW WebRTC, hardware mic).
+
+### 1. HAL-level AEC (commit `d9a6f18`)
+
+`InputPreset::VoiceCommunication` + `AcousticEchoCanceler` bindeado
+al `SessionId` de Oboe. Validado en device:
+
+- **Con hardware interno del Xiaomi 15T Pro (mic + speaker
+  built-in): funciona.** Sin feedback loop en full-duplex — el HAL
+  aplica AEC calibrado al par mic/speaker interno del device.
+- **Con hardware externo (Saramonic USB + JBL Go 4 BT): NO
+  funciona.** El HAL no tiene calibración para los paths
+  acústicos externos. Además el intento de attach del efecto
+  Java falla: `AcousticEchoCanceler.create()` sobre el `SessionId`
+  que Oboe alocó **retornó `null`** — la ruta Java tampoco se
+  activa cuando el capture no es del mic interno.
+
+Conclusión: el HAL AEC queda como default (útil para el caso mic
+interno), pero **no cubre el escenario de producción con
+Saramonic + JBL**. Toggle en UI permanece para revertir si algún
+device específico lo necesita.
+
+### 2. WebRTC AECM software (commit `254ebd4`)
+
+POC implementado, no probado en device todavía. Recap:
+
+- `.aar` de `theeasiestway/android-webrtc-aecm` vendoreado en
+  `app/libs/`.
+- `AecProcessor` con resample 24 → 16 kHz + frame alignment 10 ms
+  + delay hardcoded a 200 ms (típico BT A2DP).
+- Hooks: far-end en `TtsAudioPlayer.play()`, near-end en
+  `VadChunkingPipeline.handleAudioData()` post-decimación.
+- Flag `AstConfig.webrtcAecEnabled` con hot-swap sin restart.
+
+Pendiente: **device test sobre BT** — expectativa 30–50 %
+cancelación (WebRTC AECM no tolera bien el jitter de A2DP). Si el
+número real es útil, tunear delay per-device; si no, considerar
+upgrade a AEC3 o quedarse con hardware wired.
+
+### 3. Hardware mic — Cubilux MLC-10 pasivo cardioide
+
+Probado el Cubilux MLC-10 (cardioide pasivo). **Rechazo lateral
+insuficiente (~6–10 dB)** para eliminar feedback cuando el speaker
+está cerca del mic — el patrón pasivo cardioide sólo atenúa off-
+axis, no cancela.
+
+Evaluando **Cubilux ENC (~$48)** con cancelación activa (DSP
+integrado en el mic USB). Ventaja teórica: la cancelación ocurre
+antes de que el audio salga del mic, así que no depende de que el
+SW AEC (WebRTC o HAL) estime bien el delay de A2DP. Ideal para el
+escenario Saramonic-clase-omni + JBL BT que ya sabemos que rompe
+el HAL AEC.
+
+### Pendientes concretos
+
+1. **Device test WebRTC AECM sobre BT** — medir % de cancelación
+   real, revisar contadores UI `farend` / `nearend`, ver si se
+   corta el ciclo de "traducción de traducción".
+2. **Resolver conflicto mic + USB hub** — reportado en paralelo,
+   no bloquea el AEC test pero sí el testing sostenido con mic
+   externo.
+3. **Evaluar hardware ENC** (Cubilux ~$48). Si funciona limpio,
+   simplifica el pipeline: sin necesidad de SW AEC + tolerante a
+   speaker close-in.
+
+### Decisión provisional
+
+- HAL AEC: **default ON** (útil con mic interno, inocuo con
+  externo).
+- Full-duplex: **default ON** (commit `d9a6f18` — validado en
+  device con hardware interno; con externo depende de resolver
+  echo por HW o SW AEC).
+- WebRTC AECM: **default OFF** (POC, awaiting device test).
+- Recomendación de producción: sigue siendo hardware direccional
+  (Cubilux ENC o similar) + speaker cableado USB DAC. Si el ENC
+  rinde, el SW AEC pasa a ser opcional.
