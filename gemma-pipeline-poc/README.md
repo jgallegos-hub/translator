@@ -118,6 +118,12 @@ a target ≤ 3 s.
      into the live router; RMS logged for every chunk.
   UI counters: **Skipped non-Spanish**, **Echo dropped**, **Low RMS**.
   **Device test pending.** See PROGRESS.md "Anti-eco en software".
+- ⏸ **Session paused** (October 1, 2026). Next: 3-round device test of
+  the anti-echo layers (both ON / only SKIP / only echo filter), RMS
+  calibration from per-chunk logs, false-positive check; then fix the 8
+  pre-existing unit-test failures. LiteRT-LM stays pinned at **0.12.0**
+  — skip 0.17.x, wait for 0.18 stable (GPU audio encoder during
+  streaming, PR #3749). See PROGRESS.md "Estado actual / Próximos pasos".
 - ✅ **Post-closure streaming bug fix + stable-state validation**
   (commit `1d4f2e5`, August 2026). Field testing surfaced a phrase
   repetition bug — the app repeated the initial phrase and

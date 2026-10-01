@@ -1701,3 +1701,48 @@ una con su flag. LiteRT-LM sigue en 0.12.0.
 
 ModMic, full-duplex ON, JBL cerca. Revisar contadores y:
 `adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`
+
+## Estado actual / Próximos pasos (cierre de sesión, 1 octubre 2026)
+
+**Estado:** capas anti-eco implementadas en `2db432c` (SKIP non-Spanish,
+filtro de eco por texto, slider RMS), **sin prueba en dispositivo
+todavía**. Sesión en pausa.
+
+### Siguiente: prueba en dispositivo (ModMic + full-duplex ON + JBL cerca)
+
+1. **Ronda 1** — capas 1 y 2 ON, RMS 500 → ¿se corta el loop? Anotar
+   los 3 contadores (Skipped non-Spanish / Echo dropped / Low RMS).
+2. **Ronda 2** — solo capa 1 (Skip non-Spanish ON, Echo text filter OFF).
+3. **Ronda 3** — solo capa 2 (Skip non-Spanish OFF, Echo text filter ON).
+4. **Calibrar el slider RMS** con el RMS por chunk del log
+   (`Chunk accepted/discarded: RMS …`), **no** con los picos
+   (~28 000 voz / ~13 000–18 000 eco son picos, el RMS por chunk es
+   bastante menor).
+5. **Falsos positivos** — frases normales y con slang: verificar que no
+   se descarten traducciones legítimas y medir si cambia la latencia
+   del primer audio (el SKIP gate en streaming retiene oraciones
+   mientras el buffer es prefijo de `SKIP`).
+
+Logcat: `adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`
+
+### Después de la prueba
+
+- Arreglar las **8 fallas de tests preexistentes** (no relacionadas con
+  anti-eco): `TtsConfigTest` (defaults viejos: `af_heart`, `.onnx` vs
+  `.int8.onnx`), `TtsRouterTest` (carrera del producer en
+  `Dispatchers.Default` — aplicar el mismo `producerDispatcher`
+  inyectable que ya tiene `AstChunkRouter`), `FrameReassemblerTest`
+  (Integer vs Short en assert), `SileroVadProcessorTest` (0.78 vs 0.77).
+
+### Pendientes que siguen abiertos
+
+- Conflicto host/device entre el mic y el hub USB.
+- Slang mexicano (traducciones incorrectas / literales).
+- Lentitud de Kokoro en oraciones largas.
+
+### LiteRT-LM
+
+Seguimos en **0.12.0**. **No actualizar a 0.17.x.** Esperar a **0.18
+estable** (PR #3749: audio encoder en GPU durante streaming, hoy solo en
+nightly). Recordatorio: el intento de Fase 7 con 0.15 se revirtió
+(GPU audio nunca se activó, regresión de latencia, OOM).
