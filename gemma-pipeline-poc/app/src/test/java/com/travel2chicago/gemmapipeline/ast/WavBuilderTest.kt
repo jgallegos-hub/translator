@@ -98,7 +98,7 @@ class WavBuilderTest {
         // Pick a peak that's NOT symmetric in bytes so endianness mistakes
         // would be obvious. 0x1234 → LSB 0x34, MSB 0x12.
         val peak: Short = 0x1234
-        val samples = shortArrayOf(0, peak, -peak, 0)
+        val samples = shortArrayOf(0, peak, (-peak).toShort(), 0)
         val wav = WavBuilder.build(samples)
         // Re-extract PCM from offset 44.
         val pcm = ShortArray(samples.size)

@@ -42,6 +42,9 @@ private const val TAG = "AstChunkRouter"
  * @param sampleRate samples-per-second of the chunks coming from the chunker.
  *   The chunker always produces 16 kHz mono — exposed as a constructor arg
  *   only so tests can construct chunks at any rate without ceremony.
+ * @param echoHistory sentences recently spoken by TTS (Capa 2 anti-eco).
+ *   Owned by the caller so it survives router restarts. `null` disables the
+ *   echo text filter regardless of [AstConfig.echoTextFilterEnabled].
  */
 class AstChunkRouter(
     private val bus: AudioEventBus,
@@ -49,6 +52,10 @@ class AstChunkRouter(
     private val config: AstConfig,
     private val sampleRate: Int = 16_000,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val echoHistory: EchoTextHistory? = null,
+    /** Dispatcher for the bus subscription. Injectable so tests can subscribe
+     *  synchronously instead of racing a real `Default` thread. */
+    private val producerDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val channel: Channel<AudioEvent.ChunkReady> =
         Channel(capacity = config.queueCapacity)
@@ -78,6 +85,21 @@ class AstChunkRouter(
      * means "no chunk processed since start / restart".
      */
     private val firstTokenLatencyMsAtomic = AtomicLong(0)
+    /** Capa 1 — replies discarded because Gemma answered `SKIP` (non-Spanish audio). */
+    private val skippedNonSpanishCount = AtomicLong(0)
+    /** Capa 2 — sentences discarded because they matched recent TTS output. */
+    private val echoDroppedCount = AtomicLong(0)
+
+    /**
+     * Capa 3 — live RMS gate. Seeded from [AstConfig.rmsThreshold] and
+     * hot-swapped by the UI slider via [setRmsThreshold] without a router
+     * restart (a restart would cancel the in-flight chunk on every drag).
+     */
+    @Volatile private var rmsThreshold: Double = config.rmsThreshold
+
+    fun setRmsThreshold(value: Double) {
+        rmsThreshold = value.coerceAtLeast(0.0)
+    }
 
     val isRunning: Boolean
         get() = producerJob?.isActive == true && consumerJob?.isActive == true
@@ -98,6 +120,10 @@ class AstChunkRouter(
      *  one-shot paths — in one-shot mode it's ~= totalGemmaLatencyMs of the
      *  chunk; in streaming it's the time to the first token. */
     val firstTokenLatencyMs: Long get() = firstTokenLatencyMsAtomic.get()
+    /** Capa 1 — chunks whose reply was `SKIP` (non-Spanish audio, e.g. our own TTS). */
+    val totalSkippedNonSpanish: Long get() = skippedNonSpanishCount.get()
+    /** Capa 2 — sentences dropped by the echo text filter. */
+    val totalEchoDropped: Long get() = echoDroppedCount.get()
     val averageLatencyMs: Double get() {
         val n = translatedCount.get()
         return if (n > 0) totalLatencyMs.get().toDouble() / n else 0.0
@@ -112,7 +138,7 @@ class AstChunkRouter(
         bus.emit(AudioEvent.EngineStatus(
             "AST router subscribed (backend=${engine.backendUsed}, queueCap=${config.queueCapacity})"))
 
-        producerJob = scope.launch(Dispatchers.Default) {
+        producerJob = scope.launch(producerDispatcher) {
             bus.events
                 .filterIsInstance<AudioEvent.ChunkReady>()
                 .collect { chunk -> submitChunk(chunk) }
@@ -239,21 +265,27 @@ class AstChunkRouter(
 
     private suspend fun processChunk(chunk: AudioEvent.ChunkReady) {
         // Pre-filter: skip near-silent chunks BEFORE the expensive Gemma call.
-        // See AstConfig.rmsThreshold for rationale.
-        if (config.rmsThreshold > 0.0) {
-            val rms = computeRms(chunk.samples)
-            if (rms < config.rmsThreshold) {
-                val n = lowEnergyDiscardCount.incrementAndGet()
-                Log.i(
-                    TAG,
-                    "Chunk discarded: low RMS (${"%.1f".format(rms)} < ${config.rmsThreshold}) " +
-                        "durMs=${chunk.durationMs} peak=${chunk.peak} totalLowEnergy=$n",
-                )
-                bus.emit(AudioEvent.EngineStatus(
-                    "AST skipped low-energy chunk (rms=${"%.0f".format(rms)}, total=$n)"))
-                return
-            }
+        // See AstConfig.rmsThreshold for rationale. RMS is logged for EVERY
+        // chunk (accepted and discarded) so the Capa 3 slider can be
+        // calibrated from logcat — voice peaks ~28 000 vs echo ~13 000–18 000.
+        val threshold = rmsThreshold
+        val rms = computeRms(chunk.samples)
+        if (threshold > 0.0 && rms < threshold) {
+            val n = lowEnergyDiscardCount.incrementAndGet()
+            Log.i(
+                TAG,
+                "Chunk discarded: low RMS (${"%.1f".format(rms)} < ${"%.0f".format(threshold)}) " +
+                    "durMs=${chunk.durationMs} peak=${chunk.peak} totalLowEnergy=$n",
+            )
+            bus.emit(AudioEvent.EngineStatus(
+                "AST skipped low-energy chunk (rms=${"%.0f".format(rms)}, total=$n)"))
+            return
         }
+        Log.i(
+            TAG,
+            "Chunk accepted: RMS ${"%.1f".format(rms)} >= ${"%.0f".format(threshold)} " +
+                "durMs=${chunk.durationMs} peak=${chunk.peak}",
+        )
 
         val wav = try {
             WavBuilder.build(chunk.samples, sampleRate = sampleRate, channels = 1)
@@ -292,6 +324,14 @@ class AstChunkRouter(
         translatedCount.incrementAndGet()
         totalLatencyMs.addAndGet(result.latencyMs)
 
+        // Capa 1: Gemma flagged the audio as non-Spanish. Checked on the raw
+        // reply BEFORE English extraction so a bare `SKIP` (marker dropped)
+        // doesn't also count as an English-marker miss.
+        if (config.skipNonSpanish && isSkipReply(result.text)) {
+            discardNonSpanish(result.text)
+            return
+        }
+
         // Official-prompt path: strip everything up to and including the
         // `English: ` marker so the Spanish transcription is not spoken by
         // Kokoro. If the marker is missing (Gemma ignored the format),
@@ -314,6 +354,8 @@ class AstChunkRouter(
                 "AST dropped meta-text reply ('$matched', total=$n)"))
             return
         }
+
+        if (isEcho(translated)) return
 
         bus.emit(
             AudioEvent.TranslationReady(
@@ -373,6 +415,12 @@ class AstChunkRouter(
         val expectMarker = config.useOfficialAstPrompt
         var englishGateOpen = !expectMarker
         var contentStartOffset = 0
+        // Capa 1 SKIP gate: while the English content is still a prefix of
+        // `SKIP` (after normalisation) we hold sentence scanning, so a
+        // `SKIP.` reply can never be emitted as a sentence and reach TTS.
+        // Released as soon as the content diverges ("Skip the line." →
+        // `SKIPTHELINE`); the scan loop then catches up from lastCutOffset.
+        var skipGatePending = config.skipNonSpanish
 
         suspend fun emitPendingAsNonFinal() {
             val p = pendingText ?: return
@@ -425,6 +473,11 @@ class AstChunkRouter(
                     )
                 }
 
+                if (skipGatePending) {
+                    if (isSkipPrefix(sb.substring(contentStartOffset))) return@translateStreaming
+                    skipGatePending = false
+                }
+
                 // One delta may contain multiple terminators (e.g. Gemma
                 // emits a whole clause at once). Drain them all before
                 // yielding back for the next token.
@@ -457,6 +510,11 @@ class AstChunkRouter(
                         return@translateStreaming
                     }
 
+                    // Capa 2: a sentence matching recent TTS output is our
+                    // own echo — skip it without disturbing pending, so the
+                    // last non-echo sentence still closes the utterance.
+                    if (isEcho(sentence)) continue
+
                     // A new closed sentence is available. Flush the prior
                     // pending as non-final; hold this one until the next
                     // boundary or flow completion.
@@ -478,6 +536,17 @@ class AstChunkRouter(
         totalLatencyMs.addAndGet(result.latencyMs)
 
         if (dropRestOfChunk) return
+
+        // Capa 1 at flow end: the whole English content (or the whole reply
+        // when the marker never arrived) normalises to `SKIP`. The gate above
+        // guaranteed nothing from this chunk was emitted yet.
+        if (config.skipNonSpanish) {
+            val content = if (englishGateOpen) sb.substring(contentStartOffset) else sb.toString()
+            if (isSkipReply(content)) {
+                discardNonSpanish(sb.toString())
+                return
+            }
+        }
 
         // Marker never arrived — Gemma ignored the official-prompt format.
         // Fall back to treating the entire reply as the translation (same
@@ -501,7 +570,7 @@ class AstChunkRouter(
                     "AST dropped meta-text reply ('$matchedFallback', total=$m)"))
                 return
             }
-            if (fallback.isNotEmpty()) {
+            if (fallback.isNotEmpty() && !isEcho(fallback)) {
                 bus.emit(
                     AudioEvent.TranslationReady(
                         text = fallback,
@@ -532,6 +601,7 @@ class AstChunkRouter(
         }
 
         val trailing = sb.substring(lastCutOffset).trim()
+            .let { if (it.isNotEmpty() && isEcho(it)) "" else it }
         when {
             trailing.isNotEmpty() -> {
                 // Both pending + trailing exist — pending is not final,
@@ -669,6 +739,32 @@ class AstChunkRouter(
         return config.metaTextPatterns.firstOrNull { pat -> lower.contains(pat) }
     }
 
+    /** Capa 1 — counts + logs a `SKIP` reply. Nothing is emitted for the chunk. */
+    private fun discardNonSpanish(reply: String) {
+        val n = skippedNonSpanishCount.incrementAndGet()
+        Log.i(TAG, "Chunk discarded: non-Spanish audio (reply='${reply.trim().take(40)}') totalSkipped=$n")
+        bus.emit(AudioEvent.EngineStatus("AST skipped non-Spanish chunk (total=$n)"))
+    }
+
+    /**
+     * Capa 2 — true (and counted + logged) when [text] matches a sentence the
+     * TTS spoke within [AstConfig.echoWindowMs].
+     */
+    private fun isEcho(text: String): Boolean {
+        if (!config.echoTextFilterEnabled) return false
+        val history = echoHistory ?: return false
+        val match = history.findMatch(text, config.echoSimilarityThreshold, config.echoWindowMs)
+            ?: return false
+        val n = echoDroppedCount.incrementAndGet()
+        Log.i(
+            TAG,
+            "Translation discarded: echo of TTS output (sim=${"%.2f".format(match.similarity)}) " +
+                "text='${text.take(80)}' matched='${match.entry.text.take(80)}' totalEcho=$n",
+        )
+        bus.emit(AudioEvent.EngineStatus("AST dropped echo of TTS output (total=$n)"))
+        return true
+    }
+
     /**
      * Per-sample RMS on int16 PCM. Uses `Int` accumulation up-front and
      * `Double` sums to avoid overflow on long chunks — a 6-second chunk at
@@ -683,6 +779,26 @@ class AstChunkRouter(
             sumSq += v * v
         }
         return kotlin.math.sqrt(sumSq / samples.size)
+    }
+
+    internal companion object {
+        /** Normalised forms of a SKIP reply. `ENGLISHSKIP` covers the legacy
+         *  prompt path (no marker extraction) and a one-shot raw reply. */
+        private val SKIP_FORMS = listOf("SKIP", "ENGLISHSKIP")
+
+        /** Trim, drop punctuation/whitespace, upper-case. */
+        fun normalizeForSkip(text: String): String =
+            buildString(text.length) {
+                for (c in text) if (c.isLetterOrDigit()) append(c.uppercaseChar())
+            }
+
+        fun isSkipReply(text: String): Boolean = normalizeForSkip(text) in SKIP_FORMS
+
+        /** True while [text] could still become a SKIP reply (empty counts). */
+        fun isSkipPrefix(text: String): Boolean {
+            val n = normalizeForSkip(text)
+            return SKIP_FORMS.any { it.startsWith(n) }
+        }
     }
 
     private suspend fun emitError(message: String, chunk: AudioEvent.ChunkReady) {

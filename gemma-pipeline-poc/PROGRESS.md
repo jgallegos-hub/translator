@@ -1591,3 +1591,113 @@ el HAL AEC.
 - Recomendación de producción: sigue siendo hardware direccional
   (Cubilux ENC o similar) + speaker cableado USB DAC. Si el ENC
   rinde, el SW AEC pasa a ser opcional.
+
+## Anti-eco en software — 3 capas (1 octubre 2026)
+
+### Resultado de prueba previa: ModMic USB 2 + WebRTC AECM
+
+Probado **ModMic USB 2** (cardioide + noise canceling) + **JBL Go 4
+BT** + full-duplex ON. **El loop de feedback persiste con WebRTC AECM
+ON y OFF** — el AECM no rinde con el jitter de A2DP (como se
+anticipaba) y el patrón cardioide del ModMic no rechaza lo suficiente
+con el speaker cerca. HAL AEC sigue funcionando sólo con mic + speaker
+internos. Medición útil del logcat: **picos de voz del usuario
+~28 000 vs chunks de eco ~13 000–18 000** (int16) — hay margen de
+energía para separar, pero no basta por sí solo.
+
+Conclusión: atacar el eco **después del ASR**, en texto, donde sí
+tenemos información que el audio no da (el eco es inglés y es una
+copia de lo que acabamos de decir). Tres capas independientes, cada
+una con su flag. LiteRT-LM sigue en 0.12.0.
+
+### Capa 1 — SKIP para audio no-español (`AstConfig.skipNonSpanish = true`)
+
+- Con el flag ON, `activePrompt` agrega `skipNonSpanishInstruction`:
+  si el audio no es español, Gemma responde exactamente
+  `English: SKIP`. Con el flag OFF el prompt es byte-a-byte el de
+  antes.
+- `AstChunkRouter` normaliza (trim, sin puntuación/espacios,
+  mayúsculas) y descarta si queda `SKIP` (o `ENGLISHSKIP`, para el
+  legacy prompt / respuesta cruda sin extracción). Contador
+  `totalSkippedNonSpanish`, log `Chunk discarded: non-Spanish audio`.
+- **Streaming:** después de abrirse el gate `English:`, el router
+  **retiene el escaneo de oraciones** mientras el contenido
+  normalizado sea prefijo de `SKIP`. Si diverge ("Skip the line." →
+  `SKIPTHELINE`) se libera y el loop alcanza las oraciones pendientes;
+  si al cerrar el Flow el contenido es `SKIP`, se descarta el chunk
+  entero. Resultado: `SKIP` **nunca** llega a `TranslationReady` ni a
+  TTS (cubierto con test de tokens partidos `"SK" + "IP" + "."`).
+- One-shot: el check corre sobre la respuesta cruda **antes** de la
+  extracción del marcador, así un `SKIP` sin marcador no suma al
+  contador `englishMarkerMissing`.
+
+### Capa 2 — Filtro de eco por similitud de texto (`echoTextFilterEnabled = true`)
+
+- Nuevo `EchoTextHistory` (paquete `ast`), propiedad del ViewModel
+  para que sobreviva a los restarts del router. Se alimenta en
+  `handleEvent(TtsAudioReady)` con `sourceText` — cubre Kokoro
+  one-shot, Kokoro streaming y Android Fast TTS. Re-grabar el mismo
+  texto refresca su timestamp (Kokoro streaming emite varios
+  `TtsAudioReady` por oración). Cap 32 entradas.
+- Antes de emitir cada `TranslationReady` (cada oración en streaming,
+  el reply en one-shot y en el fallback sin marcador) se compara
+  contra las oraciones habladas en los últimos `echoWindowMs =
+  15_000`. Similitud por tokens normalizados = `max(Jaccard,
+  contención)`, contención = |A∩B| / |A| sólo si el candidato tiene
+  ≥ 4 tokens (atrapa ecos cortados por el borde del chunk sin tragarse
+  un "Yes." legítimo). Umbral `echoSimilarityThreshold = 0.6`.
+- Hit → descarte, contador `totalEchoDropped`, log `Translation
+  discarded: echo of TTS output (sim=…) text='…' matched='…'`.
+- En streaming, una oración-eco se salta sin tocar `pending`, así la
+  última oración real sigue cerrando la utterance con `isFinal=true`.
+- Limitación conocida: si el usuario repite literalmente en español
+  algo cuya traducción coincide con lo que el TTS dijo hace < 15 s,
+  se descarta. Aceptable para el caso de uso.
+
+### Capa 3 — Slider de umbral RMS
+
+- `rmsThreshold` expuesto en UI como slider 200–4000 (default 500,
+  cuantizado a 50). Hot-swap vía `AstChunkRouter.setRmsThreshold` —
+  sin restart del router (no cancela el chunk en vuelo).
+- El router ahora loggea el RMS de **cada** chunk: `Chunk accepted:
+  RMS … >= …` y `Chunk discarded: low RMS (… < …)`.
+- Nota de calibración: voz ~28 000 pico, eco ~13 000–18 000 (picos;
+  el RMS por chunk es bastante menor — calibrar con los logs).
+
+### UI
+
+- Toggles: **Skip non-Spanish audio**, **Echo text filter**, slider
+  **RMS threshold**.
+- Contadores en la tarjeta TRANSLATIONS: **Skipped non-Spanish**,
+  **Echo dropped**, **Low RMS**. Se refrescan también en
+  `EngineStatus` (los filtros descartan sin emitir `TranslationReady`).
+
+### Tests
+
+- `AstChunkRouterTest` +13: SKIP one-shot (con marcador, sin marcador
+  con puntuación/minúsculas, flag OFF pasa intacto), SKIP streaming
+  (tokens partidos con prompt oficial, legacy prompt), "Skip the
+  line." no se descarta, traducción legítima pasa con todas las capas
+  ON, eco match / no-match / expiración de ventana / flag OFF, eco en
+  streaming deja la última oración real como final, slider RMS
+  hot-swap.
+- Nuevo `EchoTextHistoryTest` (9): similitud, contención, reply corto,
+  expiración + poda, dedupe, cap, helpers de normalización SKIP,
+  `activePrompt` intacto con flag OFF.
+- Infra: el producer del router ahora usa un `producerDispatcher`
+  inyectable (default `Dispatchers.Default`). Los tests del router
+  corrían con la suscripción al bus en un hilo real → carrera con
+  `advanceUntilIdle()` y fallos intermitentes ya presentes en HEAD.
+  Con el dispatcher inyectado: 35/35 en 16 corridas seguidas (1 flake
+  aislado en tests de hilo real con `Thread.sleep`, preexistentes).
+- Además: el source set de tests **no compilaba en HEAD** (faltaba
+  `import kotlinx.coroutines.cancel` en dos tests, `-peak` Int vs
+  Short en `WavBuilderTest`) — corregido. Quedan 8 fallas
+  preexistentes fuera del paquete `ast` (`TtsConfigTest` con defaults
+  viejos, carrera en `TtsRouterTest`, `FrameReassemblerTest`,
+  `SileroVadProcessorTest`) — sin relación con este cambio.
+
+### Prueba en dispositivo (pendiente — Abraham)
+
+ModMic, full-duplex ON, JBL cerca. Revisar contadores y:
+`adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`

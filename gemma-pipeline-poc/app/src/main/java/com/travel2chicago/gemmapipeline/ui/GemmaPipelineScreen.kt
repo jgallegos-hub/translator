@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.travel2chicago.gemmapipeline.GemmaPipelineViewModel
 import com.travel2chicago.gemmapipeline.TranslationEntry
+import com.travel2chicago.gemmapipeline.ast.AstConfig
 import com.travel2chicago.gemmapipeline.audio.AudioDeviceManager
 import com.travel2chicago.gemmapipeline.audio.VadState
 import com.travel2chicago.gemmapipeline.tts.TtsConfig
@@ -315,6 +316,36 @@ fun GemmaPipelineScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
+                // Anti-eco software layers (Capa 1 / 2 / 3). Counters live
+                // in the TRANSLATIONS card below.
+                SwitchRow(
+                    label = "Skip non-Spanish audio (Gemma answers SKIP)",
+                    checked = state.skipNonSpanish,
+                    onCheckedChange = { viewModel.setSkipNonSpanish(it) },
+                )
+                SwitchRow(
+                    label = "Echo text filter (drop replies similar to recent TTS)",
+                    checked = state.echoTextFilterEnabled,
+                    onCheckedChange = { viewModel.setEchoTextFilterEnabled(it) },
+                )
+                Text(
+                    "RMS threshold: ${state.rmsThreshold.toInt()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Slider(
+                    value = state.rmsThreshold.toFloat(),
+                    onValueChange = { viewModel.setRmsThreshold(it.toDouble()) },
+                    valueRange = AstConfig.RMS_SLIDER_MIN.toFloat()..AstConfig.RMS_SLIDER_MAX.toFloat(),
+                )
+                Text(
+                    "Chunks under this RMS never reach Gemma. Calibration (logcat " +
+                        "AstChunkRouter logs RMS per chunk): voice peaks ~28 000, " +
+                        "echo ~13 000–18 000.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
                 SwitchRow(
                     label = "Audio-after-text (Google's recommended order)",
                     checked = state.audioAfterText,
@@ -483,10 +514,22 @@ fun GemmaPipelineScreen(
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(
-                        "Skipped low-RMS: ${state.totalDiscardedLowEnergy}",
+                        "Skipped non-Spanish: ${state.totalSkippedNonSpanish}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium,
                     )
+                    Text(
+                        "Echo dropped: ${state.totalEchoDropped}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Low RMS: ${state.totalDiscardedLowEnergy}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(
                         "Meta-text dropped: ${state.totalDiscardedMeta}",
                         style = MaterialTheme.typography.bodySmall,

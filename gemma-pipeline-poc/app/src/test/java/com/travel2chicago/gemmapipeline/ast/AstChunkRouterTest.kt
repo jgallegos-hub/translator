@@ -8,7 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -154,7 +156,11 @@ class AstChunkRouterTest {
         metaTextPatterns: List<String> = emptyList(),
         streamingEnabled: Boolean = false,
         useOfficialAstPrompt: Boolean = false,
+        skipNonSpanish: Boolean = true,
+        echoTextFilterEnabled: Boolean = true,
     ) = AstConfig(
+        skipNonSpanish = skipNonSpanish,
+        echoTextFilterEnabled = echoTextFilterEnabled,
         modelDirPath = "/sdcard/unused-in-test",
         prompt = "Translate.",
         queueCapacity = queueCapacity,
@@ -177,7 +183,7 @@ class AstChunkRouterTest {
         val bus = AudioEventBus()
         val engine = FakeEngine(nextResult = AstResult("Hello, world", 42L, "FAKE"))
         val router = AstChunkRouter(bus, engine, config(),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler))
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler))
 
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -201,7 +207,7 @@ class AstChunkRouterTest {
         val bus = AudioEventBus()
         val engine = FakeEngine(throwOnNext = RuntimeException("boom"))
         val router = AstChunkRouter(bus, engine, config(),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler))
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler))
 
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -277,7 +283,7 @@ class AstChunkRouterTest {
         val bus = AudioEventBus()
         val engine = FakeEngine()
         val router = AstChunkRouter(bus, engine, config(),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler))
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler))
 
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -298,7 +304,7 @@ class AstChunkRouterTest {
         val bus = AudioEventBus()
         val engine = FakeEngine()
         val router = AstChunkRouter(bus, engine, config(),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler))
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler))
 
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -426,7 +432,7 @@ class AstChunkRouterTest {
             override fun close() {}
         }
         val router = AstChunkRouter(bus, engine, config(),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler))
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler))
 
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -449,7 +455,7 @@ class AstChunkRouterTest {
         val router = AstChunkRouter(
             bus, engine,
             config(rmsThreshold = 500.0),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
         )
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -477,7 +483,7 @@ class AstChunkRouterTest {
         val router = AstChunkRouter(
             bus, engine,
             config(rmsThreshold = 500.0),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
         )
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -500,7 +506,7 @@ class AstChunkRouterTest {
         val router = AstChunkRouter(
             bus, engine,
             config(metaTextPatterns = listOf("not provided", "please provide")),
-            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
         )
         router.start(backgroundScope)
         advanceUntilIdle()
@@ -529,7 +535,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(metaTextPatterns = listOf("cannot translate")),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -569,7 +575,7 @@ class AstChunkRouterTest {
             )
             val router = AstChunkRouter(
                 bus, engine, realDefaultConfig,
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -592,7 +598,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(metaTextPatterns = listOf("not provided", "please provide")),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -622,7 +628,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -659,7 +665,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -690,7 +696,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -723,7 +729,7 @@ class AstChunkRouterTest {
                     streamingEnabled = true,
                     metaTextPatterns = listOf("translation of"),
                 ),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -752,7 +758,7 @@ class AstChunkRouterTest {
                     streamingEnabled = true,
                     metaTextPatterns = listOf("not provided"),
                 ),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -778,7 +784,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -804,7 +810,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true, rmsThreshold = 500.0),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -833,7 +839,7 @@ class AstChunkRouterTest {
             val router = AstChunkRouter(
                 bus, engine,
                 config(streamingEnabled = true),
-                ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
             )
             router.start(backgroundScope)
             advanceUntilIdle()
@@ -848,6 +854,194 @@ class AstChunkRouterTest {
                 assertTrue(third.isFinal)
                 cancelAndConsumeRemainingEvents()
             }
+            router.cancel()
+        }
+
+    // ── Capa 1 — SKIP for non-Spanish audio ──────────────────────────────
+
+    /** Runs one chunk through a fresh router and returns every emitted TranslationReady. */
+    private fun kotlinx.coroutines.test.TestScope.runOneChunk(
+        engine: GemmaAstEngine,
+        cfg: AstConfig,
+        history: EchoTextHistory? = null,
+    ): Pair<AstChunkRouter, List<AudioEvent.TranslationReady>> {
+        val bus = AudioEventBus()
+        val router = AstChunkRouter(
+            bus, engine, cfg,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
+            echoHistory = history,
+        )
+        val out = mutableListOf<AudioEvent.TranslationReady>()
+        backgroundScope.launch {
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().collect { out += it }
+        }
+        router.start(backgroundScope)
+        advanceUntilIdle()
+        bus.emit(chunk(seed = 1))
+        advanceUntilIdle()
+        router.cancel()
+        return router to out.toList()
+    }
+
+    @Test
+    fun `one-shot SKIP reply with English marker is discarded`() = runTest(UnconfinedTestDispatcher()) {
+        val engine = FakeEngine(nextResult = AstResult("English: SKIP", 10L, "FAKE"))
+        val (router, out) = runOneChunk(engine, config(useOfficialAstPrompt = true))
+        assertTrue(out.isEmpty())
+        assertEquals(1L, router.totalSkippedNonSpanish)
+        assertEquals(0L, router.totalEnglishMarkerMissing)
+    }
+
+    @Test
+    fun `one-shot bare SKIP with punctuation and case variants is discarded`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeEngine(nextResult = AstResult("  skip. ", 10L, "FAKE"))
+            val (router, out) = runOneChunk(engine, config(useOfficialAstPrompt = true))
+            assertTrue(out.isEmpty())
+            assertEquals(1L, router.totalSkippedNonSpanish)
+            assertEquals(0L, router.totalEnglishMarkerMissing)
+        }
+
+    @Test
+    fun `one-shot SKIP passes through unchanged when skipNonSpanish is off`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeEngine(nextResult = AstResult("English: SKIP", 10L, "FAKE"))
+            val (router, out) = runOneChunk(
+                engine, config(useOfficialAstPrompt = true, skipNonSpanish = false),
+            )
+            assertEquals(listOf("SKIP"), out.map { it.text })
+            assertEquals(0L, router.totalSkippedNonSpanish)
+        }
+
+    @Test
+    fun `streaming SKIP split across tokens never reaches the bus`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeStreamingEngine(tokens = listOf("Eng", "lish: ", "SK", "IP", "."))
+            val (router, out) = runOneChunk(
+                engine, config(streamingEnabled = true, useOfficialAstPrompt = true),
+            )
+            assertTrue("SKIP leaked to TTS: $out", out.isEmpty())
+            assertEquals(1L, router.totalSkippedNonSpanish)
+            assertEquals(1L, router.totalTranslated)
+        }
+
+    @Test
+    fun `streaming SKIP on legacy prompt path is discarded`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeStreamingEngine(tokens = listOf("English: ", "SKIP"))
+            val (router, out) = runOneChunk(engine, config(streamingEnabled = true))
+            assertTrue(out.isEmpty())
+            assertEquals(1L, router.totalSkippedNonSpanish)
+        }
+
+    @Test
+    fun `streaming reply that merely starts with Skip is emitted normally`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeStreamingEngine(
+                tokens = listOf("English: ", "Ski", "p the line. ", "Then go home."),
+            )
+            val (router, out) = runOneChunk(
+                engine, config(streamingEnabled = true, useOfficialAstPrompt = true),
+            )
+            assertEquals(listOf("Skip the line.", "Then go home."), out.map { it.text })
+            assertTrue(out.last().isFinal)
+            assertEquals(0L, router.totalSkippedNonSpanish)
+        }
+
+    @Test
+    fun `legitimate Spanish translations pass with all anti-echo layers on`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val history = EchoTextHistory().apply { record("The museum opens at nine.") }
+            val engine = FakeStreamingEngine(
+                tokens = listOf("English: ", "Where is ", "the train station?"),
+            )
+            val (router, out) = runOneChunk(
+                engine,
+                config(streamingEnabled = true, useOfficialAstPrompt = true),
+                history,
+            )
+            assertEquals(listOf("Where is the train station?"), out.map { it.text })
+            assertEquals(0L, router.totalSkippedNonSpanish)
+            assertEquals(0L, router.totalEchoDropped)
+        }
+
+    // ── Capa 2 — echo text filter ────────────────────────────────────────
+
+    @Test
+    fun `one-shot echo of recent TTS sentence is dropped`() = runTest(UnconfinedTestDispatcher()) {
+        val history = EchoTextHistory().apply { record("I am going to the store today.") }
+        val engine = FakeEngine(nextResult = AstResult("I'm going to the store today", 10L, "FAKE"))
+        val (router, out) = runOneChunk(engine, config(), history)
+        assertTrue(out.isEmpty())
+        assertEquals(1L, router.totalEchoDropped)
+    }
+
+    @Test
+    fun `one-shot unrelated reply is not treated as echo`() = runTest(UnconfinedTestDispatcher()) {
+        val history = EchoTextHistory().apply { record("I am going to the store today.") }
+        val engine = FakeEngine(nextResult = AstResult("Can you help me with my luggage?", 10L, "FAKE"))
+        val (router, out) = runOneChunk(engine, config(), history)
+        assertEquals(listOf("Can you help me with my luggage?"), out.map { it.text })
+        assertEquals(0L, router.totalEchoDropped)
+    }
+
+    @Test
+    fun `echo match expires after the window`() = runTest(UnconfinedTestDispatcher()) {
+        var now = 0L
+        val history = EchoTextHistory(clockMs = { now }).apply { record("I am going to the store today.") }
+        now = 15_001L
+        val engine = FakeEngine(nextResult = AstResult("I am going to the store today.", 10L, "FAKE"))
+        val (router, out) = runOneChunk(engine, config(), history)
+        assertEquals(1, out.size)
+        assertEquals(0L, router.totalEchoDropped)
+    }
+
+    @Test
+    fun `echo filter disabled lets matching text through`() = runTest(UnconfinedTestDispatcher()) {
+        val history = EchoTextHistory().apply { record("I am going to the store today.") }
+        val engine = FakeEngine(nextResult = AstResult("I am going to the store today.", 10L, "FAKE"))
+        val (router, out) = runOneChunk(engine, config(echoTextFilterEnabled = false), history)
+        assertEquals(1, out.size)
+        assertEquals(0L, router.totalEchoDropped)
+    }
+
+    @Test
+    fun `streaming drops only the echo sentence and the last real sentence is final`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val history = EchoTextHistory().apply { record("I am going to the store today.") }
+            val engine = FakeStreamingEngine(
+                tokens = listOf("Hello there. ", "I am going to the store today."),
+            )
+            val (router, out) = runOneChunk(engine, config(streamingEnabled = true), history)
+            assertEquals(listOf("Hello there."), out.map { it.text })
+            assertTrue(out.single().isFinal)
+            assertEquals(1L, router.totalEchoDropped)
+        }
+
+    // ── Capa 3 — RMS slider hot-swap ─────────────────────────────────────
+
+    @Test
+    fun `setRmsThreshold applies to the next chunk without restart`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeEngine(nextResult = AstResult("ok", 1L, "FAKE"))
+            // seed=10 → constant 1000 → RMS 1000.
+            val router = AstChunkRouter(
+                bus, engine, config(rmsThreshold = 500.0),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.emit(chunk(seed = 10))
+            advanceUntilIdle()
+            assertEquals(1, engine.translateCalls.get())
+
+            router.setRmsThreshold(2000.0)
+            bus.emit(chunk(seed = 10, ts = 99L))
+            advanceUntilIdle()
+            assertEquals(1, engine.translateCalls.get())
+            assertEquals(1L, router.totalDiscardedLowEnergy)
             router.cancel()
         }
 }

@@ -383,6 +383,42 @@ data class AstConfig(
      * the official format regresses on device.
      */
     val useOfficialAstPrompt: Boolean = true,
+
+    /**
+     * Capa 1 anti-eco — discard audio that is not Spanish.
+     *
+     * With full-duplex ON and external hardware (ModMic USB + JBL BT) the
+     * mic re-captures Kokoro's English output. Neither HAL AEC (internal
+     * path only) nor WebRTC AECM (BT delay jitter) stopped the loop on
+     * device. When `true`, [activePrompt] appends [skipNonSpanishInstruction]
+     * so Gemma answers `English: SKIP` for non-Spanish audio, and
+     * `AstChunkRouter` drops any reply whose normalised text (trim, no
+     * punctuation, upper-case) is `SKIP` — in one-shot AND streaming, where
+     * the router holds sentence emission while the buffer is still an
+     * unambiguous prefix of `SKIP` so the token never reaches TTS.
+     *
+     * With `false`, the prompt and router behaviour are exactly the
+     * pre-anti-eco ones.
+     */
+    val skipNonSpanish: Boolean = true,
+
+    /** Appended to the active prompt when [skipNonSpanish] is on. */
+    val skipNonSpanishInstruction: String =
+        "If the audio is not in Spanish (for example, it is English speech), " +
+            "output exactly 'English: SKIP' and nothing else.",
+
+    /**
+     * Capa 2 anti-eco — drop translations that are textually similar to a
+     * sentence the TTS spoke within the last [echoWindowMs]. See
+     * [EchoTextHistory] for the similarity metric.
+     */
+    val echoTextFilterEnabled: Boolean = true,
+
+    /** Similarity (0..1) at or above which a translation counts as echo. */
+    val echoSimilarityThreshold: Double = 0.6,
+
+    /** How long a spoken TTS sentence stays eligible as an echo source. */
+    val echoWindowMs: Long = 15_000L,
 ) {
     init {
         require(modelDirPath.isNotBlank()) { "modelDirPath must not be blank" }
@@ -394,10 +430,27 @@ data class AstConfig(
         require(prompt.isNotBlank()) { "prompt must not be blank" }
         require(legacyPrompt.isNotBlank()) { "legacyPrompt must not be blank" }
         require(rmsThreshold >= 0.0) { "rmsThreshold must be >= 0, got $rmsThreshold" }
+        require(echoSimilarityThreshold in 0.0..1.0) {
+            "echoSimilarityThreshold must be in 0..1, got $echoSimilarityThreshold"
+        }
+        require(echoWindowMs >= 0L) { "echoWindowMs must be >= 0, got $echoWindowMs" }
     }
 
     val modelPath: String get() = "$modelDirPath/$modelFilename"
 
-    /** The prompt string actually sent to Gemma, resolved from [useOfficialAstPrompt]. */
-    val activePrompt: String get() = if (useOfficialAstPrompt) prompt else legacyPrompt
+    /**
+     * The prompt string actually sent to Gemma, resolved from
+     * [useOfficialAstPrompt], plus [skipNonSpanishInstruction] when
+     * [skipNonSpanish] is on.
+     */
+    val activePrompt: String get() {
+        val base = if (useOfficialAstPrompt) prompt else legacyPrompt
+        return if (skipNonSpanish) "$base $skipNonSpanishInstruction" else base
+    }
+
+    companion object {
+        /** UI slider bounds for [rmsThreshold] (Capa 3). */
+        const val RMS_SLIDER_MIN = 200.0
+        const val RMS_SLIDER_MAX = 4000.0
+    }
 }

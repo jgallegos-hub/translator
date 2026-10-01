@@ -100,6 +100,24 @@ a target ≤ 3 s.
   mic + USB hub conflict, (c) evaluate Cubilux ENC. See
   [`PROGRESS.md`](PROGRESS.md) "AEC investigación — resultados y
   estado actual" for the full write-up.
+- 🧪 **Software anti-echo — 3 layers** (October 1, 2026). ModMic USB 2
+  (cardioid + NC) + JBL Go 4 BT + full-duplex still looped with WebRTC
+  AECM both ON and OFF (voice peaks ~28 000 vs echo chunks
+  ~13 000–18 000). Echo is now attacked after ASR, each layer behind
+  its own flag:
+  1. **Skip non-Spanish** (`AstConfig.skipNonSpanish`, default ON) —
+     the prompt asks Gemma for `English: SKIP` on non-Spanish audio;
+     the router drops normalised `SKIP` replies. In streaming,
+     sentence emission is held while the buffer is still a prefix of
+     `SKIP`, so the token never reaches TTS.
+  2. **Echo text filter** (`echoTextFilterEnabled`, default ON,
+     `echoSimilarityThreshold = 0.6`, `echoWindowMs = 15_000`) —
+     translations similar (token Jaccard / containment) to a sentence
+     TTS spoke in the last 15 s are dropped.
+  3. **RMS threshold slider** (200–4000, default 500), hot-swapped
+     into the live router; RMS logged for every chunk.
+  UI counters: **Skipped non-Spanish**, **Echo dropped**, **Low RMS**.
+  **Device test pending.** See PROGRESS.md "Anti-eco en software".
 - ✅ **Post-closure streaming bug fix + stable-state validation**
   (commit `1d4f2e5`, August 2026). Field testing surfaced a phrase
   repetition bug — the app repeated the initial phrase and
@@ -495,6 +513,21 @@ everything under "3½. FASE 6 STREAMING".
   noticeably worse AST — Spanish echoes, garbled English, higher
   latency. Reverted to the Fase 0 `gemma4_4b_v09_...` model. See
   [PROGRESS.md](PROGRESS.md) for the full write-up.
+
+## Anti-echo flags and controls
+
+| Flag / control | Default | Where | Effect |
+|---|---|---|---|
+| `AstConfig.skipNonSpanish` | `true` | Toggle "Skip non-Spanish audio" (restarts AST router) | Appends `skipNonSpanishInstruction` to the prompt; replies normalising to `SKIP` are dropped (counter **Skipped non-Spanish**). OFF = prompt and behaviour exactly as before. |
+| `AstConfig.echoTextFilterEnabled` | `true` | Toggle "Echo text filter" (restarts AST router) | Drops translations similar to a sentence TTS spoke recently (counter **Echo dropped**). |
+| `AstConfig.echoSimilarityThreshold` | `0.6` | code | `max(Jaccard, containment)` on normalised tokens; containment only for candidates with ≥ 4 tokens. |
+| `AstConfig.echoWindowMs` | `15_000` | code | How long a spoken TTS sentence stays eligible as an echo source. |
+| `AstConfig.rmsThreshold` | `500` | Slider "RMS threshold" 200–4000 (hot-swap) | Chunks below it never reach Gemma (counter **Low RMS**). |
+
+Calibration: `adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`
+— the router logs `Chunk accepted: RMS …` / `Chunk discarded: low RMS …`
+for every chunk, plus `Chunk discarded: non-Spanish audio` and
+`Translation discarded: echo of TTS output … matched='…'`.
 
 ## Fase 7 — LiteRT-LM 0.15 upgrade attempt (August 2026, REVERTED)
 

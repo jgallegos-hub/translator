@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.travel2chicago.gemmapipeline.ast.AstChunkRouter
 import com.travel2chicago.gemmapipeline.ast.AstConfig
+import com.travel2chicago.gemmapipeline.ast.EchoTextHistory
 import com.travel2chicago.gemmapipeline.ast.GemmaAstEngine
 import com.travel2chicago.gemmapipeline.ast.LiteRtGemmaAstEngine
 import com.travel2chicago.gemmapipeline.audio.AecProcessor
@@ -92,6 +93,17 @@ data class GemmaPipelineUiState(
     val totalDiscardedLowEnergy: Long = 0,
     /** Replies dropped AFTER Gemma because they matched a meta-text pattern. */
     val totalDiscardedMeta: Long = 0,
+    /** Capa 1 anti-eco — replies discarded because Gemma answered `SKIP`. */
+    val totalSkippedNonSpanish: Long = 0,
+    /** Capa 2 anti-eco — sentences dropped as echo of recent TTS output. */
+    val totalEchoDropped: Long = 0,
+    /** Mirrors [AstConfig.skipNonSpanish]. Restarts the AST router on flip. */
+    val skipNonSpanish: Boolean = true,
+    /** Mirrors [AstConfig.echoTextFilterEnabled]. Restarts the AST router on flip. */
+    val echoTextFilterEnabled: Boolean = true,
+    /** Capa 3 — live RMS gate, mirrors [AstConfig.rmsThreshold]. Hot-swapped
+     *  into the running router (no restart). */
+    val rmsThreshold: Double = AstConfig().rmsThreshold,
     /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. Default matches
      *  the config default so first-render UI shows the actual runtime state. */
     val astStreamingEnabled: Boolean = true,
@@ -265,6 +277,13 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * processor synchronises internally.
      */
     @Volatile private var aecProcessor: AecProcessor? = null
+
+    /**
+     * Capa 2 anti-eco — sentences the TTS has spoken, fed from every
+     * `TtsAudioReady` in [handleEvent]. Lives here (not in the router) so it
+     * survives router restarts caused by UI toggles.
+     */
+    private val echoHistory = EchoTextHistory()
 
     /**
      * Re-entry guard for [loadGemmaEngine]. Must be set atomically before any
@@ -574,7 +593,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
         p.start(viewModelScope)
 
-        val r = AstChunkRouter(bus, g, astConfig, sampleRate = audioConfig.format.sampleRate)
+        val r = AstChunkRouter(
+            bus, g, astConfig, sampleRate = audioConfig.format.sampleRate,
+            echoHistory = echoHistory,
+        )
         r.start(viewModelScope)
         router = r
 
@@ -608,6 +630,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 astErrors = 0,
                 totalDiscardedLowEnergy = 0,
                 totalDiscardedMeta = 0,
+                totalSkippedNonSpanish = 0,
+                totalEchoDropped = 0,
                 englishMarkerMissing = 0,
                 translations = emptyList(),
                 ttsPlaying = false,
@@ -886,6 +910,42 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         restartAstRouter("useOfficialAstPrompt=$enabled")
     }
 
+    /**
+     * Capa 1 anti-eco toggle. Changes the prompt (SKIP instruction), so the
+     * router is rebuilt like the other prompt-affecting flags.
+     */
+    fun setSkipNonSpanish(enabled: Boolean) {
+        if (astConfig.skipNonSpanish == enabled) return
+        astConfig = astConfig.copy(skipNonSpanish = enabled)
+        _state.update { it.copy(skipNonSpanish = enabled) }
+        log("Skip non-Spanish toggled → $enabled")
+        restartAstRouter("skipNonSpanish=$enabled")
+    }
+
+    /** Capa 2 anti-eco toggle. The router reads the flag from its config. */
+    fun setEchoTextFilterEnabled(enabled: Boolean) {
+        if (astConfig.echoTextFilterEnabled == enabled) return
+        astConfig = astConfig.copy(echoTextFilterEnabled = enabled)
+        _state.update { it.copy(echoTextFilterEnabled = enabled) }
+        log("Echo text filter toggled → $enabled")
+        restartAstRouter("echoTextFilterEnabled=$enabled")
+    }
+
+    /**
+     * Capa 3 — RMS gate slider. Hot-swap into the live router (a restart on
+     * every slider drag would cancel the in-flight chunk). Quantised to 50
+     * to keep the log readable while dragging.
+     */
+    fun setRmsThreshold(value: Double) {
+        val clamped = value.coerceIn(AstConfig.RMS_SLIDER_MIN, AstConfig.RMS_SLIDER_MAX)
+        val quantised = Math.round(clamped / 50.0) * 50.0
+        if (astConfig.rmsThreshold == quantised) return
+        astConfig = astConfig.copy(rmsThreshold = quantised)
+        router?.setRmsThreshold(quantised)
+        _state.update { it.copy(rmsThreshold = quantised) }
+        log("RMS threshold → ${quantised.toInt()}")
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router
@@ -893,6 +953,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             oldRouter.cancel()
             val newRouter = AstChunkRouter(
                 bus, g, astConfig, sampleRate = audioConfig.format.sampleRate,
+                echoHistory = echoHistory,
             )
             newRouter.start(viewModelScope)
             router = newRouter
@@ -1082,6 +1143,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         astQueueSize = r?.queueSize ?: 0,
                         totalDiscardedLowEnergy = r?.totalDiscardedLowEnergy ?: it.totalDiscardedLowEnergy,
                         totalDiscardedMeta = r?.totalDiscardedMeta ?: it.totalDiscardedMeta,
+                        totalSkippedNonSpanish = r?.totalSkippedNonSpanish ?: it.totalSkippedNonSpanish,
+                        totalEchoDropped = r?.totalEchoDropped ?: it.totalEchoDropped,
                         englishMarkerMissing = r?.totalEnglishMarkerMissing ?: it.englishMarkerMissing,
                         firstTokenLatencyMs = r?.firstTokenLatencyMs ?: it.firstTokenLatencyMs,
                     )
@@ -1102,6 +1165,9 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 log("[ERROR] AST: ${event.message}")
             }
             is AudioEvent.TtsAudioReady -> {
+                // Capa 2: remember what reached the speaker so the AST router
+                // can recognise it if the mic re-captures it.
+                echoHistory.record(event.sourceText)
                 val tr = ttsRouter
                 val durationMs = if (event.sampleRate > 0)
                     event.samples.size * 1000 / event.sampleRate else 0
@@ -1164,7 +1230,22 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 log("Device disconnected: ${event.description} (id=${event.deviceId})")
                 refreshDevices()
             }
-            is AudioEvent.EngineStatus -> log(event.message)
+            is AudioEvent.EngineStatus -> {
+                // Router filters (low RMS, SKIP, echo, meta) drop chunks without
+                // a TranslationReady, so refresh the discard counters here too.
+                val r = router
+                if (r != null) {
+                    _state.update {
+                        it.copy(
+                            totalDiscardedLowEnergy = r.totalDiscardedLowEnergy,
+                            totalDiscardedMeta = r.totalDiscardedMeta,
+                            totalSkippedNonSpanish = r.totalSkippedNonSpanish,
+                            totalEchoDropped = r.totalEchoDropped,
+                        )
+                    }
+                }
+                log(event.message)
+            }
         }
     }
 
