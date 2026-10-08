@@ -1806,3 +1806,61 @@ Research de alternativas (eco + latencia) en `docs/research-eco-latencia-2026-10
    rechazos con doble habla.
 3. Si funcionan: dataset más largo para confirmar, luego integrar en la app.
 4. Keep-alive del A2DP (recorte de inicio de audio).
+
+### BT keep-alive + AEC3 offline (8 octubre 2026, continuación)
+
+**BT keep-alive** (`TtsAudioPlayer`, switch en UI, default ON): un hilo escribe
+silencio a ritmo real mientras no hay TTS, con ocupación del buffer ≤ 40 ms
+(medida con `playbackHeadPosition`) para no añadir latencia. Dataset 2 (114 s,
+con keep-alive) vs dataset 1:
+
+| | Dataset 1 (sin keep-alive) | Dataset 2 (con keep-alive) |
+|---|---|---|
+| Correlación bloque TTS ↔ mic | p50 0.68, dos bloques ≈ 0 | **p50 0.93, mín 0.76** |
+| Delay altavoz→mic | caótico 300–1 600 ms | **estable 520–580 ms** |
+
+Chirps siguen sin captarse (mic en piso de ruido aunque se oyen): el
+noise-canceling del ModMic suprime tonos puros. Se descartan; el propio TTS
+mide el delay.
+
+**E3 — gate por correlación (offline): no concluyente / insuficiente.**
+GCC-PHAT por ventanas no separa eco de voz (null honesto con TTS ajeno
+igual de alto). Envolvente espectral por bandas: 35 % eco detectado con 6 %
+falsos positivos. Además, un gate sólo detecta: en doble habla descartaría la
+voz del usuario. Se prioriza restar (AEC3) sobre detectar.
+
+**E2 — AEC3 offline** (`tools/aec3-offline/`, runner Java sobre
+`cn.enaium.webrtc.aec3:webrtc-aec3-kmp-jvm:1.0.3`):
+
+| Pre-alineación | Delay estimado por AEC3 | Total | Reducción en ventanas de eco |
+|---|---|---|---|
+| 0 ms (estilo AECM) | 84 ms | — | 0.6 dB (no converge) |
+| 300–500 ms | 204…4 ms | **504 ms siempre** | **~11–12 dB** (media) |
+
+- AEC3 encuentra el eco sin ambigüedad en cuanto la pre-alineación deja el
+  residual dentro de su ventana: el total siempre da **504 ms**.
+- **RMS mediano del eco: 5 466 → 101 (~-35 dB)**; voz sin eco intacta
+  (4 025 → 3 946). El "11 dB" medio lo arrastran los tramos de doble habla.
+- Con AEC3, el **gate RMS vuelve a ser útil**: umbral 800 bloquea 76 % de las
+  ventanas de eco perdiendo 6.7 % de ventanas de voz (colas bajas).
+- **Escucha (Abraham):** el eco queda como murmullo no entendible y la voz se
+  oye clara — **pero en doble habla AEC3 también atenúa la voz** (supresor no
+  lineal). Riesgo real: lo que el usuario dice encima del TTS se pierde.
+- Nota: en la sesión en vivo del dataset 2 AEC3 no estaba activo; la frase no
+  traducida en doble habla vino de otra causa (probable: filtro de texto
+  descartó el chunk mixto, o Gemma tradujo sólo el eco). Sin logcat de esa
+  sesión.
+
+Restricción técnica: el AAR Android de `webrtc-aec3-kmp` está compilado con
+Kotlin 2.4; el proyecto usa 2.3.0. Plan: `-Xskip-metadata-version-check`;
+plan B subir Kotlin; plan C JNI propio sobre el `.so`.
+
+### Siguiente
+1. **Métrica de doble habla offline**: insertar voz conocida sobre tramos de
+   eco y medir cuánto la atenúa AEC3; afinar el supresor vía
+   `createAec3ConfigFromJson` (detección de near-end dominante) para preservar
+   la voz.
+2. **Integrar AEC3 en la app** (reemplaza AECM POC): pre-alineación ~380 ms,
+   keep-alive ON, RMS ~800, filtro de texto como red final.
+3. Prueba en dispositivo: ¿loop sin filtro de texto?, ¿Gemma deja de gastar
+   ~3 s por eco?, ¿se preserva la voz en doble habla?

@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "TtsAudioPlayer"
+private const val KEEPALIVE_CHUNK_MS = 20
+private const val KEEPALIVE_MAX_QUEUED_MS = 40
 
 /**
  * Abstraction over the sink [TtsRouter] writes PCM to. `TtsAudioPlayer` is
@@ -102,6 +104,26 @@ class TtsAudioPlayer(
     private var track: AudioTrack? = null
     private val mutex = Mutex()
 
+    /**
+     * Bluetooth keep-alive. El A2DP se "duerme" tras unos segundos de
+     * silencio y, al despertar, recorta o retrasa el inicio del audio
+     * (device test 2026-10-08: sólo 2 de 10 chirps sonaron; el delay
+     * altavoz→mic saltaba de ~0.5 s a ~1.5 s). Con esto ON, un hilo escribe
+     * silencio a ritmo real mientras no hay TTS, manteniendo la ocupación
+     * del buffer bajo [KEEPALIVE_MAX_QUEUED_MS] para no añadir latencia.
+     */
+    @Volatile private var keepAliveEnabled: Boolean = true
+    @Volatile private var keepAliveThread: Thread? = null
+
+    /** Frames entregados al AudioTrack (voz + silencio). Sólo se toca con
+     *  [mutex] tomado. Junto con `playbackHeadPosition` da la ocupación. */
+    private var framesWritten: Long = 0L
+
+    fun setKeepAlive(enabled: Boolean) {
+        keepAliveEnabled = enabled
+        Log.i(TAG, "BT keep-alive → $enabled")
+    }
+
     /** Utterance-bookend depth. `beginUtterance` increments, `endUtterance`
      *  decrements (clamped at 0). While `> 0`, per-call `play()` DOES NOT
      *  touch [ttsPlaying] — the bookends own the flag for the entire
@@ -138,7 +160,9 @@ class TtsAudioPlayer(
             .build()
         t.play()
         track = t
+        framesWritten = 0L
         isInitialized = true
+        startKeepAlive()
         Log.i(TAG, "AudioTrack started (state=${t.state}, playState=${t.playState})")
     }
 
@@ -205,13 +229,46 @@ class TtsAudioPlayer(
                     return@withLock
                 }
                 off += written
+                framesWritten += written
             }
         } finally {
             if (standalone) ttsPlaying.set(false)
         }
     }
 
+    private fun startKeepAlive() {
+        if (keepAliveThread != null) return
+        val silence = ShortArray(sampleRate * KEEPALIVE_CHUNK_MS / 1000)
+        val maxQueued = sampleRate.toLong() * KEEPALIVE_MAX_QUEUED_MS / 1000
+        keepAliveThread = Thread({
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(KEEPALIVE_CHUNK_MS.toLong() / 2)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                val t = track ?: continue
+                if (!keepAliveEnabled) continue
+                // Never block a real play(): skip this tick if it holds the lock.
+                if (!mutex.tryLock()) continue
+                try {
+                    val played = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                    if (framesWritten - played < maxQueued) {
+                        val n = t.write(silence, 0, silence.size, AudioTrack.WRITE_NON_BLOCKING)
+                        if (n > 0) framesWritten += n
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "keep-alive write failed: ${e.message}")
+                } finally {
+                    mutex.unlock()
+                }
+            }
+        }, "tts-bt-keepalive").apply { isDaemon = true; start() }
+    }
+
     override fun close() {
+        keepAliveThread?.interrupt()
+        keepAliveThread = null
         runCatching { track?.stop() }
         runCatching { track?.release() }
         track = null

@@ -346,6 +346,11 @@ fun GemmaPipelineScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
+                SwitchRow(
+                    label = "BT keep-alive (silencio continuo: evita que el JBL se duerma)",
+                    checked = state.btKeepAlive,
+                    onCheckedChange = { viewModel.setBtKeepAlive(it) },
+                )
                 // Experimento E0/E1 — dataset de eco (mic + referencia TTS)
                 // y chirps para medir el delay altavoz→mic del Bluetooth.
                 Row(

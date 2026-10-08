@@ -22,3 +22,5 @@ captures/
 # Device test logcat captures (contain spoken transcripts)
 gemma-pipeline-poc/tools/logs/
 gemma-pipeline-poc/tools/datasets/
+gemma-pipeline-poc/tools/aec3-offline/build/
+gemma-pipeline-poc/tools/aec3-offline/.gradle/

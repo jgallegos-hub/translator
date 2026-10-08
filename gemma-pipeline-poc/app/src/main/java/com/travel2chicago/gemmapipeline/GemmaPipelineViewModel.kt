@@ -112,6 +112,8 @@ data class GemmaPipelineUiState(
     val echoDatasetPath: String? = null,
     /** True mientras suena la ráfaga de chirps de calibración (E1). */
     val chirpBurstRunning: Boolean = false,
+    /** Keep-alive del A2DP (silencio continuo para que el BT no se duerma). */
+    val btKeepAlive: Boolean = true,
     /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. Default matches
      *  the config default so first-render UI shows the actual runtime state. */
     val astStreamingEnabled: Boolean = true,
@@ -1031,6 +1033,13 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(chirpBurstRunning = false) }
             }
         }
+    }
+
+    /** Hot-swap: el hilo de keep-alive lee el flag en cada tick. */
+    fun setBtKeepAlive(enabled: Boolean) {
+        ttsPlayer.setKeepAlive(enabled)
+        _state.update { it.copy(btKeepAlive = enabled) }
+        log("BT keep-alive toggled → $enabled")
     }
 
     private fun restartAstRouter(reason: String) {
