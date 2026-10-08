@@ -1746,3 +1746,63 @@ Seguimos en **0.12.0**. **No actualizar a 0.17.x.** Esperar a **0.18
 estable** (PR #3749: audio encoder en GPU durante streaming, hoy solo en
 nightly). Recordatorio: el intento de Fase 7 con 0.15 se revirtió
 (GPU audio nunca se activó, regresión de latencia, OOM).
+
+## Prueba en dispositivo anti-eco + dataset de eco (8 octubre 2026)
+
+Setup: Xiaomi 15T Pro, ModMic USB 2 por hub, JBL Go 4 BT cerca, full-duplex ON,
+RMS 500. Logs capturados por **adb sobre Wi-Fi** (el teléfono tiene un solo
+USB-C: o PC o hub+mic) con `tools/device_test.py`; buffer de logcat a 16 MB.
+
+### Resultados por capa
+
+| Ronda | Config | Resultado |
+|---|---|---|
+| r0 | todo OFF | **Loop confirmado**: una frase ("Buenas tardes, iniciando prueba") se re-tradujo 3+ veces degradándose ("Starting test" → "Thoren test" → "Born test"). |
+| r1 | SKIP ON + eco texto ON | **Loop cortado.** Echo dropped 8/8 ecos completos (sim 0.71–1.00). Chunks mixtos (eco + frase nueva) bien manejados. SKIP: 0. |
+| r2 | solo SKIP | **Loop de vuelta** en segundos ("…test number three…" ×3). SKIP: 0. |
+| r3 | solo eco texto | Omitida: equivalente a r1 porque SKIP nunca se activó. |
+
+- **Capa 1 (SKIP): no funciona.** Gemma no clasifica su propio eco como
+  no-español: lo "traduce" de inglés a inglés. Se puede dejar OFF.
+- **Capa 2 (eco por texto): funciona y es la que corta el loop.** Limitaciones:
+  (a) se cuelan fragmentos cortos (<4 tokens) de eco ("It seems like it" ×3),
+  porque la contención sólo aplica desde 4 tokens; (b) **cada eco igual consume
+  ~2–3.5 s de Gemma antes de descartarse** → retrasa las frases reales.
+- **Capa 3 (RMS): inútil con este setup.** RMS por chunk de eco 3 981–4 641 vs
+  voz 3 468–4 610; picos ~27 500–29 000 en ambos. El eco llega con la misma
+  energía que la voz.
+- **Latencia:** primer token estable ~1.1–1.2 s. Primer audio p50 3.1 s en r0
+  (frases cortas) vs **p50 5.2 s / p90 11.7 s en r1**: frases largas (Kokoro
+  hasta 4.6 s de audio por oración) + cola ocupada por chunks de eco en Gemma.
+
+### Dataset de eco (E0/E1) — `EchoDatasetRecorder`
+
+Nuevo modo en la app: **⏺ Grabar dataset eco** escribe `mic.wav` (16 kHz,
+post-decimación, pre-AEC), `ref.wav` (PCM exacto entregado al AudioTrack,
+remuestreado a 16 kHz y alineado al timeline del mic) y `events.csv`. Botón
+**Chirps ×10** para calibración. Análisis offline: `tools/analyze_dataset.py`
+(GCC-PHAT; validado con dataset sintético: recupera delays exactos).
+
+Primer dataset (106 s, 10 chirps, 9 bloques de TTS):
+- **Chirps: sólo 2 de 10 sonaron** en el JBL (confirmado de oído). El A2DP se
+  "duerme" en silencio y recorta el inicio del audio al despertar — un chirp de
+  300 ms se pierde entero. **Implicación: probablemente también se recorta el
+  inicio de frases del TTS tras un silencio.** Pendiente: keep-alive del stream
+  BT (silencio continuo / tono inaudible) y re-verificar.
+- **Delay altavoz→mic medido con la propia voz del TTS** (3 segmentos con
+  confianza alta): **543 / 494 / 575 ms** → ~0.5–0.58 s, spread ~80 ms. Mucho
+  más que los 200 ms hardcodeados del AECM (explica su fallo). Razonablemente
+  predecible → AEC3 con pre-alineación ~540 ms parece viable. Muestra pequeña.
+- El eco llega fuerte (~-15 a -30 dBFS) y **correlaciona claramente** con la
+  referencia → favorece el **gate por correlación pre-Gemma**.
+- No hacen falta chirps: el TTS mismo sirve para estimar el delay en vivo.
+
+Research de alternativas (eco + latencia) en `docs/research-eco-latencia-2026-10.md`.
+
+### Siguiente
+1. **E2 — AEC3 offline** (`webrtc-aec3-kmp`, JVM) sobre el dataset con
+   pre-alineación ~540 ms: medir supresión.
+2. **E3 — gate por correlación offline**: tasa de detección de eco y falsos
+   rechazos con doble habla.
+3. Si funcionan: dataset más largo para confirmar, luego integrar en la app.
+4. Keep-alive del A2DP (recorte de inicio de audio).

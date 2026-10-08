@@ -346,6 +346,44 @@ fun GemmaPipelineScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
+                // Experimento E0/E1 — dataset de eco (mic + referencia TTS)
+                // y chirps para medir el delay altavoz→mic del Bluetooth.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.echoDatasetRecording) {
+                        Button(
+                            onClick = { viewModel.stopEchoDataset() },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("⏹ Detener dataset") }
+                    } else {
+                        OutlinedButton(
+                            onClick = { viewModel.startEchoDataset() },
+                            enabled = state.pipelineRunning,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("⏺ Grabar dataset eco") }
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.playCalibrationChirps() },
+                        enabled = state.pipelineRunning && !state.chirpBurstRunning,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(if (state.chirpBurstRunning) "Chirps…" else "Chirps ×10") }
+                }
+                Text(
+                    when {
+                        state.echoDatasetRecording ->
+                            "Grabando mic + referencia TTS: ${"%.0f".format(state.echoDatasetSeconds)} s"
+                        state.echoDatasetPath != null ->
+                            "Último dataset (${"%.0f".format(state.echoDatasetSeconds)} s): ${state.echoDatasetPath}"
+                        else ->
+                            "Dataset de eco: graba mic (16 kHz, pre-AEC) + lo que suena por el " +
+                                "altavoz. Chirps: 10 tonos de 300 ms para medir el delay del BT."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
                 SwitchRow(
                     label = "Audio-after-text (Google's recommended order)",
                     checked = state.audioAfterText,

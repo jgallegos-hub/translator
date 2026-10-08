@@ -16,6 +16,7 @@ import com.travel2chicago.gemmapipeline.audio.AudioEngineConfig
 import com.travel2chicago.gemmapipeline.audio.AudioEvent
 import com.travel2chicago.gemmapipeline.audio.AudioEventBus
 import com.travel2chicago.gemmapipeline.audio.AudioPlaybackManager
+import com.travel2chicago.gemmapipeline.audio.EchoDatasetRecorder
 import com.travel2chicago.gemmapipeline.audio.NativeAudioEngine
 import com.travel2chicago.gemmapipeline.audio.VadState
 import com.travel2chicago.gemmapipeline.chunker.ChunkerConfig
@@ -30,6 +31,7 @@ import com.travel2chicago.gemmapipeline.vad.SileroVadModel
 import com.travel2chicago.gemmapipeline.vad.SileroVadOnnxModel
 import com.travel2chicago.gemmapipeline.vad.VadConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,6 +106,12 @@ data class GemmaPipelineUiState(
     /** Capa 3 — live RMS gate, mirrors [AstConfig.rmsThreshold]. Hot-swapped
      *  into the running router (no restart). */
     val rmsThreshold: Double = AstConfig().rmsThreshold,
+    /** Experimento E0/E1 — grabación del dataset de eco (mic + referencia TTS). */
+    val echoDatasetRecording: Boolean = false,
+    val echoDatasetSeconds: Double = 0.0,
+    val echoDatasetPath: String? = null,
+    /** True mientras suena la ráfaga de chirps de calibración (E1). */
+    val chirpBurstRunning: Boolean = false,
     /** Fase 6 Stage A — mirrors [AstConfig.streamingEnabled]. Default matches
      *  the config default so first-render UI shows the actual runtime state. */
     val astStreamingEnabled: Boolean = true,
@@ -285,6 +293,9 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val echoHistory = EchoTextHistory()
 
+    /** Experimento E0/E1 — grabador activo del dataset de eco, o null. */
+    @Volatile private var datasetRecorder: EchoDatasetRecorder? = null
+
     /**
      * Re-entry guard for [loadGemmaEngine]. Must be set atomically before any
      * other check so two concurrent callers can't both reach `LiteRtGemmaAstEngine.load()`
@@ -321,6 +332,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         // are lost; that's an accepted trade-off here.
         ttsRouter?.cancel()
         router?.cancel()
+        stopEchoDataset()
         pipeline?.stop()
         captureManager.stop()
         playbackManager.stop()
@@ -674,6 +686,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 log("TTS router drained $drained pending translations before stop")
             }
         }
+        stopEchoDataset()
         pipeline?.stop()
         captureManager.stop()
         _state.update {
@@ -946,6 +959,80 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         log("RMS threshold → ${quantised.toInt()}")
     }
 
+    // ── Experimento E0/E1: dataset de eco + chirps de calibración ──────────
+
+    /**
+     * Empieza a grabar `mic.wav` + `ref.wav` + `events.csv` en
+     * `<externalFiles>/echo_dataset/<timestamp>/`. Requiere el pipeline
+     * corriendo (el mic sólo llega con la captura activa). Ver
+     * [EchoDatasetRecorder] para la alineación de la referencia.
+     */
+    fun startEchoDataset() {
+        if (datasetRecorder != null) return
+        val p = pipeline
+        if (p == null || !_state.value.pipelineRunning) {
+            log("[WARN] Echo dataset: inicia el pipeline primero")
+            return
+        }
+        val base = getApplication<Application>().getExternalFilesDir(null)
+            ?: getApplication<Application>().filesDir
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val dir = File(base, "echo_dataset/$stamp").apply { mkdirs() }
+        val rec = try {
+            EchoDatasetRecorder(dir)
+        } catch (t: Throwable) {
+            log("[ERROR] Echo dataset: no se pudo crear ${dir.absolutePath}: ${t.message}")
+            return
+        }
+        datasetRecorder = rec
+        p.setDatasetRecorder(rec)
+        ttsPlayer.setDatasetRecorder(rec)
+        _state.update {
+            it.copy(echoDatasetRecording = true, echoDatasetSeconds = 0.0, echoDatasetPath = dir.absolutePath)
+        }
+        log("Echo dataset recording → ${dir.absolutePath}")
+    }
+
+    fun stopEchoDataset() {
+        val rec = datasetRecorder ?: return
+        datasetRecorder = null
+        pipeline?.setDatasetRecorder(null)
+        ttsPlayer.setDatasetRecorder(null)
+        rec.close()
+        _state.update { it.copy(echoDatasetRecording = false, echoDatasetSeconds = rec.micSeconds) }
+        log("Echo dataset saved (${"%.1f".format(rec.micSeconds)} s) → ${rec.dir.absolutePath}")
+    }
+
+    /**
+     * E1 — reproduce [count] chirps de 300 ms separados [intervalMs] por el
+     * mismo AudioTrack que Kokoro, marcando cada uno en `events.csv`. Offline,
+     * GCC-PHAT entre `ref.wav` y `mic.wav` da el delay altavoz→mic real.
+     */
+    fun playCalibrationChirps(count: Int = 10, intervalMs: Long = 2_000L) {
+        if (_state.value.chirpBurstRunning) return
+        if (!ttsPlayer.isInitialized) {
+            log("[WARN] Chirps: el player TTS no está inicializado (inicia el pipeline)")
+            return
+        }
+        _state.update { it.copy(chirpBurstRunning = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val chirp = EchoDatasetRecorder.chirp(ttsConfig.sampleRate)
+            try {
+                repeat(count) { i ->
+                    datasetRecorder?.mark("chirp_${i + 1}")
+                    ttsPlayer.play(chirp)
+                    delay(intervalMs)
+                }
+                log("Calibration chirps done ($count)")
+            } catch (t: Throwable) {
+                log("[ERROR] Chirps: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                _state.update { it.copy(chirpBurstRunning = false) }
+            }
+        }
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router
@@ -1102,6 +1189,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                         mutedMicFrames = p?.totalMutedFrames ?: it.mutedMicFrames,
                         webrtcAecFarendFrames = aec?.totalFarendFrames ?: 0L,
                         webrtcAecNearendFrames = aec?.totalNearendFrames ?: 0L,
+                        echoDatasetSeconds = datasetRecorder?.micSeconds ?: it.echoDatasetSeconds,
                     )
                 }
             }

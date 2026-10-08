@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
 import com.travel2chicago.gemmapipeline.audio.AecProcessor
+import com.travel2chicago.gemmapipeline.audio.EchoDatasetRecorder
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
@@ -90,6 +91,14 @@ class TtsAudioPlayer(
         aecProcessor = processor
     }
 
+    /** Experimento E0/E1: cuando no es null, cada buffer reproducido se copia
+     *  como referencia al dataset de eco. */
+    @Volatile private var datasetRecorder: EchoDatasetRecorder? = null
+
+    fun setDatasetRecorder(recorder: EchoDatasetRecorder?) {
+        datasetRecorder = recorder
+    }
+
     private var track: AudioTrack? = null
     private val mutex = Mutex()
 
@@ -171,6 +180,7 @@ class TtsAudioPlayer(
         aecProcessor?.let { proc ->
             if (proc.isInitialized) proc.bufferFarend(pcm, sampleRate)
         }
+        datasetRecorder?.onRef(pcm, sampleRate)
         // If we're INSIDE a beginUtterance/endUtterance bookend, the flag
         // is owned by that pair for the entire utterance — do not touch
         // it here or adjacent per-sentence play() calls would drop the

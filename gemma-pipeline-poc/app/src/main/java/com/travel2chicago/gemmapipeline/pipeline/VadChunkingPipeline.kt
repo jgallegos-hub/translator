@@ -2,6 +2,7 @@ package com.travel2chicago.gemmapipeline.pipeline
 
 import android.util.Log
 import com.travel2chicago.gemmapipeline.audio.AecProcessor
+import com.travel2chicago.gemmapipeline.audio.EchoDatasetRecorder
 import com.travel2chicago.gemmapipeline.audio.AudioEvent
 import com.travel2chicago.gemmapipeline.audio.AudioEventBus
 import com.travel2chicago.gemmapipeline.audio.AudioFormat
@@ -119,6 +120,14 @@ class VadChunkingPipeline(
     /** Set/clear the software AEC processor. Safe to call while the
      *  pipeline is running — the read in [handleAudioData] is volatile
      *  and both branches are correct. */
+    /** Experimento E0/E1: recibe la captura del mic a 16 kHz (post-decimación,
+     *  pre-AEC) para el dataset de eco. Se graba aunque el VAD esté muteado. */
+    @Volatile private var datasetRecorder: EchoDatasetRecorder? = null
+
+    fun setDatasetRecorder(recorder: EchoDatasetRecorder?) {
+        datasetRecorder = recorder
+    }
+
     fun setAecProcessor(processor: AecProcessor?) {
         aecProcessor = processor
         Log.i(TAG, "setAecProcessor: ${if (processor == null) "cleared" else "attached"}")
@@ -255,6 +264,14 @@ class VadChunkingPipeline(
         // TtsAudioPlayer bookends still fire and still write the shared
         // ttsPlaying flag, so the UI stays accurate — we just stop acting
         // on the flag here in the mic path.
+        // Decimate to the target Silero rate if Oboe opened the device at a
+        // higher native rate (e.g. 48 kHz → 16 kHz with factor 3 by mean of N).
+        // Done before the mute check so the echo-dataset tap also sees the
+        // mic while half-duplex mutes the VAD.
+        val pcmDecimated = if (decimationFactor > 1) decimateMean(event.samples, decimationFactor)
+                           else event.samples
+        datasetRecorder?.onMic(pcmDecimated)
+
         val muted = !fullDuplexMode && ttsPlaying?.get() == true
         if (muted != wasMuted) {
             wasMuted = muted
@@ -281,11 +298,6 @@ class VadChunkingPipeline(
             mutedFramesDropped += 1
             return
         }
-
-        // Decimate to the target Silero rate if Oboe opened the device at a
-        // higher native rate (e.g. 48 kHz → 16 kHz with factor 3 by mean of N).
-        val pcmDecimated = if (decimationFactor > 1) decimateMean(event.samples, decimationFactor)
-                           else event.samples
 
         // Optional software AEC. Runs BEFORE the reassembler so Silero sees
         // the echo-cancelled signal. Buffers internally in 10 ms frames —

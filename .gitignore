@@ -18,3 +18,7 @@ wheels/
 captures/
 .cxx/
 **/.kotlin/
+
+# Device test logcat captures (contain spoken transcripts)
+gemma-pipeline-poc/tools/logs/
+gemma-pipeline-poc/tools/datasets/
