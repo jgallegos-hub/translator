@@ -1908,3 +1908,39 @@ con ~1.2 s de delay (el stack BT trata el stream en cero como idle).
 3. Limpieza: quitar el AECM POC (`AecProcessor` + `libaecm-release.aar`).
 4. Pendientes previos: 8 tests preexistentes, conflicto hub/mic (mitigado con
    adb Wi-Fi), slang mexicano.
+
+### Sesión larga de validación con defaults nuevos (8 octubre 2026)
+
+~4.5 min, arranque en frío, ModMic + JBL + full-duplex, defaults (keep-alive
+dither ON, AEC3 ON, RMS 800, filtro de texto ON, SKIP OFF), con doble habla.
+
+- **Eco resuelto:** sin feedback loop en toda la sesión. AEC3 convergió en
+  vivo en ~1.5 min (ERLE 0.2 → 6–7 dB, ERL -30 → +10.8, delay estable
+  ~500–530 ms total). **4 ecos llegaron a Gemma** (casi todos mientras AEC3
+  convergía) y el **filtro de texto atrapó los 4** — las capas se complementan.
+- **Doble habla preservada:** frases dichas encima del TTS se tradujeron
+  ("Now I am speaking, while he is speaking", "I see that I interrupted…").
+- 40 chunks, 31 oraciones traducidas, 0 errores, 0 drops en colas AST/TTS,
+  0 crashes. Primer audio llegó a tiempo desde el arranque.
+- **Nuevo problema principal: latencia por cola de TTS.** Primer audio p50
+  **7.1 s**, p90 **12.9 s** (frase aislada: ~2.3–3.5 s). Hablando seguido se
+  generan traducciones más rápido de lo que Kokoro las dice; cada una espera
+  a las anteriores. El "corte" percibido por el usuario no fue cancelación
+  (sin cancels/drops en logs): son huecos entre oraciones cuando Kokoro
+  sintetiza la siguiente más lento de lo que dura la anterior.
+- **Alucinación:** "The sun is shining today" (no dicho) — probable murmullo de
+  eco residual que superó RMS 800 y Gemma completó con una frase inventada.
+- Frase larga partida en el límite de 6 s del chunker ("…estimated" + "time")
+  — no se perdió, salió como chunk aparte.
+
+**Decisión de producto (Abraham):** no descartar contenido — el TTS dice todo
+en orden (sin barge-in que tire traducciones). La latencia se ataca acelerando
+la síntesis/reproducción, no saltándose frases.
+
+### Siguiente
+1. Latencia de cola: TTS más rápido (Kokoro: trocear 1.ª cláusula, velocidad;
+   bake-off Supertonic/Piper/Inflect-Nano en el teléfono), solapar síntesis de
+   la oración N+1 con la reproducción de la N.
+2. Robustez de Gemma ante eco residual / ruido (alucinaciones): ver
+   experimento de prompt con etiqueta de idioma y config de muestreo.
+3. Limpieza AECM POC; 8 tests preexistentes; slang mexicano.
