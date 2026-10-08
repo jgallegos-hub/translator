@@ -39,6 +39,9 @@ class EchoDatasetRecorder(val dir: File) {
     private val mic = WavStreamWriter(File(dir, "mic.wav"), SAMPLE_RATE)
     private val ref = WavStreamWriter(File(dir, "ref.wav"), SAMPLE_RATE)
     private val events = File(dir, "events.csv").bufferedWriter()
+    /** Salida del AEC software (si está activo), alineada con mic.wav. */
+    private val aecOut = WavStreamWriter(File(dir, "aec_out.wav"), SAMPLE_RATE)
+    private var aecOutSamples = 0L
 
     private var micSamples = 0L
     private var refSamples = 0L
@@ -58,6 +61,16 @@ class EchoDatasetRecorder(val dir: File) {
             if (isClosed || pcm16k.isEmpty()) return
             mic.write(pcm16k)
             micSamples += pcm16k.size
+        }
+    }
+
+    /** Output of the software AEC (16 kHz). Padded so it stays aligned with mic.wav
+     *  (the AEC's 10 ms framing delays its output by < 1 frame). */
+    fun onAecOut(pcm16k: ShortArray) {
+        synchronized(lock) {
+            if (isClosed || pcm16k.isEmpty()) return
+            aecOut.write(pcm16k)
+            aecOutSamples += pcm16k.size
         }
     }
 
@@ -89,6 +102,7 @@ class EchoDatasetRecorder(val dir: File) {
             padRefTo(micSamples)
             runCatching { mic.close() }
             runCatching { ref.close() }
+            runCatching { aecOut.close() }
             runCatching { events.close() }
             Log.i(TAG, "Echo dataset closed: ${"%.1f".format(micSamples.toDouble() / SAMPLE_RATE)} s " +
                 "in ${dir.absolutePath}")

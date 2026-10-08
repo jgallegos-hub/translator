@@ -41,12 +41,20 @@ public class Aec3Offline {
         Path dir = Paths.get(a[0]);
         int preMs = Integer.parseInt(a[1]);
         int bufMs = a.length > 2 ? Integer.parseInt(a[2]) : -1;
-        short[] mic = readWav(dir.resolve("mic.wav")), ref = readWav(dir.resolve("ref.wav"));
+        String micName = System.getProperty("mic", "mic.wav");
+        short[] mic = readWav(dir.resolve(micName)), ref = readWav(dir.resolve("ref.wav"));
         int pre = preMs * SR / 1000, n = Math.min(mic.length, ref.length) / F;
 
-        Aec3Config cfg = Aec3_jvmKt.createAec3Config();
-        cfg.setFilterInitialStateSeconds(0.5f);
-        cfg.setFilterConservativeInitialPhase(false);
+        String cfgPath = System.getProperty("cfg");
+        Aec3Config cfg = cfgPath != null
+            ? Aec3_jvmKt.createAec3ConfigFromJson(new String(Files.readAllBytes(Paths.get(cfgPath))))
+            : Aec3_jvmKt.createAec3Config();
+        if (cfg == null) throw new IllegalArgumentException("config JSON inválido: " + cfgPath);
+        if (cfgPath == null) {
+            cfg.setFilterInitialStateSeconds(0.5f);
+            cfg.setFilterConservativeInitialPhase(false);
+        }
+        if (System.getProperty("dumpcfg") != null) { System.out.println(cfg.toJson()); return; }
         Aec3Environment env = Aec3_jvmKt.createAec3Environment();
         Aec3Factory fac = Aec3_jvmKt.createAec3FactoryWithConfig(cfg);
         Aec3EchoControl ec = Aec3_jvmKt.createAec3EchoControl(fac, env, SR, 1, 1);
@@ -71,7 +79,7 @@ public class Aec3Offline {
                     m.getEchoReturnLoss(), m.getEchoReturnLossEnhancement(), m.getDelayMs());
             }
         }
-        writeWav(dir.resolve("out_pre" + preMs + ".wav"), out);
+        writeWav(dir.resolve(System.getProperty("out", "out_pre" + preMs + ".wav")), out);
 
         // Regiones: "eco" = ref activa ~540 ms antes (ventanas de 100 ms); "limpio" = sin ref en 0.3–1.6 s previos.
         int W = SR / 10, echoLag = 540 * SR / 1000;

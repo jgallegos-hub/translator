@@ -75,7 +75,7 @@ private const val TAG = "AecProcessor"
  * is either (a) tune delay per-device, or (b) upgrade to WebRTC AEC3
  * (better delay tolerance for BT A2DP).
  */
-class AecProcessor : AutoCloseable {
+class AecProcessor : SoftwareEchoCanceller {
 
     private val aecLock = Any()
     @Volatile private var aec: AEC? = null
@@ -99,18 +99,18 @@ class AecProcessor : AutoCloseable {
     private val farendFramesFed = AtomicLong(0)
     private val nearendFramesProcessed = AtomicLong(0)
 
-    val isInitialized: Boolean get() = aec != null
+    override val isInitialized: Boolean get() = aec != null
 
     /**
      * Diagnostic: total 10 ms far-end frames handed to the WebRTC AECM
      * since [initialize] (or the last [reset]).
      */
-    val totalFarendFrames: Long get() = farendFramesFed.get()
+    override val totalFarendFrames: Long get() = farendFramesFed.get()
 
     /**
      * Diagnostic: total 10 ms near-end frames run through AECM.
      */
-    val totalNearendFrames: Long get() = nearendFramesProcessed.get()
+    override val totalNearendFrames: Long get() = nearendFramesProcessed.get()
 
     /**
      * Bring up the WebRTC AECM instance. Idempotent — a second call is a
@@ -137,7 +137,7 @@ class AecProcessor : AutoCloseable {
      * instance. Use when the pipeline restarts (e.g. user toggles the
      * flag off then on again) but the same instance is fine.
      */
-    fun reset() {
+    override fun reset() {
         synchronized(aecLock) {
             farendTail.clear()
             nearendTail.clear()
@@ -158,7 +158,7 @@ class AecProcessor : AutoCloseable {
      * picking up the echo is the [DEFAULT_DELAY_MS] parameter passed to
      * [process].
      */
-    fun bufferFarend(pcm: ShortArray, inputSampleRate: Int) {
+    override fun bufferFarend(pcm: ShortArray, inputSampleRate: Int) {
         val instance = aec ?: return
         if (pcm.isEmpty()) return
         val at16k = if (inputSampleRate == TARGET_SAMPLE_RATE) pcm
@@ -186,7 +186,9 @@ class AecProcessor : AutoCloseable {
      *   BT A2DP this is typically 150–300 ms. Passed as
      *   `msInSndCardBuf` to WebRTC AECM.
      */
-    fun process(nearEnd: ShortArray, delayMs: Int = DEFAULT_DELAY_MS): ShortArray {
+    override fun process(nearEnd: ShortArray): ShortArray = process(nearEnd, DEFAULT_DELAY_MS)
+
+    fun process(nearEnd: ShortArray, delayMs: Int): ShortArray {
         val instance = aec ?: return nearEnd
         if (nearEnd.isEmpty()) return nearEnd
 

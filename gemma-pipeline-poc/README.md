@@ -118,6 +118,13 @@ a target ≤ 3 s.
      into the live router; RMS logged for every chunk.
   UI counters: **Skipped non-Spanish**, **Echo dropped**, **Low RMS**.
   **Device test pending.** See PROGRESS.md "Anti-eco en software".
+- ✅ **Echo loop solved on external hardware** (October 8, 2026). ModMic USB
+  + JBL Go 4 (A2DP) + full-duplex: **BT keep-alive (inaudible dither) + WebRTC
+  AEC3 + RMS 800**, now the defaults. Cold-start session: first phrase heard
+  on time, 6/6 correct translations, no feedback loop with the text filter
+  and SKIP both OFF. Device tooling: adb over Wi-Fi + `tools/device_test.py`,
+  echo dataset recorder, offline AEC3 runner. See PROGRESS.md
+  "AEC3 en vivo + keep-alive con dither".
 - ⏸ **Session paused** (October 1, 2026). Next: 3-round device test of
   the anti-echo layers (both ON / only SKIP / only echo filter), RMS
   calibration from per-chunk logs, false-positive check; then fix the 8
@@ -524,11 +531,14 @@ everything under "3½. FASE 6 STREAMING".
 
 | Flag / control | Default | Where | Effect |
 |---|---|---|---|
-| `AstConfig.skipNonSpanish` | `true` | Toggle "Skip non-Spanish audio" (restarts AST router) | Appends `skipNonSpanishInstruction` to the prompt; replies normalising to `SKIP` are dropped (counter **Skipped non-Spanish**). OFF = prompt and behaviour exactly as before. |
-| `AstConfig.echoTextFilterEnabled` | `true` | Toggle "Echo text filter" (restarts AST router) | Drops translations similar to a sentence TTS spoke recently (counter **Echo dropped**). |
+| **BT keep-alive** (`TtsAudioPlayer`) | **ON** | Switch "BT keep-alive" (hot-swap) | Writes inaudible dither (±2 LSB) at real-time rate while idle so the A2DP link never sleeps. Without it the speaker→mic delay jumps 0.5 → 1.2 s and the first TTS after Start is lost. |
+| **`AstConfig.webrtcAecEnabled`** (WebRTC AEC3) | **ON** | Switch "WebRTC AEC3" (hot-swap) | `Aec3Processor`: TTS PCM as far-end, pre-delayed 380 ms; AEC3 estimates the rest (~0.5 s total on ModMic + JBL). 3–19 dB echo cut per TTS block on device, ~0.5 ms/frame. Needs the keep-alive. |
+| `AstConfig.rmsThreshold` | **`800`** | Slider "RMS threshold" 200–4000 (hot-swap) | Chunks below it never reach Gemma (counter **Low RMS**). Only separates echo from voice once AEC3 is on. |
+| `AstConfig.echoTextFilterEnabled` | `true` | Toggle "Echo text filter" (restarts AST router) | Safety net: drops translations similar to a sentence TTS spoke recently (counter **Echo dropped**). Cut the loop 8/8 on its own before AEC3. |
 | `AstConfig.echoSimilarityThreshold` | `0.6` | code | `max(Jaccard, containment)` on normalised tokens; containment only for candidates with ≥ 4 tokens. |
 | `AstConfig.echoWindowMs` | `15_000` | code | How long a spoken TTS sentence stays eligible as an echo source. |
-| `AstConfig.rmsThreshold` | `500` | Slider "RMS threshold" 200–4000 (hot-swap) | Chunks below it never reach Gemma (counter **Low RMS**). |
+| `AstConfig.skipNonSpanish` | **`false`** | Toggle "Skip non-Spanish audio" (restarts AST router) | Asks Gemma to answer `SKIP` for non-Spanish audio. Never fired on device (Gemma "translates" its English echo to English) → OFF. |
+| Echo dataset (`EchoDatasetRecorder`) | — | Buttons "Grabar dataset eco" / "Chirps ×10" | Records `mic.wav` (pre-AEC), `ref.wav` (TTS, aligned), `aec_out.wav`, `events.csv` for offline analysis (`tools/analyze_dataset.py`, `tools/aec3-offline/`). |
 
 Calibration: `adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`
 — the router logs `Chunk accepted: RMS …` / `Chunk discarded: low RMS …`

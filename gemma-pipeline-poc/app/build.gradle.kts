@@ -52,6 +52,10 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            // webrtc-aec3-kmp 1.0.3 is published with Kotlin 2.4 metadata; the
+            // project is on 2.3. The API we use is plain functions/interfaces,
+            // so reading the newer metadata is safe.
+            freeCompilerArgs.add("-Xskip-metadata-version-check")
         }
     }
 
@@ -102,8 +106,19 @@ dependencies {
     // (see AecProcessor.kt for the Kotlin wrapper).
     implementation(files("libs/libaecm-release.aar"))
 
+    // WebRTC AEC3 (echo canceller with continuous delay estimation). Offline
+    // evaluation on the device echo dataset: locks onto the ~504 ms BT delay,
+    // median echo RMS -35 dB, voice intact (tools/aec3-offline/).
+    implementation("cn.enaium.webrtc.aec3:webrtc-aec3-kmp:1.0.3")
+
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)
 }
+
+// webrtc-aec3-kmp-android 1.0.3 declares minCompileSdk=37 in its AAR metadata,
+// but it is a thin JNI wrapper that uses no API 36/37 surface. AGP 8.7.3 tops
+// out at compileSdk 35, so skip only the metadata gate (runtime is unaffected).
+tasks.matching { it.name.startsWith("check") && it.name.endsWith("AarMetadata") }
+    .configureEach { enabled = false }

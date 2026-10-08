@@ -1,7 +1,7 @@
 package com.travel2chicago.gemmapipeline.pipeline
 
 import android.util.Log
-import com.travel2chicago.gemmapipeline.audio.AecProcessor
+import com.travel2chicago.gemmapipeline.audio.SoftwareEchoCanceller
 import com.travel2chicago.gemmapipeline.audio.EchoDatasetRecorder
 import com.travel2chicago.gemmapipeline.audio.AudioEvent
 import com.travel2chicago.gemmapipeline.audio.AudioEventBus
@@ -115,7 +115,7 @@ class VadChunkingPipeline(
      * reassembler — Silero + chunker see the AEC-cleaned signal. Null
      * (default) preserves every pre-AEC path byte-for-byte.
      */
-    @Volatile private var aecProcessor: AecProcessor? = null
+    @Volatile private var aecProcessor: SoftwareEchoCanceller? = null
 
     /** Set/clear the software AEC processor. Safe to call while the
      *  pipeline is running — the read in [handleAudioData] is volatile
@@ -128,7 +128,7 @@ class VadChunkingPipeline(
         datasetRecorder = recorder
     }
 
-    fun setAecProcessor(processor: AecProcessor?) {
+    fun setAecProcessor(processor: SoftwareEchoCanceller?) {
         aecProcessor = processor
         Log.i(TAG, "setAecProcessor: ${if (processor == null) "cleared" else "attached"}")
     }
@@ -307,7 +307,7 @@ class VadChunkingPipeline(
         // wired in.
         val proc = aecProcessor
         val pcm = if (proc != null && proc.isInitialized) {
-            proc.process(pcmDecimated)
+            proc.process(pcmDecimated).also { datasetRecorder?.onAecOut(it) }
         } else {
             pcmDecimated
         }

@@ -299,16 +299,15 @@ fun GemmaPipelineScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 SwitchRow(
-                    label = "WebRTC AECM (software AEC for external mic + BT speaker)",
+                    label = "WebRTC AEC3 (software AEC for external mic + BT speaker)",
                     checked = state.webrtcAecEnabled,
                     onCheckedChange = { viewModel.setWebrtcAecEnabled(it) },
                 )
                 Text(
                     if (state.webrtcAecEnabled)
-                        "SW AEC ON (POC) — Kokoro PCM piped as far-end reference; " +
-                            "mic capture filtered before VAD. Delay hardcoded 200 ms " +
-                            "(BT A2DP typical). Frames farend=${state.webrtcAecFarendFrames} " +
-                            "nearend=${state.webrtcAecNearendFrames}."
+                        "AEC3 ON — referencia TTS pre-alineada 380 ms, AEC3 estima el " +
+                            "resto (~504 ms total medido). Usar con BT keep-alive ON. " +
+                            "Frames=${state.webrtcAecNearendFrames}."
                     else
                         "SW AEC OFF — mic path unchanged. Flip ON when using external " +
                             "mic + BT speaker where the HAL AEC alone leaves echo.",

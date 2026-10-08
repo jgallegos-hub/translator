@@ -9,7 +9,7 @@ import com.travel2chicago.gemmapipeline.ast.AstConfig
 import com.travel2chicago.gemmapipeline.ast.EchoTextHistory
 import com.travel2chicago.gemmapipeline.ast.GemmaAstEngine
 import com.travel2chicago.gemmapipeline.ast.LiteRtGemmaAstEngine
-import com.travel2chicago.gemmapipeline.audio.AecProcessor
+import com.travel2chicago.gemmapipeline.audio.Aec3Processor
 import com.travel2chicago.gemmapipeline.audio.AudioCaptureManager
 import com.travel2chicago.gemmapipeline.audio.AudioDeviceManager
 import com.travel2chicago.gemmapipeline.audio.AudioEngineConfig
@@ -100,7 +100,7 @@ data class GemmaPipelineUiState(
     /** Capa 2 anti-eco — sentences dropped as echo of recent TTS output. */
     val totalEchoDropped: Long = 0,
     /** Mirrors [AstConfig.skipNonSpanish]. Restarts the AST router on flip. */
-    val skipNonSpanish: Boolean = true,
+    val skipNonSpanish: Boolean = false,
     /** Mirrors [AstConfig.echoTextFilterEnabled]. Restarts the AST router on flip. */
     val echoTextFilterEnabled: Boolean = true,
     /** Capa 3 — live RMS gate, mirrors [AstConfig.rmsThreshold]. Hot-swapped
@@ -137,10 +137,10 @@ data class GemmaPipelineUiState(
      *  on the mic capture path. Requires a capture restart to take effect
      *  (the InputPreset is passed at `openStream` time). Default `true`. */
     val aecEnabled: Boolean = true,
-    /** Mirrors [AstConfig.webrtcAecEnabled] — software WebRTC AECM. Runs on
+    /** Mirrors [AstConfig.webrtcAecEnabled] — software WebRTC AEC3. Runs on
      *  top of the HAL AEC; needed for external mic + BT speaker combos
-     *  where the HAL path doesn't reach. Default `false` (POC). */
-    val webrtcAecEnabled: Boolean = false,
+     *  where the HAL path doesn't reach. Default `true` (validated 2026-10-08). */
+    val webrtcAecEnabled: Boolean = true,
     /** Diagnostic: total 10 ms far-end frames handed to WebRTC AECM since
      *  the processor was initialised. Zero when [webrtcAecEnabled] is
      *  false or the processor hasn't run yet. */
@@ -286,7 +286,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * and the VAD pipeline (near-end filter) hold a reference; the
      * processor synchronises internally.
      */
-    @Volatile private var aecProcessor: AecProcessor? = null
+    @Volatile private var aecProcessor: Aec3Processor? = null
 
     /**
      * Capa 2 anti-eco — sentences the TTS has spoken, fed from every
@@ -351,10 +351,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     /** Lazily construct + initialise the software AEC processor. Called from
      *  [startPipeline] and [setWebrtcAecEnabled] when the flag flips ON.
      *  Idempotent: a second call returns the existing processor. */
-    private fun ensureAecProcessor(): AecProcessor {
+    private fun ensureAecProcessor(): Aec3Processor {
         val existing = aecProcessor
         if (existing != null) return existing
-        val fresh = AecProcessor().also { it.initialize() }
+        val fresh = Aec3Processor().also { it.initialize() }
         aecProcessor = fresh
         return fresh
     }
@@ -597,7 +597,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         p.setFullDuplexMode(astConfig.fullDuplexMode)
         // Software WebRTC AECM: build/init on demand, wire into both the
         // player (far-end pump) and the pipeline (near-end filter). See
-        // AstConfig.webrtcAecEnabled for the POC scope caveats.
+        // AstConfig.webrtcAecEnabled for scope and caveats (AEC3, needs BT keep-alive).
         if (astConfig.webrtcAecEnabled) {
             ensureAecProcessor().let { proc ->
                 ttsPlayer.setAecProcessor(proc)

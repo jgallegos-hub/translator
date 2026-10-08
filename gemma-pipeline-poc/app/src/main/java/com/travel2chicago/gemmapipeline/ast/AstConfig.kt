@@ -177,45 +177,31 @@ data class AstConfig(
     val aecEnabled: Boolean = true,
 
     /**
-     * Software WebRTC AECM applied on top of the HAL AEC ([aecEnabled]).
+     * Software echo cancellation (WebRTC **AEC3**, via
+     * [com.travel2chicago.gemmapipeline.audio.Aec3Processor]) on top of the
+     * HAL AEC ([aecEnabled]).
      *
      * The HAL AEC only reaches the built-in mic + built-in speaker path.
-     * External hardware (USB mic like the Saramonic, BT speaker like the
-     * JBL Go 4) bypasses that AEC — its echo reaches the mic unreduced.
-     * With this flag ON, [com.travel2chicago.gemmapipeline.audio.AecProcessor]
-     * runs a software echo canceller that:
-     *   - takes each Kokoro PCM buffer as far-end reference (from
-     *     [com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer.play],
-     *     resampled 24 → 16 kHz), and
-     *   - filters the mic near-end capture (from
-     *     [com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline],
-     *     already at 16 kHz post-decimation).
+     * External hardware (ModMic USB + JBL Go 4 over A2DP) bypasses it. AEC3
+     * takes each TTS PCM buffer as far-end reference (from
+     * [com.travel2chicago.gemmapipeline.tts.TtsAudioPlayer.play], resampled
+     * 24 → 16 kHz, pre-delayed 380 ms on the capture timeline) and filters
+     * the mic near-end in
+     * [com.travel2chicago.gemmapipeline.pipeline.VadChunkingPipeline].
      *
-     * The two AEC layers are complementary: keep [aecEnabled] on for
-     * the built-in path, keep this on for the external path. Both can
-     * be independently toggled.
+     * Default ON after device validation (2026-10-08, round 6): with the BT
+     * keep-alive (dither) the speaker→mic delay is stable at ~0.5 s from a
+     * cold start; AEC3 cut 3–19 dB of echo per TTS block, no echo chunk
+     * reached Gemma and no feedback loop with the text filter and SKIP both
+     * OFF. Cost ~0.5 ms per 10 ms frame. Requires the BT keep-alive — with
+     * a sleeping A2DP link the delay jumps (0.5 → 1.2 s or lost audio) and
+     * AEC3 cannot converge.
      *
-     * ## POC caveats (default `false`)
-     *
-     *   - **Delay hint is hardcoded** at 200 ms (BT A2DP typical). If
-     *     device measurement shows a different value, tune
-     *     `AecProcessor.DEFAULT_DELAY_MS` — auto-estimation is out of
-     *     scope for the POC.
-     *   - **Fast (Android system) TTS is NOT instrumented** — the OS
-     *     speaks directly to the audio stack, we have no PCM handle to
-     *     feed as far-end reference. Software AEC is Kokoro-only in
-     *     this iteration.
-     *   - **WebRTC AECM (not AEC3)** — AECM tolerates ~10 ms delay
-     *     jitter well; A2DP jitters ±50 ms. Expected cancellation over
-     *     BT: 30–50 %; over wired USB DAC: 80–95 %.
-     *   - **Adds ~10 ms of processing latency** per 10 ms frame,
-     *     negligible relative to Gemma / Kokoro.
-     *
-     * Off by default because the layer is unproven on device. Flip on
-     * from the UI, measure, then decide whether to promote to default
-     * or invest in AEC3 for better BT tolerance.
+     * Not instrumented: Android system TTS (Fast mode) — no PCM handle to
+     * feed as reference. The earlier WebRTC AECM POC (`AecProcessor`, 200 ms
+     * fixed delay hint) never converged on BT and is no longer wired.
      */
-    val webrtcAecEnabled: Boolean = false,
+    val webrtcAecEnabled: Boolean = true,
 
     /**
      * Bounded queue capacity for the chunk → Gemma channel. One inference
@@ -237,9 +223,15 @@ data class AstConfig(
      * has a natural scale of ~0..32 767; empirically 500 sits below
      * normal quiet-speech (~800–2 000) but above room noise (~150).
      *
+     * Default raised 500 → 800 together with AEC3 ON (2026-10-08): after
+     * AEC3 the residual echo sits at a median RMS of ~100, so 800 blocks
+     * ~76 % of echo windows while losing ~7 % of voice windows (quiet
+     * tails). Without AEC3 the gate cannot separate echo from voice (both
+     * ~3 500–5 000 RMS on the ModMic + JBL setup).
+     *
      * Set to `0.0` to disable the gate (useful in tests).
      */
-    val rmsThreshold: Double = 500.0,
+    val rmsThreshold: Double = 800.0,
 
     /**
      * Post-inference meta-text filter. If Gemma's reply (lower-cased,
@@ -399,8 +391,12 @@ data class AstConfig(
      *
      * With `false`, the prompt and router behaviour are exactly the
      * pre-anti-eco ones.
+     *
+     * Default OFF after device testing (2026-10-08): Gemma never answered
+     * SKIP for its own English echo — it "translates" English to English —
+     * so the layer only added prompt tokens. Kept as a switch.
      */
-    val skipNonSpanish: Boolean = true,
+    val skipNonSpanish: Boolean = false,
 
     /** Appended to the active prompt when [skipNonSpanish] is on. */
     val skipNonSpanishInstruction: String =

@@ -1864,3 +1864,47 @@ plan B subir Kotlin; plan C JNI propio sobre el `.so`.
    keep-alive ON, RMS ~800, filtro de texto como red final.
 3. Prueba en dispositivo: ¿loop sin filtro de texto?, ¿Gemma deja de gastar
    ~3 s por eco?, ¿se preserva la voz en doble habla?
+
+### AEC3 en vivo + keep-alive con dither (8 octubre 2026, cierre)
+
+**Integración** (`Aec3Processor`, interfaz `SoftwareEchoCanceller` común con el
+AECM): `webrtc-aec3-kmp:1.0.3` en el app. El AAR declara Kotlin 2.4 y
+`minCompileSdk=37`; se resolvió con `-Xskip-metadata-version-check` y
+desactivando sólo el chequeo `check*AarMetadata` (la librería es un wrapper JNI
+sin superficie API 36/37). La referencia se coloca en el timeline de captura
+con `RenderTimeline` (misma regla que el grabador del dataset, con tests) y se
+pre-retrasa 380 ms. Costo medido en el Xiaomi: **~0.5 ms por frame de 10 ms**
+→ no explica latencia.
+
+**Ronda 4 (AEC3 ON, keep-alive con ceros):** AEC3 nunca convergió
+(ERL -30 / ERLE 0.2 constantes); regresó parte del loop. **Ronda 5
+(diagnóstico + `aec_out.wav`):** la referencia sí llegaba y alineada; replay
+offline del mismo dataset dio *las mismas métricas* → la librería Android se
+comporta igual que la JVM; el problema eran los datos: con keep-alive de
+**ceros digitales**, el 1.er TTS tras Start nunca llegó al mic y el 2.º llegó
+con ~1.2 s de delay (el stack BT trata el stream en cero como idle).
+
+**Fix: keep-alive con dither inaudible (±2 LSB ≈ -84 dBFS).** **Ronda 6**
+(arranque en frío, AEC3 ON, filtro de texto OFF, SKIP OFF, RMS 800):
+- Delay altavoz→mic estable desde el inicio: 740 ms el 1.º bloque, luego
+  500–560 ms; correlación 0.79–0.96 en los 6 bloques.
+- **La primera frase se escuchó a tiempo** (antes se perdía o llegaba tarde);
+  latencia percibida menor.
+- AEC3 en vivo: **3–19 dB** de reducción del eco por bloque de TTS
+  (ERLE interno aún subiendo: converge en ~1 min).
+- **6 chunks = 6 frases del usuario; ningún eco llegó a Gemma; sin loop**,
+  traducciones correctas.
+- Latencia: primer token ~1.16 s; primer audio p50 4.6 s (n=6) — el cuello
+  sigue siendo Kokoro en frases largas, no el AEC.
+
+**Defaults nuevos:** AEC3 **ON**, RMS **800**, SKIP **OFF**, keep-alive ON
+(dither), filtro de texto ON como red de seguridad.
+
+### Siguiente
+1. Sesión larga de validación (~5 min) con los defaults nuevos **incluyendo
+   doble habla** (sesión de ronda 6 fue corta y sin doble habla).
+2. Latencia: Kokoro en frases largas (trocear 1.ª cláusula, Supertonic/Piper),
+   experimento Moonshine es streaming en PC.
+3. Limpieza: quitar el AECM POC (`AecProcessor` + `libaecm-release.aar`).
+4. Pendientes previos: 8 tests preexistentes, conflicto hub/mic (mitigado con
+   adb Wi-Fi), slang mexicano.

@@ -87,7 +87,7 @@ class EchoTextHistoryTest {
         val off = AstConfig(skipNonSpanish = false)
         assertEquals(off.prompt, off.activePrompt)
         assertEquals(off.legacyPrompt, off.copy(useOfficialAstPrompt = false).activePrompt)
-        val on = AstConfig()
+        val on = AstConfig(skipNonSpanish = true)
         assertTrue(on.activePrompt.startsWith(on.prompt))
         assertTrue(on.activePrompt.contains("English: SKIP"))
     }

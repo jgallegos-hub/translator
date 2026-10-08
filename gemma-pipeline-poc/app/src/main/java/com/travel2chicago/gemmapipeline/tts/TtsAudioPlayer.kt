@@ -4,7 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
-import com.travel2chicago.gemmapipeline.audio.AecProcessor
+import com.travel2chicago.gemmapipeline.audio.SoftwareEchoCanceller
 import com.travel2chicago.gemmapipeline.audio.EchoDatasetRecorder
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -82,14 +82,14 @@ class TtsAudioPlayer(
      * (or when [AecProcessor.isInitialized] is false), the pump is a
      * no-op and playback path is unchanged.
      */
-    @Volatile private var aecProcessor: AecProcessor? = null,
+    @Volatile private var aecProcessor: SoftwareEchoCanceller? = null,
 ) : TtsPlayerSink, AutoCloseable {
 
     /** Attach an [AecProcessor] after construction. Used by the ViewModel
      *  when the software AEC toggle flips ON — avoids re-creating the
      *  player (which owns the `AudioTrack` handle) just to bind the
      *  processor. Passing `null` detaches. */
-    fun setAecProcessor(processor: AecProcessor?) {
+    fun setAecProcessor(processor: SoftwareEchoCanceller?) {
         aecProcessor = processor
     }
 
@@ -238,7 +238,12 @@ class TtsAudioPlayer(
 
     private fun startKeepAlive() {
         if (keepAliveThread != null) return
-        val silence = ShortArray(sampleRate * KEEPALIVE_CHUNK_MS / 1000)
+        // Inaudible dither (±2 LSB ≈ -84 dBFS) instead of digital zeros: some BT
+        // stacks treat an all-zero stream as idle and suspend A2DP anyway
+        // (device test 2026-10-08: with zeros, the first TTS after Start was
+        // lost and the next one arrived 1.2 s late instead of ~0.5 s).
+        val rnd = java.util.Random(1)
+        val silence = ShortArray(sampleRate * KEEPALIVE_CHUNK_MS / 1000) { (rnd.nextInt(5) - 2).toShort() }
         val maxQueued = sampleRate.toLong() * KEEPALIVE_MAX_QUEUED_MS / 1000
         keepAliveThread = Thread({
             while (!Thread.currentThread().isInterrupted) {
