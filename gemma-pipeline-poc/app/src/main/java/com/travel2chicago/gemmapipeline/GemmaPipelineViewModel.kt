@@ -1042,6 +1042,21 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         log("BT keep-alive toggled → $enabled")
     }
 
+    /**
+     * On-device Kokoro speed benchmark (see [com.travel2chicago.gemmapipeline.tts.KokoroBench]).
+     * Waits for Gemma + Kokoro to finish loading so the measurement runs under
+     * the same memory/thermal conditions as a real session (Gemma idle).
+     */
+    fun runKokoroBench() {
+        viewModelScope.launch(Dispatchers.IO) {
+            var waited = 0
+            while (!(_state.value.gemmaLoaded && _state.value.kokoroLoaded) && waited < 180) {
+                delay(1_000); waited++
+            }
+            com.travel2chicago.gemmapipeline.tts.KokoroBench.run(getApplication(), ttsConfig) { log(it) }
+        }
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router

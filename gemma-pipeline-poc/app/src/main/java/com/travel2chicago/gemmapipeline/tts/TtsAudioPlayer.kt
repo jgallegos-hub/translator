@@ -205,6 +205,11 @@ class TtsAudioPlayer(
             if (proc.isInitialized) proc.bufferFarend(pcm, sampleRate)
         }
         datasetRecorder?.onRef(pcm, sampleRate)
+        // Latency instrumentation: audio still queued in the AudioTrack when
+        // this piece arrives. ~0 (only keep-alive dither, ≤40 ms) means the
+        // speaker already went silent → audible gap before this piece.
+        val queuedMs = (framesWritten - (t.playbackHeadPosition.toLong() and 0xFFFFFFFFL)) * 1000 / sampleRate
+        Log.i(TAG, "TTSDIAG play: queuedBeforeMs=$queuedMs pieceMs=${pcm.size * 1000L / sampleRate}")
         // If we're INSIDE a beginUtterance/endUtterance bookend, the flag
         // is owned by that pair for the entire utterance — do not touch
         // it here or adjacent per-sentence play() calls would drop the

@@ -1944,3 +1944,55 @@ la síntesis/reproducción, no saltándose frases.
 2. Robustez de Gemma ante eco residual / ruido (alucinaciones): ver
    experimento de prompt con etiqueta de idioma y config de muestreo.
 3. Limpieza AECM POC; 8 tests preexistentes; slang mexicano.
+
+## Latencia de la cola de TTS (13 octubre 2026)
+
+**Instrumentación** (`TTSDIAG` en `TtsRouter`/`TtsAudioPlayer`, análisis con
+`tools/tts_latency.py`): espera en cola, síntesis por pieza, duración del
+audio, tiempo bloqueado en `play()` y audio en cola al llegar cada pieza.
+
+**Ronda 8 (baseline int8, 2 hilos, ~3 min hablando seguido):** la cola casi
+nunca se llena (espera p50 0 ms); **el cuello era Kokoro sintetizando la
+oración completa antes del primer sonido** (p50 1.9 s, máx 5.3 s; RTF 0.93) —
+21/24 piezas llegaron con el altavoz ya en silencio.
+
+**Ronda 9 (4 hilos + troceo por cláusulas):** RTF 0.86; primer audio p50 sin
+cambio (4.7 → 4.6 s) porque la mayoría de frases no tienen comas y caben en
+12 palabras. El usuario percibió arranque más lento y **pérdida de
+naturalidad** (entonación de cierre en cada pedazo) → troceo revertido
+(`clauseSplitting=false`, queda como switch).
+
+**Benchmark en el teléfono** (`KokoroBench`, lanzado por adb, sin hablar):
+
+| Variante | RTF |
+|---|---|
+| int8 CPU 2 / 4 / 6 hilos | 0.93 / **0.84** / 0.92 |
+| int8 XNNPACK 4 / 6 | 0.96 / 0.96 |
+| **fp16 CPU 4 hilos** | **0.44** |
+| fp16 XNNPACK 4 | 0.77 |
+| fp32 CPU 4 / XNNPACK 4 / 6 | 1.96 / 1.73 / 1.73 |
+
+El int8 usa cuantización dinámica (re-cuantiza activaciones en cada op); los
+núcleos ARMv9 ejecutan fp16 nativo. XNNPACK empeora todas las variantes.
+
+**Ronda 10 (fp16 por defecto, 4 hilos):** RTF en vivo **0.57** (vs 0.93);
+para una frase de ~2 s el silencio previo baja ~1.9 s → ~1.2 s. Voz igual
+(confirmado de oído). Primer audio p50 subió a 5.6 s porque la ronda tuvo +35 %
+de audio traducido y ahora **la cola espera al altavoz, no a Kokoro**
+(`play()` bloqueado 36 s vs 16 s): hablando sin parar, el límite es el tiempo
+que tarda en decirse el inglés. Frases cortas se sienten más ágiles.
+
+**Nuevo hallazgo — exactitud en frases largas:** el chunker corta en
+`maxChunkMs = 6000`; **22–29 % de los chunks llegan al tope** en todas las
+rondas. Gemma traduce cada mitad sin el contexto de la otra → traducciones
+inexactas y fragmentos cortos que **alucinan frases genéricas** ("I'm going to
+the store.", antes "The sun is shining today") — probable causa principal de
+las alucinaciones, más que el eco residual.
+
+### Siguiente
+1. **Corte inteligente del chunker:** pasado ~6 s, cortar en la siguiente pausa
+   breve (no a mitad de palabra) con tope duro más alto (~10 s), y nunca dejar
+   colas cortas sueltas (fusionarlas con el siguiente chunk).
+2. Opcional: dar a Gemma el texto del fragmento anterior como contexto.
+3. Velocidad de voz 1.3–1.4× (slider existente) para habla continua.
+4. Experimento ASR streaming (Moonshine) para empezar a traducir antes.

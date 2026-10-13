@@ -14,8 +14,15 @@ package com.travel2chicago.gemmapipeline.tts
 data class TtsConfig(
     /** Directory on the device holding the Kokoro ONNX model and voice file. */
     val modelDirPath: String = "/sdcard/Download/kokoro_model",
-    /** Int8-quantized model (~88 MB) — the int8 build, not the 310 MB fp32 one. */
-    val modelFilename: String = "kokoro-v1.0.int8.onnx",
+    /**
+     * fp16 export (~169 MB) since 2026-10-13. On-device benchmark (Xiaomi 15T
+     * Pro, ORT CPU EP, 4 threads, Gemma loaded): int8 RTF 0.85, **fp16 RTF
+     * 0.44**, fp32 RTF 1.96 (memory-bound); XNNPACK made every variant slower.
+     * The int8 build uses dynamic quantisation, which re-quantises activations
+     * on every op; the ARMv9 cores run fp16 natively. Download:
+     * github.com/thewh1teagle/kokoro-onnx release model-files-v1.0.
+     */
+    val modelFilename: String = "kokoro-v1.0.fp16.onnx",
     /** Voice-style embeddings, all voices concatenated (~5 MB). */
     val voicesFilename: String = "voices-v1.0.bin",
     /** Bundled phoneme→token-id map + voice index table. */
@@ -123,6 +130,22 @@ data class TtsConfig(
      * off in a specific room.
      */
     val speed: Float = 1.2f,
+
+    /** ONNX Runtime intra-op threads for Kokoro. 4 since 2026-10-13 (2 gave
+     *  RTF 0.93 on the Xiaomi 15T Pro while Gemma runs on the GPU). */
+    val intraOpThreads: Int = 4,
+
+    /** Streaming only: cut sentences into clauses / ≤ [maxPieceWords]-word
+     *  pieces so the first audio comes from a short synthesis. OFF after the
+     *  device test of 2026-10-13: first-audio p50 unchanged (most sentences
+     *  have no commas and fit in 12 words) and the choppy prosody hurt
+     *  naturalness. Kept as a switch for faster TTS engines. */
+    val clauseSplitting: Boolean = false,
+
+    /** Run Kokoro through ONNX Runtime's XNNPACK execution provider (ARM-
+     *  optimised kernels). Experimental — see the in-app Kokoro benchmark. */
+    val useXnnpack: Boolean = false,
+    val maxPieceWords: Int = 12,
 ) {
     companion object {
         const val MIN_SPEED = 0.8f

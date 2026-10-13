@@ -538,6 +538,10 @@ everything under "3½. FASE 6 STREAMING".
 | `AstConfig.echoSimilarityThreshold` | `0.6` | code | `max(Jaccard, containment)` on normalised tokens; containment only for candidates with ≥ 4 tokens. |
 | `AstConfig.echoWindowMs` | `15_000` | code | How long a spoken TTS sentence stays eligible as an echo source. |
 | `AstConfig.skipNonSpanish` | **`false`** | Toggle "Skip non-Spanish audio" (restarts AST router) | Asks Gemma to answer `SKIP` for non-Spanish audio. Never fired on device (Gemma "translates" its English echo to English) → OFF. |
+| **Kokoro model** (`TtsConfig.modelFilename`) | **`kokoro-v1.0.fp16.onnx`** | code (file must be in `/sdcard/Download/kokoro_model/`) | fp16 export: RTF 0.44 in the on-device benchmark vs 0.85 for int8 (fp32 1.96; XNNPACK slower for all). Download from `thewh1teagle/kokoro-onnx` release `model-files-v1.0`. |
+| `TtsConfig.intraOpThreads` | `4` | code | ORT CPU threads for Kokoro (2 → 0.93 RTF, 4 → 0.84, 6 → 0.92 on int8). |
+| `TtsConfig.clauseSplitting` | `false` | code | Cut sentences into clauses for streaming TTS. Tested OFF: no first-audio gain (most sentences have no commas) and choppy prosody. |
+| Kokoro benchmark (`KokoroBench`) | — | `adb shell am start -n com.travel2chicago.gemmapipeline/.MainActivity --ez kokoro_bench true` | Synthesises fixed sentences per model/thread/EP variant; logcat tag `KokoroBench`. |
 | Echo dataset (`EchoDatasetRecorder`) | — | Buttons "Grabar dataset eco" / "Chirps ×10" | Records `mic.wav` (pre-AEC), `ref.wav` (TTS, aligned), `aec_out.wav`, `events.csv` for offline analysis (`tools/analyze_dataset.py`, `tools/aec3-offline/`). |
 
 Calibration: `adb logcat -s AstChunkRouter TtsRouter VadChunkingPipeline`

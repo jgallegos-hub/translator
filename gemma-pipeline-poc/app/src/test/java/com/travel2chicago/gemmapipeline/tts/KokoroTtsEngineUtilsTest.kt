@@ -51,4 +51,30 @@ class KokoroTtsEngineUtilsTest {
         val out = KokoroOnnxEngine.concatToInt16(emptyList())
         assertEquals(0, out.size)
     }
+
+    @Test
+    fun `splitForStreaming cuts at clause punctuation and keeps all words`() {
+        val text = "Okay, I see that the transcription occurred, but the audio arrived late. Thanks!"
+        val parts = KokoroOnnxEngine.splitForStreaming(text)
+        assertEquals(
+            listOf("Okay, I see that the transcription occurred,", "but the audio arrived late.", "Thanks!"),
+            parts,
+        )
+        assertEquals(text.split(" ").filter { it.isNotBlank() }, parts.joinToString(" ").split(" "))
+    }
+
+    @Test
+    fun `splitForStreaming caps long clauses at maxWords in near-equal parts`() {
+        val text = (1..25).joinToString(" ") { "w$it" } + "."
+        val parts = KokoroOnnxEngine.splitForStreaming(text, maxWords = 12)
+        assertEquals(3, parts.size)
+        assertTrue(parts.all { it.split(" ").size <= 12 })
+        assertEquals(text, parts.joinToString(" "))
+    }
+
+    @Test
+    fun `splitForStreaming leaves short sentences untouched`() {
+        assertEquals(listOf("Hello, how are you?"), KokoroOnnxEngine.splitForStreaming("Hello, how are you?"))
+        assertEquals(listOf("Stop."), KokoroOnnxEngine.splitForStreaming("Stop."))
+    }
 }

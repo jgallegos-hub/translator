@@ -212,6 +212,10 @@ class TtsRouter(
     @Volatile private var openUtteranceTs: Long? = null
 
     private suspend fun processTranslation(tr: AudioEvent.TranslationReady) {
+        // Latency instrumentation (2026-10-13): how long this translation sat
+        // in the TTS queue before the single consumer picked it up.
+        Log.i(TAG, "TTSDIAG start: waitMs=${(System.nanoTime() - tr.timestampNs) / 1_000_000} " +
+            "queue=${queueDepth.get()} chars=${tr.text.length} isFinal=${tr.isFinal}")
         val text = tr.text.trim()
         if (text.isEmpty()) {
             Log.w(TAG, "Empty translation, skipping")
@@ -386,10 +390,16 @@ class TtsRouter(
         // TranslationReady starts a new utterance, arm the recorder; the
         // callback below fires it exactly once on the first PCM chunk.
         var firstAudioPending = newUtterance
+        var tMark = System.nanoTime()
 
         val result = try {
             engine.synthesizeStreaming(text, config.voice, currentSpeed) { pcm, sr, _ ->
+                val tSynth = System.nanoTime()
                 sink.play(pcm)
+                val tPlayed = System.nanoTime()
+                Log.i(TAG, "TTSDIAG piece: synthMs=${(tSynth - tMark) / 1_000_000} " +
+                    "audioMs=${pcm.size * 1000L / sr} playBlockMs=${(tPlayed - tSynth) / 1_000_000}")
+                tMark = tPlayed
                 if (firstAudioPending) {
                     firstAudioLatencyMsAtomic.set(
                         (System.nanoTime() - tr.sourceChunkTimestampNs) / 1_000_000,

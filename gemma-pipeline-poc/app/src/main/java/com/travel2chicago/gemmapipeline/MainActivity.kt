@@ -41,6 +41,12 @@ class MainActivity : ComponentActivity() {
 
         requestStandardPermissionsIfNeeded()
 
+        // Dev hook: `adb shell am start ... --ez kokoro_bench true` runs the
+        // on-device Kokoro speed benchmark (logcat tag KokoroBench).
+        if (intent?.getBooleanExtra("kokoro_bench", false) == true) {
+            viewModel.runKokoroBench()
+        }
+
         setContent {
             GemmaPipelineTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

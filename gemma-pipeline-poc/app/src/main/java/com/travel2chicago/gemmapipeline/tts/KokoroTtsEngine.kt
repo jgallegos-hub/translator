@@ -98,6 +98,10 @@ class KokoroOnnxEngine private constructor(
      */
     private val speedInputType: OnnxJavaType,
     override val loadTimeMs: Long,
+    /** Streaming only: split sentences into clauses so the first audio is
+     *  synthesised from a short piece (see [splitForStreaming]). */
+    private val clauseSplitting: Boolean = false,
+    private val maxPieceWords: Int = 12,
 ) : KokoroTtsEngine {
 
     @Volatile private var closed: Boolean = false
@@ -142,7 +146,8 @@ class KokoroOnnxEngine private constructor(
         }
 
         val startedNs = System.nanoTime()
-        val sentences = splitIntoSentences(text)
+        val sentences = if (clauseSplitting) splitForStreaming(text, maxPieceWords)
+                        else splitIntoSentences(text)
         var totalSamples = 0
         for ((idx, sentence) in sentences.withIndex()) {
             val floatPcm = synthesizeOne(sentence, voice, speed) ?: continue
@@ -284,7 +289,19 @@ class KokoroOnnxEngine private constructor(
             val modelBytes = modelFile.readBytes()
             val env = OrtEnvironment.getEnvironment()
             val options = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(2)
+                // 2 → 4 (2026-10-13): device measurement showed RTF 0.93 with 2
+                // threads — synthesis almost as slow as playback, and every
+                // sentence started after ~1.9 s of silence. Gemma runs on the GPU,
+                // so the big CPU cores are mostly free while Kokoro runs.
+                if (config.useXnnpack) {
+                    // ORT guidance for XNNPACK: give the threads to the XNNPACK
+                    // pool and keep the CPU EP single-threaded to avoid
+                    // oversubscription.
+                    setIntraOpNumThreads(1)
+                    addXnnpack(mapOf("intra_op_num_threads" to config.intraOpThreads.toString()))
+                } else {
+                    setIntraOpNumThreads(config.intraOpThreads)
+                }
             }
             val session = env.createSession(modelBytes, options)
 
@@ -333,7 +350,50 @@ class KokoroOnnxEngine private constructor(
                 isNewExport = isNewExport,
                 speedInputType = speedDtype,
                 loadTimeMs = loadMs,
+                clauseSplitting = config.clauseSplitting,
+                maxPieceWords = config.maxPieceWords,
             )
+        }
+
+        /**
+         * Streaming split for low first-audio latency. Kokoro synthesises a
+         * whole piece before any of it can play (device: ~1.9 s p50, up to
+         * 5 s, all silence), so we hand it shorter pieces: sentences are
+         * further cut at clause punctuation (`,` `;` `:`), and any piece still
+         * longer than [maxWords] is cut at word boundaries into near-equal
+         * parts. Pieces under 3 words are merged into the following one so we
+         * don't produce choppy one-word utterances. Nothing is dropped: the
+         * concatenation of pieces (modulo whitespace) is the input text.
+         */
+        private val WHITESPACE = Regex("""\s+""")
+
+        internal fun splitForStreaming(text: String, maxWords: Int = 12): List<String> {
+            val clauses = ArrayList<String>()
+            for (sentence in splitIntoSentences(text)) {
+                val parts = Regex("[^,;:]+[,;:]?").findAll(sentence).map { it.value.trim() }
+                    .filter { it.isNotEmpty() }.toList()
+                // Merge short fragments forward ("Okay," + "I see…").
+                var pending = ""
+                for (p in parts) {
+                    pending = if (pending.isEmpty()) p else "$pending $p"
+                    if (pending.split(WHITESPACE).size >= 3) { clauses += pending; pending = "" }
+                }
+                if (pending.isNotEmpty()) {
+                    if (clauses.isNotEmpty() && pending.split(WHITESPACE).size < 3 &&
+                        clauses.last().let { !it.endsWith(".") && !it.endsWith("!") && !it.endsWith("?") }
+                    ) clauses[clauses.size - 1] = clauses.last() + " " + pending
+                    else clauses += pending
+                }
+            }
+            val out = ArrayList<String>()
+            for (c in clauses) {
+                val words = c.split(WHITESPACE)
+                if (words.size <= maxWords) { out += c; continue }
+                val n = (words.size + maxWords - 1) / maxWords
+                val size = (words.size + n - 1) / n
+                words.chunked(size).forEach { out += it.joinToString(" ") }
+            }
+            return if (out.isEmpty()) listOf(text.trim()) else out
         }
 
         internal fun splitIntoSentences(text: String): List<String> {
