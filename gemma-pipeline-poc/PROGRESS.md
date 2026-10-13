@@ -1996,3 +1996,39 @@ las alucinaciones, más que el eco residual.
 2. Opcional: dar a Gemma el texto del fragmento anterior como contexto.
 3. Velocidad de voz 1.3–1.4× (slider existente) para habla continua.
 4. Experimento ASR streaming (Moonshine) para empezar a traducir antes.
+
+## Corte inteligente del chunker (13 octubre 2026)
+
+**Problema:** con `maxChunkMs = 6000` el chunker cortaba a los 6 s exactos;
+22–29 % de los chunks se partían a mitad de frase en todas las rondas y Gemma
+traducía cada mitad sin contexto (inexactitud, alucinaciones en colas cortas).
+
+**Simulador offline** (`tools/chunker_sim.py`): replica Silero VAD (onnx de
+assets, contexto 64) + histéresis + chunker sobre las grabaciones reales y
+escribe los chunks de cada variante en WAV para escucharlos. Grabación nueva
+de frases largas (64 s) + sesión larga del 8-oct (251 s):
+
+| Variante | Cortes a mitad de habla | Chunks < 2 s | Duración máx |
+|---|---|---|---|
+| Actual (corte duro 6 s) | 6 + 3 | 12 + 2 | 6.0 s |
+| v1: cortar en la 1.ª pausa pasados 6 s | 0 | 13 + 5 ❌ (colas sueltas) | 9.6 s |
+| **v2: preferir fin de frase; a los 12 s cortar en la ÚLTIMA pausa** | **0** | **12 + 2** | 10.2 s |
+
+**Implementado v2** (`ChunkerConfig.smartCut = true`, `maxChunkMs = 12_000`,
+`pauseCutMs = 100`): el chunker guarda la probabilidad de voz de cada frame
+(Silero) y la última pausa (≥ 100 ms con p < umbral); si el chunk llega al
+tope se emite hasta esa pausa (o el frame más silencioso de los últimos 2 s)
+y el resto pasa al siguiente chunk. `smartCut=false` conserva el corte duro.
+
+**Ronda 11 en dispositivo (frases de 8–15 s):** traducciones completas y
+coherentes de punta a punta (una historia narrada se tradujo frase por frase
+con sentido); 1 solo corte forzado (frase de 12 s sin pausas, el peor caso);
+sin ecos ni loops. Costo esperado: una frase larga empieza a traducirse al
+terminar de decirla (primer audio p50 6.4 s en esta ronda de frases largas).
+
+**Fix menor:** una comilla de cierre tras el terminador (`…said, "How can you
+be hungry?"`) salía como "oración" suelta `"` hacia el TTS → ahora se pega a la
+última oración (test nuevo).
+
+**Pendiente (banco de prompts):** chunks cortos de ~1.5 s todavía producen
+frases que parecen inventadas ("I'll get a call later.", "And of course.").

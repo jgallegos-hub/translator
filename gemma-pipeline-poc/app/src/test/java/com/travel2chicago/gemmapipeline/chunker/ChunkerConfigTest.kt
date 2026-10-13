@@ -11,7 +11,9 @@ class ChunkerConfigTest {
     fun `defaults for Fase 6 Stage C — halved min + silenceEnd so Gemma+Kokoro streaming can win latency`() {
         val c = ChunkerConfig()
         assertEquals(1500, c.minChunkMs)
-        assertEquals(6000, c.maxChunkMs)
+        assertEquals(12_000, c.maxChunkMs)   // smart cut cap (2026-10-13)
+        assertEquals(true, c.smartCut)
+        assertEquals(100, c.pauseCutMs)
         assertEquals(500, c.silenceEndMs)
         assertEquals(200, c.preRollMs)
     }
@@ -21,7 +23,7 @@ class ChunkerConfigTest {
         val c = ChunkerConfig()
         val fmt = AudioFormat()
         assertEquals(24_000, c.minChunkSamples(fmt))   // 1.5 s
-        assertEquals(96_000, c.maxChunkSamples(fmt))   // 6 s
+        assertEquals(192_000, c.maxChunkSamples(fmt))  // 12 s
         // 500 ms = 8000 samples / 512 = 15 frames
         assertEquals(15, c.silenceEndFrames(fmt))
         // 200 ms = 3200 samples / 512 = 6 frames

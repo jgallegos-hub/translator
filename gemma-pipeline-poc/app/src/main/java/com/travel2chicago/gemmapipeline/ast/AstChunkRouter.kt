@@ -600,8 +600,16 @@ class AstChunkRouter(
             return
         }
 
-        val trailing = sb.substring(lastCutOffset).trim()
+        var trailing = sb.substring(lastCutOffset).trim()
             .let { if (it.isNotEmpty() && isEcho(it)) "" else it }
+        // A closing quote after the terminator (`…said, "How are you?"`) would
+        // otherwise be emitted as its own "sentence" `"` and sent to TTS
+        // (device 2026-10-13). Trailing text with no letters/digits belongs to
+        // the last sentence.
+        if (trailing.isNotEmpty() && trailing.none { it.isLetterOrDigit() }) {
+            pendingText = pendingText?.let { it + trailing }
+            trailing = ""
+        }
         when {
             trailing.isNotEmpty() -> {
                 // Both pending + trailing exist — pending is not final,

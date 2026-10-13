@@ -28,9 +28,12 @@ class AudioChunkerTest {
         maxChunkMs: Int = 2000,
         silenceEndMs: Int = 64,
         preRollMs: Int = 64,
+        smartCut: Boolean = false,   // legacy tests below exercise the hard cut
+        pauseCutMs: Int = 64,
     ) = AudioChunker(
         ChunkerConfig(minChunkMs = minChunkMs, maxChunkMs = maxChunkMs,
-            silenceEndMs = silenceEndMs, preRollMs = preRollMs),
+            silenceEndMs = silenceEndMs, preRollMs = preRollMs,
+            smartCut = smartCut, pauseCutMs = pauseCutMs),
         format,
     )
 
@@ -227,5 +230,57 @@ class AudioChunkerTest {
         assertNotNull(emitted)
         val expectedMs = (emitted!!.samples.size.toLong() * 1000L / SR).toInt()
         assertEquals(expectedMs, emitted!!.durationMs)
+    }
+
+    // ── Smart cut (2026-10-13) ─────────────────────────────────────────────
+
+    /** Feeds [n] frames of [value]; SPEECH state throughout (a short pause does
+     *  not flip the hysteresis VAD), probability [prob]. */
+    private fun AudioChunker.feedRun(n: Int, value: Int, prob: Float, out: MutableList<AudioEvent.ChunkReady>) {
+        repeat(n) { feed(speech(value), VadState.SPEECH, speechProb = prob)?.let(out::add) }
+    }
+
+    @Test
+    fun `smart cut keeps an utterance under the cap whole`() {
+        val c = chunker(minChunkMs = 100, maxChunkMs = 2000, smartCut = true)
+        val out = mutableListOf<AudioEvent.ChunkReady>()
+        c.feedRun(15, 1, 0.9f, out)
+        c.feedRun(4, 0, 0.1f, out)     // breath pause mid-phrase
+        c.feedRun(15, 2, 0.9f, out)
+        repeat(4) { c.feed(silence(), VadState.SILENCE, speechProb = 0f)?.let(out::add) }
+        assertEquals(1, out.size)
+        assertEquals(34 * BLOCK + 2 * BLOCK, out[0].samples.size)  // + silence-end frames
+    }
+
+    @Test
+    fun `smart cut at the cap cuts at the last pause and carries the rest`() {
+        // cap 1000 ms = 16_000 samples -> emission on the 32nd frame
+        val c = chunker(minChunkMs = 100, maxChunkMs = 1000, smartCut = true, pauseCutMs = 64)
+        val out = mutableListOf<AudioEvent.ChunkReady>()
+        c.feedRun(10, 1, 0.9f, out)
+        c.feedRun(4, 0, 0.1f, out)     // pause 1
+        c.feedRun(10, 2, 0.9f, out)
+        c.feedRun(4, 0, 0.1f, out)     // pause 2 (last) -> cut point = frame 28
+        c.feedRun(4, 3, 0.9f, out)     // hits the cap
+        assertEquals(1, out.size)
+        assertEquals(28 * BLOCK, out[0].samples.size)
+        assertEquals(0, out[0].samples.last().toInt())
+        assertTrue("remainder carried into next chunk", c.isCollecting)
+        repeat(3) { c.feed(silence(), VadState.SILENCE, speechProb = 0f)?.let(out::add) }
+        assertEquals(2, out.size)
+        assertEquals(3, out[1].samples.first().toInt())   // starts with the carried words
+    }
+
+    @Test
+    fun `smart cut without any pause cuts at the quietest frame`() {
+        val c = chunker(minChunkMs = 100, maxChunkMs = 1000, smartCut = true, pauseCutMs = 64)
+        val out = mutableListOf<AudioEvent.ChunkReady>()
+        c.feedRun(20, 1, 0.95f, out)
+        c.feedRun(1, 9, 0.6f, out)     // quietest frame (index 20), still speech
+        c.feedRun(11, 2, 0.95f, out)   // reaches the cap at 32 frames
+        assertEquals(1, out.size)
+        assertEquals(21 * BLOCK, out[0].samples.size)
+        assertEquals(9, out[0].samples.last().toInt())
+        assertTrue(c.isCollecting)
     }
 }

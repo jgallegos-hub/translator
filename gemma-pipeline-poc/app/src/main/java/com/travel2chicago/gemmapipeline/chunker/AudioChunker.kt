@@ -13,8 +13,13 @@ private const val TAG = "AudioChunker"
  * Port of `AudioChunker` in `src/audio_manager/audio_chunker.py`.
  *
  * Two emission triggers:
- *   1. **Max-size**: the running chunk reaches [ChunkerConfig.maxChunkMs] —
- *      cut and start a new chunk immediately (mid-utterance split).
+ *   1. **Max-size**: the running chunk reaches [ChunkerConfig.maxChunkMs].
+ *      With [ChunkerConfig.smartCut] (default) the chunk is cut at its LAST
+ *      pause (>= [ChunkerConfig.pauseCutMs] of frames with speech probability
+ *      under the VAD threshold) - or, if there was none, at the lowest-
+ *      probability frame of the last 2 s - and the remainder is carried into
+ *      the next chunk, so words are not split. Legacy mode cuts right at the
+ *      cap (mid-utterance split).
  *   2. **End-of-utterance**: VAD has been SILENCE for [ChunkerConfig.silenceEndMs]
  *      AND the chunk is at least [ChunkerConfig.minChunkMs] long — emit and
  *      go back to "not collecting".
@@ -39,12 +44,20 @@ class AudioChunker(
     private val maxChunkSamples: Int = config.maxChunkSamples(format)
     private val silenceEndFrames: Int = config.silenceEndFrames(format)
     private val preRollFrames: Int = config.preRollFrames(format)
+    private val pauseCutFrames: Int = config.pauseCutFrames(format)
+    private val minChunkFrames: Int = (minChunkSamples / format.blockSize).coerceAtLeast(1)
+    private val backtrackFrames: Int = (2 * format.sampleRate / format.blockSize).coerceAtLeast(1)
 
     private val chunkFrames: ArrayList<ShortArray> = ArrayList()
     private var chunkSampleCount: Int = 0
     private val preRoll: ArrayDeque<ShortArray> = ArrayDeque()
     private var silenceCount: Int = 0
     private var collecting: Boolean = false
+    /** Speech probability per frame in [chunkFrames] (smart cut). */
+    private val chunkProbs: ArrayList<Float> = ArrayList()
+    private var lowRun: Int = 0
+    /** Frame index (exclusive) right after the most recent pause, or -1. */
+    private var lastPauseEnd: Int = -1
 
     val isCollecting: Boolean get() = collecting
 
@@ -67,7 +80,12 @@ class AudioChunker(
      * Feed one frame plus its VAD state. Returns the assembled chunk if this
      * call crossed an emission threshold, otherwise null.
      */
-    fun feed(frame: ShortArray, vadState: VadState): AudioEvent.ChunkReady? {
+    fun feed(
+        frame: ShortArray,
+        vadState: VadState,
+        speechProb: Float = if (vadState == VadState.SPEECH) 1f else 0f,
+        vadThreshold: Float = 0.5f,
+    ): AudioEvent.ChunkReady? {
         if (!collecting) {
             // Pre-roll always captures the latest frames so the syllable onset
             // isn't clipped. On the SILENCE→SPEECH crossing, start_collecting
@@ -76,17 +94,26 @@ class AudioChunker(
             pushPreRoll(frame)
             if (vadState == VadState.SPEECH) {
                 startCollecting()
+                // Pre-roll frames carry no stored probability; treat them as
+                // speech so they are never chosen as a cut point.
+                while (chunkProbs.size < chunkFrames.size) chunkProbs.add(1f)
             } else {
                 return null
             }
         } else {
             chunkFrames.add(frame.copyOf())
+            chunkProbs.add(speechProb)
             chunkSampleCount += frame.size
             silenceCount = if (vadState == VadState.SPEECH) 0 else silenceCount + 1
+            lowRun = if (speechProb < vadThreshold) lowRun + 1 else 0
+            if (lowRun >= pauseCutFrames && chunkFrames.size >= minChunkFrames) {
+                lastPauseEnd = chunkFrames.size
+            }
         }
 
         return when {
-            chunkSampleCount >= maxChunkSamples -> emit()
+            chunkSampleCount >= maxChunkSamples ->
+                if (config.smartCut) emitAtLastPause() else emit()
             vadState == VadState.SILENCE &&
                 silenceCount >= silenceEndFrames &&
                 chunkSampleCount >= minChunkSamples -> emit()
@@ -105,6 +132,36 @@ class AudioChunker(
             return null
         }
         return emit()
+    }
+
+    /** Smart cut at the hard cap: emit up to the last pause (or the quietest
+     *  frame of the last ~2 s), keep the remainder as the start of the next
+     *  chunk. Never splits mid-word unless the speaker never paused at all. */
+    private fun emitAtLastPause(): AudioEvent.ChunkReady {
+        val cut = if (lastPauseEnd > minChunkFrames && lastPauseEnd < chunkFrames.size) {
+            lastPauseEnd
+        } else {
+            val lo = maxOf(minChunkFrames, chunkFrames.size - backtrackFrames)
+                .coerceAtMost(chunkFrames.size - 1)
+            var best = chunkFrames.size - 1
+            for (i in lo until chunkFrames.size) if (chunkProbs[i] < chunkProbs[best]) best = i
+            (best + 1).coerceIn(1, chunkFrames.size)
+        }
+        val head = ArrayList(chunkFrames.subList(0, cut))
+        val tail = ArrayList(chunkFrames.subList(cut, chunkFrames.size))
+        val tailProbs = ArrayList(chunkProbs.subList(cut, chunkProbs.size))
+        val usedPause = cut == lastPauseEnd
+        chunkFrames.clear(); chunkFrames.addAll(head)
+        chunkSampleCount = head.sumOf { it.size }
+        Log.d(TAG, "smart cut at frame $cut/${head.size + tail.size} (pause=$usedPause)")
+        val out = emit()
+        if (tail.isNotEmpty()) {
+            collecting = true
+            chunkFrames.addAll(tail)
+            chunkProbs.addAll(tailProbs)
+            chunkSampleCount = tail.sumOf { it.size }
+        }
+        return out
     }
 
     private fun pushPreRoll(frame: ShortArray) {
@@ -154,8 +211,11 @@ class AudioChunker(
 
     private fun reset() {
         chunkFrames.clear()
+        chunkProbs.clear()
         chunkSampleCount = 0
         collecting = false
         silenceCount = 0
+        lowRun = 0
+        lastPauseEnd = -1
     }
 }

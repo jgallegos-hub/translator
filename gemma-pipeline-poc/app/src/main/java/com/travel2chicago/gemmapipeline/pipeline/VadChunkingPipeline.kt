@@ -375,7 +375,11 @@ class VadChunkingPipeline(
                 bus.emit(transition)
             }
 
-            val chunk = currentChunker.feed(frame, currentProcessor.state)
+            val chunk = currentChunker.feed(
+                frame, currentProcessor.state,
+                speechProb = currentProcessor.lastProbability,
+                vadThreshold = vadConfig.threshold,
+            )
             if (chunk != null) {
                 bus.emit(chunk)
             }

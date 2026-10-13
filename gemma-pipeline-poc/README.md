@@ -125,6 +125,13 @@ a target ≤ 3 s.
   and SKIP both OFF. Device tooling: adb over Wi-Fi + `tools/device_test.py`,
   echo dataset recorder, offline AEC3 runner. See PROGRESS.md
   "AEC3 en vivo + keep-alive con dither".
+- ✅ **TTS latency + translation accuracy** (October 13, 2026). Kokoro now
+  runs the **fp16** export (on-device benchmark RTF 0.85 → 0.44, same voice)
+  with 4 threads; XNNPACK and clause splitting tested and discarded. The
+  chunker's hard 6 s cut split 22–29 % of chunks mid-phrase (inaccurate and
+  hallucinated translations); the new **smart cut** sends phrases up to 12 s
+  whole and cuts only at the last pause — long phrases now translate
+  coherently on device. See PROGRESS.md.
 - ⏸ **Session paused** (October 1, 2026). Next: 3-round device test of
   the anti-echo layers (both ON / only SKIP / only echo filter), RMS
   calibration from per-chunk logs, false-positive check; then fix the 8
@@ -541,6 +548,9 @@ everything under "3½. FASE 6 STREAMING".
 | **Kokoro model** (`TtsConfig.modelFilename`) | **`kokoro-v1.0.fp16.onnx`** | code (file must be in `/sdcard/Download/kokoro_model/`) | fp16 export: RTF 0.44 in the on-device benchmark vs 0.85 for int8 (fp32 1.96; XNNPACK slower for all). Download from `thewh1teagle/kokoro-onnx` release `model-files-v1.0`. |
 | `TtsConfig.intraOpThreads` | `4` | code | ORT CPU threads for Kokoro (2 → 0.93 RTF, 4 → 0.84, 6 → 0.92 on int8). |
 | `TtsConfig.clauseSplitting` | `false` | code | Cut sentences into clauses for streaming TTS. Tested OFF: no first-audio gain (most sentences have no commas) and choppy prosody. |
+| **`ChunkerConfig.smartCut`** | **`true`** | code | Prefer the natural end of the utterance; at `maxChunkMs` cut at the last pause (≥ `pauseCutMs`, Silero p < threshold) and carry the rest. Offline (`tools/chunker_sim.py`): mid-speech cuts 9 → 0. |
+| `ChunkerConfig.maxChunkMs` | **`12_000`** (was 6 000) | Slider "maxChunkMs" | Hard cap per chunk. Long phrases now reach Gemma whole (translation starts when the phrase ends). |
+| `ChunkerConfig.pauseCutMs` | `100` | code | Minimum non-speech run that counts as a cut point. |
 | Kokoro benchmark (`KokoroBench`) | — | `adb shell am start -n com.travel2chicago.gemmapipeline/.MainActivity --ez kokoro_bench true` | Synthesises fixed sentences per model/thread/EP variant; logcat tag `KokoroBench`. |
 | Echo dataset (`EchoDatasetRecorder`) | — | Buttons "Grabar dataset eco" / "Chirps ×10" | Records `mic.wav` (pre-AEC), `ref.wav` (TTS, aligned), `aec_out.wav`, `events.csv` for offline analysis (`tools/analyze_dataset.py`, `tools/aec3-offline/`). |
 

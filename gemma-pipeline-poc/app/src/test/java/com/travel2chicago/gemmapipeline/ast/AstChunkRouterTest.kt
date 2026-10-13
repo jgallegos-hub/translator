@@ -1018,6 +1018,17 @@ class AstChunkRouterTest {
             assertEquals(1L, router.totalEchoDropped)
         }
 
+    @Test
+    fun `streaming closing quote after the terminator is merged into the last sentence`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val engine = FakeStreamingEngine(
+                tokens = listOf("The squirrel said, ", "\"How can you be hungry?", "\""),
+            )
+            val (_, out) = runOneChunk(engine, config(streamingEnabled = true))
+            assertEquals(listOf("The squirrel said, \"How can you be hungry?\""), out.map { it.text })
+            assertTrue(out.single().isFinal)
+        }
+
     // ── Capa 3 — RMS slider hot-swap ─────────────────────────────────────
 
     @Test
