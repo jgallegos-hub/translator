@@ -423,10 +423,16 @@ data class AstConfig(
      * Default CASCADE_MLKIT after the live A/B (2026-10-14): 1.28 s to first
      * audio vs 3.17 s for Gemma audio, and no invented sentences.
      */
-    val translationEngine: TranslationEngine = TranslationEngine.CASCADE_MLKIT,
+    val translationEngine: TranslationEngine = TranslationEngine.CASCADE_AUTO,
     /** Cascade echo-residue gate: Moonshine lines with RMS below this are
      *  dropped (F0 corpus: voice >= ~2200, residue <= ~1300). */
     val asrLineRmsThreshold: Double = 1800.0,
+    /** Same gate while our TTS is playing (residue reached 1850-2200 in the
+     *  2026-10-14 validation round; Abraham's speech stays >= ~3500). */
+    val asrLineRmsThresholdDuringTts: Double = 2400.0,
+    /** Auto mode: Spanish transcripts with at least this many words go to
+     *  Gemma text, shorter ones to ML Kit. */
+    val autoLongPhraseWords: Int = 10,
 ) {
     init {
         require(modelDirPath.isNotBlank()) { "modelDirPath must not be blank" }
@@ -467,4 +473,5 @@ enum class TranslationEngine(val label: String) {
     GEMMA_AUDIO("Gemma audio (actual)"),
     CASCADE_MLKIT("Rápido: Moonshine + ML Kit"),
     CASCADE_GEMMA_TEXT("Natural: Moonshine + Gemma texto"),
+    CASCADE_AUTO("Auto: ML Kit cortas + Gemma largas"),
 }

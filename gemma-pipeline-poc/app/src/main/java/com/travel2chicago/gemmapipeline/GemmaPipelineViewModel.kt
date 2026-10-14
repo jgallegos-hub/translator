@@ -1110,7 +1110,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         val asr = moonshineAsr
         val translator: com.travel2chicago.gemmapipeline.mt.TextTranslator? = when (mode) {
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO -> null
-            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT -> mlKitTranslator
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT,
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO -> mlKitTranslator
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_GEMMA_TEXT ->
                 (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
         }
@@ -1120,7 +1121,15 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         val engine: GemmaAstEngine
         val cfg: AstConfig
         if (asr != null && translator != null) {
-            engine = com.travel2chicago.gemmapipeline.ast.CascadeAstEngine(asr, translator, astConfig.asrLineRmsThreshold)
+            val longT = if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO)
+                (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) } else null
+            engine = com.travel2chicago.gemmapipeline.ast.CascadeAstEngine(
+                asr, translator, astConfig.asrLineRmsThreshold,
+                longTranslator = longT,
+                longPhraseWords = astConfig.autoLongPhraseWords,
+                strictLineRmsThreshold = astConfig.asrLineRmsThresholdDuringTts,
+                isTtsActive = { ttsPlaying.get() },
+            )
             cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false)
         } else {
             engine = g
@@ -1157,7 +1166,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(cascadeStatus = "Cargando Moonshine…") }
                 moonshineAsr = com.travel2chicago.gemmapipeline.asr.MoonshineAsr.load()
             }
-            if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT && mlKitTranslator == null) {
+            if ((mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT ||
+                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO) && mlKitTranslator == null) {
                 _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
                 mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
             }

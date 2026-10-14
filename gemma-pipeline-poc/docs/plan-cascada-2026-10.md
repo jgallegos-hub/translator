@@ -277,3 +277,30 @@ only." (`mt/GemmaTextBench.kt`). Mismo engine/GPU que la ruta de audio.
   de frase del VAD (`silenceEndMs` 500 ms), que ahora pesa tanto como el ASR+MT
   juntos; (3) Moonshine en streaming para tener el texto listo al terminar de
   hablar.
+
+## Ronda de validación r13 (14-oct, modo Rápido) y ajustes
+
+Percepción de Abraham: transcribe rápido pero tarda en hablar (algo más rápido
+que Gemma); algunas frases terminan en un "ahhh"; las largas del guion bien, las
+largas de conversación real no.
+
+Log (`r13_validacion.log`):
+- ASR + ML Kit: 0.07–0.9 s. La espera es Kokoro + cola: frases largas sin
+  puntuación (Moonshine Tiny casi no puntúa y ML Kit copia eso) se sintetizan
+  enteras: 9 s de audio → 5.2–5.5 s de síntesis antes de sonar; con habla
+  continua la cola llegó a 7–10 s.
+- "ahhh": hipótesis — Kokoro con texto sin puntuación final (muchas salidas de
+  ML Kit acababan sin punto) alarga el final.
+- Conversación real con ML Kit: literal y torpe ("tampoco hay que clavarnos en
+  eso"→"you have to nail us in that", "no mira lo que pasa"→"do not look what
+  happens"); ASR con términos técnicos (SharePoint→"cherpoint", CRAC→"crass").
+- Residuo de eco: 2 líneas descartadas (1711, 1697), pero pasaron otras de
+  1850–2200 durante la reproducción ("Luego, The Fraid Fraid", "mi hocus",
+  "Se trata de un cuerpo nocional").
+
+Ajustes (commit siguiente):
+1. Toda traducción de la cascada termina en . ! o ? (y con mayúscula inicial).
+2. **Modo Auto (nuevo default):** < 10 palabras → ML Kit; ≥ 10 → Gemma texto
+   (mejor sentido en habla larga y su puntuación deja a Kokoro empezar por la
+   1.ª oración).
+3. Umbral de residuo 2400 mientras suena el TTS (1800 si no).
