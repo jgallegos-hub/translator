@@ -131,9 +131,11 @@ data class TtsConfig(
      */
     val speed: Float = 1.2f,
 
-    /** ONNX Runtime intra-op threads for Kokoro. 4 since 2026-10-13 (2 gave
-     *  RTF 0.93 on the Xiaomi 15T Pro while Gemma runs on the GPU). */
-    val intraOpThreads: Int = 4,
+    /** ONNX Runtime intra-op threads for Kokoro. 6 since 2026-10-14 (ORT
+     *  1.23.2, fp16 benchmark on the Xiaomi 15T Pro: 2 thr RTF 0.82, 4 thr
+     *  0.44-0.49, 6 thr 0.42, 8 thr 0.39). 8 left free for the audio/ASR
+     *  threads that run concurrently with continuous speech. */
+    val intraOpThreads: Int = 6,
 
     /** Streaming only: cut sentences into clauses / ≤ [maxPieceWords]-word
      *  pieces so the first audio comes from a short synthesis. OFF after the

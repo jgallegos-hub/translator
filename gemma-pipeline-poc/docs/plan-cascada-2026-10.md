@@ -262,3 +262,18 @@ only." (`mt/GemmaTextBench.kt`). Mismo engine/GPU que la ruta de audio.
   "¿Navy? echa la mano", "Órale"→"O'Luisa") y el WER de Tiny sube 15.1→17.0 %.
   Con ≥ 8 entra en bucle. Alternativa futura: keyterms contextuales (sólo los
   lugares del itinerario del día) o corrección posterior del texto.
+
+## Kokoro como nuevo cuello de botella (14-oct)
+
+- Benchmark de hilos con ORT 1.23.2 (fp16, `kokoro_bench3.log`): 2 thr RTF 0.82,
+  4 thr 0.44–0.49, **6 thr 0.42 (nuevo default)**, 8 thr 0.39; int8-cpu6 0.42.
+- En vivo, síntesis ≈ 55 ms + 0.50 × duración del audio (43 piezas, r11+r12):
+  no hay overhead fijo que recortar; el 1.er audio depende del largo de la 1.ª
+  frase. El corte por comas ya se probó el 13-oct (sin mejora del p50 porque
+  casi ninguna frase traducida tiene comas, y prosodia entrecortada) → no se
+  repite.
+- Siguientes palancas, en orden: (1) motor TTS más rápido con voz equivalente
+  (bake-off Supertonic / Piper / Kitten, medido igual que Kokoro); (2) cierre
+  de frase del VAD (`silenceEndMs` 500 ms), que ahora pesa tanto como el ASR+MT
+  juntos; (3) Moonshine en streaming para tener el texto listo al terminar de
+  hablar.

@@ -30,6 +30,11 @@ object KokoroBench {
      * accelerate. Variants whose model file is missing on the device are skipped.
      */
     fun variants(base: TtsConfig): List<Pair<String, TtsConfig>> = listOf(
+        // Round 3 (2026-10-14, ORT 1.23.2): thread scaling of fp16/int8.
+        "fp16-cpu2" to base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", intraOpThreads = 2, useXnnpack = false),
+        "fp16-cpu6" to base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", intraOpThreads = 6, useXnnpack = false),
+        "fp16-cpu8" to base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", intraOpThreads = 8, useXnnpack = false),
+        "int8-cpu6" to base.copy(intraOpThreads = 6, useXnnpack = false),
         "int8-cpu4" to base.copy(intraOpThreads = 4, useXnnpack = false),
         "fp16-cpu4" to base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", intraOpThreads = 4, useXnnpack = false),
         "fp16-xnn4" to base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", intraOpThreads = 4, useXnnpack = true),
