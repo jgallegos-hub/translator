@@ -306,6 +306,34 @@ class LiteRtGemmaAstEngine private constructor(
         return AstResult(text = text, latencyMs = elapsedMs, backendUsed = backendUsed)
     }
 
+    /**
+     * Text-only translation (cascade plan: Moonshine transcript -> Gemma as
+     * text MT). Same one-Conversation discipline and cumulative-message
+     * handling as [translateStreaming]. Returns (text, firstTokenMs, totalMs).
+     */
+    suspend fun translateText(prompt: String): Triple<String, Long, Long> {
+        check(!closed) { "Engine is closed" }
+        closeCurrentConversation()
+        val conv = engine.createConversation(ConversationConfig(samplerConfig = samplerConfig))
+        currentConversation = conv
+        val full = StringBuilder()
+        val startNs = System.nanoTime()
+        var firstMs = -1L
+        conv.sendMessageAsync(Contents.of(Content.Text(prompt)))
+            .onCompletion { closeCurrentConversation() }
+            .collect { msg ->
+                val piece = msg.toString()
+                if (piece.isEmpty()) return@collect
+                if (firstMs < 0) firstMs = (System.nanoTime() - startNs) / 1_000_000
+                if (full.isNotEmpty() && piece.length >= full.length && startsWithBuffer(piece, full)) {
+                    full.append(piece, full.length, piece.length)
+                } else {
+                    full.append(piece)
+                }
+            }
+        return Triple(full.toString().trim(), firstMs, (System.nanoTime() - startNs) / 1_000_000)
+    }
+
     override fun close() {
         if (closed) return
         closed = true

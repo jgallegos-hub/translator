@@ -1072,6 +1072,17 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Gemma as text MT (see [com.travel2chicago.gemmapipeline.mt.GemmaTextBench]). */
+    fun runGemmaTextBench() {
+        viewModelScope.launch(Dispatchers.IO) {
+            var waited = 0
+            while (gemmaEngine == null && waited < 180) { delay(1_000); waited++ }
+            val g = gemmaEngine as? com.travel2chicago.gemmapipeline.ast.LiteRtGemmaAstEngine
+                ?: run { log("[ERROR] Gemma not loaded"); return@launch }
+            com.travel2chicago.gemmapipeline.mt.GemmaTextBench.run(g) { log(it) }
+        }
+    }
+
     /** On-device ML Kit Translate spike (see [com.travel2chicago.gemmapipeline.mt.MlKitBench]). */
     fun runMlKitBench() {
         viewModelScope.launch(Dispatchers.IO) {

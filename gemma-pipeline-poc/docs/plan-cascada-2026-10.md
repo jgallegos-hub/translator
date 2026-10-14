@@ -210,3 +210,26 @@ Implicaciones para la Opción 1:
 - Conclusión: velocidad sobrada, calidad insuficiente para habla mexicana real
   sin ayuda. Opciones: normalizador de modismos (2b), o un MT que entienda
   slang (Gemma E4B en modo texto, ya cargado; TranslateGemma).
+
+## Resultados: Gemma E4B como MT de texto (14-oct)
+
+Prompt: "Translate this Mexican Spanish speech transcript into natural, idiomatic
+English. Translate slang … by their meaning … Reply with the English translation
+only." (`mt/GemmaTextBench.kt`). Mismo engine/GPU que la ruta de audio.
+
+| Ruta | 1.er token | total p50 | total p90 |
+|---|---|---|---|
+| Gemma audio (hoy, sesión F0) | ~1.13 s | 1.5–2.5 s | 5–7 s (largas) |
+| Moonshine Tiny → **Gemma texto** | 0.08 + **0.84 s** | 0.08 + **1.65 s** | 3.4–3.6 s |
+| Moonshine Tiny → ML Kit | — | 0.08 + 0.02 s | 0.3 s |
+
+- **Calidad: la mejor de las tres.** Slang 20/20 correcto o aceptable ("This
+  place is awesome!", "No way, we're already late", "I'm really hungover",
+  "ridiculously expensive, how embarrassing", "I finally get it", "What? I
+  didn't get that"); cuenta→"check", me queda chica→"too small for me".
+- Con texto de ASR malo traduce fielmente la basura ("maybe peer … my Venian
+  Park", "I'm going to get lost, boss"): los errores restantes vienen del ASR
+  (inglés, lugares, residuo de eco), no del MT.
+- El 1.er token ~0.83 s es casi constante (independiente del largo) →
+  overhead fijo por conversación/prefill; vale investigar (KV del prompt
+  reutilizado, backend, E2B).

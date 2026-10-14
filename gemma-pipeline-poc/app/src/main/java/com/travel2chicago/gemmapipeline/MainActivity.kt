@@ -51,6 +51,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("moonshine_bench", false) == true) {
             viewModel.runMoonshineBench()
         }
+        if (intent?.getBooleanExtra("gemma_text_bench", false) == true) {
+            viewModel.runGemmaTextBench()
+        }
         if (intent?.getBooleanExtra("mlkit_bench", false) == true) {
             viewModel.runMlKitBench()
         }
