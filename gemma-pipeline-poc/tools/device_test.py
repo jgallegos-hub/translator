@@ -22,7 +22,7 @@ LOG_DIR = ROOT / "logs"
 DATASET_DIR = ROOT / "datasets"
 DEVICE_DATASETS = "/sdcard/Android/data/com.travel2chicago.gemmapipeline/files/echo_dataset"
 APK = ROOT.parent / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
-TAGS = ["AstChunkRouter", "TtsRouter", "VadChunkingPipeline", "GemmaPipelineVM"]
+TAGS = ["AstChunkRouter", "TtsRouter", "VadChunkingPipeline", "GemmaPipelineVM", "CascadeAstEngine", "MoonshineAsr"]
 
 
 def adb_path() -> str:
