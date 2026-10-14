@@ -51,6 +51,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("moonshine_bench", false) == true) {
             viewModel.runMoonshineBench()
         }
+        if (intent?.getBooleanExtra("mlkit_bench", false) == true) {
+            viewModel.runMlKitBench()
+        }
 
         setContent {
             GemmaPipelineTheme {

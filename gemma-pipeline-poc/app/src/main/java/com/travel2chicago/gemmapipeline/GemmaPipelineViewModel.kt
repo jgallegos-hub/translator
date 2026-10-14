@@ -1072,6 +1072,13 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** On-device ML Kit Translate spike (see [com.travel2chicago.gemmapipeline.mt.MlKitBench]). */
+    fun runMlKitBench() {
+        viewModelScope.launch(Dispatchers.IO) {
+            com.travel2chicago.gemmapipeline.mt.MlKitBench.run { log(it) }
+        }
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router

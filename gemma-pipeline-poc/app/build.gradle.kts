@@ -118,6 +118,10 @@ dependencies {
     implementation(files("libs/moonshine-voice-0.1.5-noort.aar"))
     implementation("androidx.appcompat:appcompat:1.6.1")   // Transcriber.loadFromAssets signature
 
+    // ML Kit on-device translation (NMT, es->en model ~30 MB downloaded once
+    // through Play services). Terms require Google attribution in the UI.
+    implementation("com.google.mlkit:translate:17.0.3")
+
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)

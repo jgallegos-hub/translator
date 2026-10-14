@@ -196,3 +196,17 @@ Implicaciones para la Opción 1:
   0.85 a 0.45.
 - Comparado con Gemma (1.er token ~1.13 s, total 1.5–2.5 s), el ASR con Tiny
   cuesta ~0.1 s. **Riesgo 1b cerrado. Siguiente: ML Kit (1c).**
+
+## Resultados 1c: ML Kit Translate en el teléfono (14-oct)
+
+- Modelo es→en descargado en 2.6 s (una vez). Traducción **p50 16 ms, máx 64 ms**
+  (74 frases del guion) y p50 17 ms sobre la salida de Moonshine Tiny (84 chunks).
+- Frases estándar: correctas pero literales ("bring me the account" por la
+  cuenta, "Good evening" por buenas noches, "Forgiveness" por perdón).
+- **Slang: muy malo**, peor que Gemma: "¡Qué padre está este lugar!"→"What a
+  father is this place!", "No manches"→"Do not stain", "¿Qué onda?"→"What a
+  wave", "Mande"→"Send", "me queda chica"→"I have a girl", "Aguas con el
+  escalón"→"Waters with the step", "No hay bronca"→"There is no anger".
+- Conclusión: velocidad sobrada, calidad insuficiente para habla mexicana real
+  sin ayuda. Opciones: normalizador de modismos (2b), o un MT que entienda
+  slang (Gemma E4B en modo texto, ya cargado; TranslateGemma).
