@@ -136,3 +136,40 @@ F0 corpus ─► 1a PC ─► 1b spike ─► 1c ML Kit ─► 1d integración �
   ML Kit es-en en el teléfono).
 - 1e y siguientes: sesiones de habla como hasta ahora + juicio 1–5 de las
   traducciones.
+
+## Resultados F0 (14-oct, sesión `20261014_103127`, 444 s, 84 chunks smart2)
+
+Corpus: guion F0 leído con la app en vivo (Gemma + Kokoro + JBL, AEC3 ON).
+ASR medido en PC sobre los mismos chunks que vio Gemma (`tools/chunker_sim.py`
+smart2), frases 1–74 contra el guion (`cascade_bench.py wer … 75`).
+
+| Motor | WER total | sólo sust.+omis. | inserciones | RTF PC |
+|---|---|---|---|---|
+| Moonshine Small-es | 18.3 % | 7.6 % | 61 palabras | 0.104 |
+| Moonshine Tiny-es | **15.1 %** | 7.6 % | 43 palabras | **0.043** |
+
+- Las palabras que sí dijo Abraham se reconocen ~92 %. Casi todo el error son
+  **inserciones**: restos de la voz de Kokoro tras AEC3 dentro de los chunks
+  (p. ej. "no se puede disimular", "El nombre de la película es Socorro"), que
+  Moonshine transcribe como español inventado. Gemma, en cambio, los ignoró casi
+  siempre (sólo un "I'm sorry." espurio).
+- Silencios: 0 inventos en ambos (vacío). Tiny repite ("sí sí sí", "ja ja ja")
+  en algunos chunks cortos.
+- Frases en inglés (sección E): Moonshine-es las destroza ("tenkevermash",
+  "skies me where is a battle"). Lugares: "neibi pir", "minbeniam park".
+  Préstamos sueltos (check-in, link, WhatsApp, parking, snacks) bien.
+- **Línea base Gemma en la misma sesión:** traducción buena en frases normales y
+  largas; primer token ~1.13 s (2.2 s en largas), total 1.5–2.5 s (5–7 s largas).
+  Fallos: slang ("Mande"→"Good morning"/"Okay, man", "órale vámonos"→"Hello,
+  Amonus", "qué oso"→"what a bear", "me cayó el veinte"→"I got the 20", "Nos
+  vemos"→"We see"), omitió 2 frases en inglés, "Roosevelt"→"Russell".
+
+Implicaciones para la Opción 1:
+1. Tiny-es es tan preciso como Small-es y 2.4× más rápido → candidato principal.
+2. Hace falta un filtro contra el residuo de eco en el ASR (transcribir también
+   la referencia TTS / gating por actividad de reproducción / umbral de
+   confianza), o la cascada traducirá basura que Gemma hoy ignora.
+3. `Transcriber.set_keyterms()` para lugares/nombres (Navy Pier, Millennium
+   Park, Roosevelt…).
+4. Si el inglés del hablante importa, evaluar un ASR multilingüe (Whisper /
+   Parakeet v3) en la sección E.
