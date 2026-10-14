@@ -327,3 +327,22 @@ Ajustes:
    entrecortada del 13-oct.
 3. Pendiente: muletillas que Moonshine convierte en palabras (no se filtran por
    energía; requieren otra señal).
+
+## Siguiente fase propuesta (14-oct): voz de salida + audio limpio + LLM más veloz
+
+Base: `docs/research-tts-ruido-2026-10.md` y `docs/research-s2s-llm-offline-2026-10.md`.
+Orden de más factible a más complicado:
+
+1. **Filtro de texto barato (sin modelos nuevos):** quitar muletillas es-MX,
+   descartar líneas sólo-muletilla / sílabas repetidas / con ≥ 50 % de palabras
+   fuera de vocabulario. Evaluar offline con los chunks ya grabados.
+2. **Gemma 4 E2B (+ MTP) como traductor de texto** (TTFT ~0.3 s esperado vs
+   0.85–1.4 s): requiere subir LiteRT-LM y descargar ~2.6 GB; validar calidad
+   con el corpus F0. Si aguanta, podría ser el único traductor (sin ML Kit).
+3. **Bake-off de voz: Pocket TTS** (streaming real, ~0.2 s al 1.er audio)
+   contra Kokoro, con A/B ciego de Abraham; Supertonic/Kitten como reserva.
+4. **Clasificador de eventos de audio** (YAMNet / mn04) como 2.ª señal para
+   risa/tos, con set etiquetado y meta de recall de habla ≥ 99.5 %.
+5. Opcional: modo nube (Claude Haiku / Gemini Flash-Lite) con interruptor de
+   privacidad; Gemini Nano (Prompt API, el 15T Pro es compatible) a medir.
+6. Voz-a-voz end-to-end: no por ahora (licencias NC, lag > 5 s, sin Android).
