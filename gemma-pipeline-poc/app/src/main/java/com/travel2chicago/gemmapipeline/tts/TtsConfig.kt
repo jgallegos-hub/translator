@@ -129,7 +129,9 @@ data class TtsConfig(
      * the user dial back to 1.0x (or 0.8x) if the faster voice sounds
      * off in a specific room.
      */
-    val speed: Float = 1.2f,
+    // 1.0 again since 2026-10-14: with the cascade the translation is no
+    // longer the slow part, and Abraham found 1.2x too rushed / less natural.
+    val speed: Float = 1.0f,
 
     /** ONNX Runtime intra-op threads for Kokoro. 6 since 2026-10-14 (ORT
      *  1.23.2, fp16 benchmark on the Xiaomi 15T Pro: 2 thr RTF 0.82, 4 thr
@@ -148,6 +150,11 @@ data class TtsConfig(
      *  optimised kernels). Experimental — see the in-app Kokoro benchmark. */
     val useXnnpack: Boolean = false,
     val maxPieceWords: Int = 12,
+    /** Even with [clauseSplitting] off, a single sentence of at least this many
+     *  words is cut at its commas (pieces <= [maxPieceWords]) so Kokoro does not
+     *  synthesise 9 s of audio before the first sound (device 2026-10-14: a
+     *  31-word Gemma sentence waited 5.6 s). 0 disables. */
+    val longSentenceSplitWords: Int = 20,
 ) {
     companion object {
         const val MIN_SPEED = 0.8f

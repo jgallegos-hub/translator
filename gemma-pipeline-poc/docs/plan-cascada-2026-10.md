@@ -304,3 +304,26 @@ Ajustes (commit siguiente):
    (mejor sentido en habla larga y su puntuación deja a Kokoro empezar por la
    1.ª oración).
 3. Umbral de residuo 2400 mientras suena el TTS (1800 si no).
+
+## Ronda r14 (modo Auto) y ajustes de voz (14-oct)
+
+Percepción de Abraham: **mucho mejor**; transcripciones bien en su mayoría,
+rápido incluso en frases largas; se nota el tiempo de Kokoro; 2 frases sin
+sentido salieron de muletillas intencionales (mmm, ehh, este…); la voz se
+percibe muy acelerada (speed 1.2, puesto antes para compensar el retraso de
+Gemma).
+
+Log (`r14_auto.log`): fin de chunk → 1.er audio p50 2.6 s, p90 8.5 s (cola).
+ML Kit en frases < 10 palabras (0.08–0.36 s); Gemma texto en ≥ 10 (1.er token
+0.9–1.4 s, total 2.6–5.2 s) con buena calidad ("I'm really down today", "nobody's
+waiting for me anymore"). Una oración de Gemma de 31 palabras = 9.3 s de audio →
+5.6 s de síntesis antes de sonar y 12 s de cola para las siguientes.
+
+Ajustes:
+1. **Velocidad de voz 1.2 → 1.0** (sólo cambia el ritmo de Kokoro, no la
+   traducción; a 1.0 cada frase dura ~20 % más en sintetizar y sonar).
+2. **Corte sólo de oraciones muy largas (≥ 20 palabras)** en sus comas (piezas
+   ≤ 12 palabras); el resto sigue entero, para no repetir la prosodia
+   entrecortada del 13-oct.
+3. Pendiente: muletillas que Moonshine convierte en palabras (no se filtran por
+   energía; requieren otra señal).

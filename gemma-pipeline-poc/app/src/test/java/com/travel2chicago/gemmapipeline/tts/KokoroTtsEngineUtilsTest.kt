@@ -77,4 +77,15 @@ class KokoroTtsEngineUtilsTest {
         assertEquals(listOf("Hello, how are you?"), KokoroOnnxEngine.splitForStreaming("Hello, how are you?"))
         assertEquals(listOf("Stop."), KokoroOnnxEngine.splitForStreaming("Stop."))
     }
+
+    @Test
+    fun `splitLongSentences only cuts sentences at or above the word threshold`() {
+        val long = "Just let me know, or if you'd prefer I sing a sad song, if you can sing it to me " +
+            "or if we can sing together, or just tell me how we can do it."
+        val text = "I'm really down today. $long"
+        val out = KokoroOnnxEngine.splitLongSentences(text, minWords = 20, maxWords = 12)
+        assertEquals("I'm really down today.", out.first())
+        assertTrue(out.size > 2)
+        assertEquals(text.split(" ").size, out.sumOf { it.split(" ").size })
+    }
 }

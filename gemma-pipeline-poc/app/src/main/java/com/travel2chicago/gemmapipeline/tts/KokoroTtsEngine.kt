@@ -102,6 +102,7 @@ class KokoroOnnxEngine private constructor(
      *  synthesised from a short piece (see [splitForStreaming]). */
     private val clauseSplitting: Boolean = false,
     private val maxPieceWords: Int = 12,
+    private val longSentenceSplitWords: Int = 0,
 ) : KokoroTtsEngine {
 
     @Volatile private var closed: Boolean = false
@@ -146,8 +147,11 @@ class KokoroOnnxEngine private constructor(
         }
 
         val startedNs = System.nanoTime()
-        val sentences = if (clauseSplitting) splitForStreaming(text, maxPieceWords)
-                        else splitIntoSentences(text)
+        val sentences = when {
+            clauseSplitting -> splitForStreaming(text, maxPieceWords)
+            longSentenceSplitWords > 0 -> splitLongSentences(text, longSentenceSplitWords, maxPieceWords)
+            else -> splitIntoSentences(text)
+        }
         var totalSamples = 0
         for ((idx, sentence) in sentences.withIndex()) {
             val floatPcm = synthesizeOne(sentence, voice, speed) ?: continue
@@ -352,6 +356,7 @@ class KokoroOnnxEngine private constructor(
                 loadTimeMs = loadMs,
                 clauseSplitting = config.clauseSplitting,
                 maxPieceWords = config.maxPieceWords,
+                longSentenceSplitWords = config.longSentenceSplitWords,
             )
         }
 
@@ -395,6 +400,13 @@ class KokoroOnnxEngine private constructor(
             }
             return if (out.isEmpty()) listOf(text.trim()) else out
         }
+
+        /** Sentences as-is, except those with >= [minWords] words, which are
+         *  cut into clauses like [splitForStreaming]. */
+        internal fun splitLongSentences(text: String, minWords: Int, maxWords: Int): List<String> =
+            splitIntoSentences(text).flatMap { s ->
+                if (s.split(WHITESPACE).size >= minWords) splitForStreaming(s, maxWords) else listOf(s)
+            }
 
         internal fun splitIntoSentences(text: String): List<String> {
             val out = ArrayList<String>(4)
