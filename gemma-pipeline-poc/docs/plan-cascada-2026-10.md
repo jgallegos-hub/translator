@@ -250,3 +250,15 @@ only." (`mt/GemmaTextBench.kt`). Mismo engine/GPU que la ruta de audio.
 - Errores de ASR en nombres propios (Navy Pier→"neir"/"Negri", Roosevelt→
   "Russell"); Gemma audio sí entendió Navy Pier → probar `setKeyterms`.
 - **Nuevo cuello de botella: Kokoro (~1 s antes de sonar).**
+
+## Default + keyterms (14-oct)
+
+- **Default del selector: Rápido (Moonshine + ML Kit)**; Moonshine y ML Kit se
+  precargan al abrir la app (Moonshine 0.27 s).
+- **Keyterms de Moonshine descartados por ahora.** Lista de Chicago
+  (`tools/corpus/keyterms_chicago.txt`). Con `keyterm_boost` por defecto no
+  cambian nada; con 4 corrigen Navy Pier / Roosevelt / check-in, pero insertan
+  nombres en habla normal ("¿Mande?"→"¿O'Hare mante?", "¿Me echas la mano?"→
+  "¿Navy? echa la mano", "Órale"→"O'Luisa") y el WER de Tiny sube 15.1→17.0 %.
+  Con ≥ 8 entra en bucle. Alternativa futura: keyterms contextuales (sólo los
+  lugares del itinerario del día) o corrección posterior del texto.

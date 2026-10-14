@@ -8,6 +8,7 @@ transcripts can be compared against references (WER) and checked for
 hallucinations/loops on short chunks.
 """
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,13 +23,17 @@ MODELS = {
 }
 
 
-def load_models(language: str = "es") -> dict:
+def load_models(language: str = "es", keyterms: list[str] | None = None) -> dict:
     out = {}
     for name, arch in MODELS.items():
         info = dl.find_model_info(language, arch)
         path = dl.download_model_from_info(info)
         path = path[0] if isinstance(path, tuple) else path
-        out[name] = Transcriber(str(path), arch)
+        # Keyterm bias strength (C option); env MOONSHINE_KEYTERM_BOOST, F0 sweep: 4 ok, >= 8 loops.
+        boost = os.environ.get("MOONSHINE_KEYTERM_BOOST")
+        out[name] = Transcriber(str(path), arch, options={"keyterm_boost": boost} if boost else None)
+        if keyterms:
+            out[name].set_keyterms(keyterms)
     return out
 
 
@@ -39,8 +44,8 @@ def transcribe(t: Transcriber, audio, sr) -> tuple[str, float]:
     return " ".join(l.text.strip() for l in tr.lines if l.text.strip()), ms
 
 
-def run_asr(folder: Path, out_csv: Path) -> None:
-    models = load_models()
+def run_asr(folder: Path, out_csv: Path, keyterms: list[str] | None = None) -> None:
+    models = load_models(keyterms=keyterms)
     wavs = sorted(folder.rglob("*.wav"))
     with out_csv.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -105,8 +110,11 @@ def run_wer(asr_csv: Path, script_md: Path, last_chunk: int) -> None:
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if len(sys.argv) == 4 and sys.argv[1] == "asr":
-        run_asr(Path(sys.argv[2]), Path(sys.argv[3]))
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "asr":
+        terms = None
+        if len(sys.argv) == 5:  # optional keyterms file, one term per line
+            terms = [t.strip() for t in Path(sys.argv[4]).read_text("utf-8").splitlines() if t.strip()]
+        run_asr(Path(sys.argv[2]), Path(sys.argv[3]), terms)
     elif len(sys.argv) == 5 and sys.argv[1] == "wer":
         run_wer(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
     else:

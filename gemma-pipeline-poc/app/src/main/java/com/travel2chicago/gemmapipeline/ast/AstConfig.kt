@@ -420,8 +420,10 @@ data class AstConfig(
      * Which engine turns a speech chunk into English (cascade plan 1d,
      * docs/plan-cascada-2026-10.md). [TranslationEngine.GEMMA_AUDIO] is the
      * original path; the cascade modes run Moonshine Tiny-es first.
+     * Default CASCADE_MLKIT after the live A/B (2026-10-14): 1.28 s to first
+     * audio vs 3.17 s for Gemma audio, and no invented sentences.
      */
-    val translationEngine: TranslationEngine = TranslationEngine.GEMMA_AUDIO,
+    val translationEngine: TranslationEngine = TranslationEngine.CASCADE_MLKIT,
     /** Cascade echo-residue gate: Moonshine lines with RMS below this are
      *  dropped (F0 corpus: voice >= ~2200, residue <= ~1300). */
     val asrLineRmsThreshold: Double = 1800.0,

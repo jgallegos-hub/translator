@@ -105,7 +105,7 @@ data class GemmaPipelineUiState(
     val echoTextFilterEnabled: Boolean = true,
     /** Mirrors [AstConfig.translationEngine] (cascade A/B selector). */
     val translationEngine: com.travel2chicago.gemmapipeline.ast.TranslationEngine =
-        com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO,
+        AstConfig().translationEngine,
     /** Loading / error status of the cascade components (Moonshine, ML Kit). */
     val cascadeStatus: String = "",
     /** Capa 3 — live RMS gate, mirrors [AstConfig.rmsThreshold]. Hot-swapped
@@ -390,6 +390,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         if (storage && !prev.hasStoragePermission) {
             if (gemmaEngine == null && !_state.value.gemmaLoading) loadGemmaEngine()
             if (kokoroEngine == null && !_state.value.kokoroLoading) loadKokoroEngine()
+            viewModelScope.launch(Dispatchers.IO) { loadCascade(astConfig.translationEngine) }
         }
     }
 
@@ -1142,22 +1143,30 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(translationEngine = mode) }
         log("Translation engine → $mode")
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                if (mode != com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO && moonshineAsr == null) {
-                    _state.update { it.copy(cascadeStatus = "Cargando Moonshine…") }
-                    moonshineAsr = com.travel2chicago.gemmapipeline.asr.MoonshineAsr.load()
-                }
-                if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT && mlKitTranslator == null) {
-                    _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
-                    mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
-                }
-                _state.update { it.copy(cascadeStatus = "") }
-            } catch (t: Throwable) {
-                Log.e(TAG, "Cascade load failed", t)
-                _state.update { it.copy(cascadeStatus = "Error: ${t.message}") }
-                log("[ERROR] Cascade load failed: ${t.message}")
-            }
+            loadCascade(mode)
             restartAstRouter("translationEngine=$mode")
+        }
+    }
+
+    /** Loads what [mode] needs (Moonshine; ML Kit model on first use). Idempotent. */
+    @Synchronized
+    private fun loadCascade(mode: com.travel2chicago.gemmapipeline.ast.TranslationEngine) {
+        if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO) return
+        try {
+            if (moonshineAsr == null) {
+                _state.update { it.copy(cascadeStatus = "Cargando Moonshine…") }
+                moonshineAsr = com.travel2chicago.gemmapipeline.asr.MoonshineAsr.load()
+            }
+            if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT && mlKitTranslator == null) {
+                _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
+                mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
+            }
+            _state.update { it.copy(cascadeStatus = "") }
+            log("Cascade ready for $mode")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Cascade load failed", t)
+            _state.update { it.copy(cascadeStatus = "Error: ${t.message}") }
+            log("[ERROR] Cascade load failed: ${t.message}")
         }
     }
 
