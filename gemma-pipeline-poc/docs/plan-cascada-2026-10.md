@@ -233,3 +233,20 @@ only." (`mt/GemmaTextBench.kt`). Mismo engine/GPU que la ruta de audio.
 - El 1.er token ~0.83 s es casi constante (independiente del largo) →
   overhead fijo por conversación/prefill; vale investigar (KV del prompt
   reutilizado, backend, E2B).
+
+## Resultados 1e: A/B en vivo (14-oct, log `r12_cascade.log`, ~1 min por motor)
+
+| Motor | fin de chunk → 1.er audio (p50) | MT | Kokoro 1.ª pieza |
+|---|---|---|---|
+| Rápido: Moonshine + ML Kit | **1.28 s** | 0.08–0.33 s total | 0.96 s |
+| Natural: Moonshine + Gemma texto | 2.19 s | 1.6–2.8 s (1.er token ~0.9 s) | 1.23 s |
+| Gemma audio | 3.17 s | 2.1–3.3 s (1.er token 1.1–1.7 s) | 0.97 s |
+
+- Percepción de Abraham: Rápido se siente rápido y natural; Natural un poco más
+  lento; Gemma audio ahora se percibe muy lento.
+- Gemma audio inventó 2 frases ("Good morning everyone.", "I'm going to the
+  street."); las cascadas no inventaron nada. El filtro por línea no tuvo
+  residuo que tirar en esta ronda (0 líneas descartadas).
+- Errores de ASR en nombres propios (Navy Pier→"neir"/"Negri", Roosevelt→
+  "Russell"); Gemma audio sí entendió Navy Pier → probar `setKeyterms`.
+- **Nuevo cuello de botella: Kokoro (~1 s antes de sonar).**
