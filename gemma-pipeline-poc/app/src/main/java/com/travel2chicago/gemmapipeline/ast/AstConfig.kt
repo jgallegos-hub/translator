@@ -415,6 +415,16 @@ data class AstConfig(
 
     /** How long a spoken TTS sentence stays eligible as an echo source. */
     val echoWindowMs: Long = 15_000L,
+
+    /**
+     * Which engine turns a speech chunk into English (cascade plan 1d,
+     * docs/plan-cascada-2026-10.md). [TranslationEngine.GEMMA_AUDIO] is the
+     * original path; the cascade modes run Moonshine Tiny-es first.
+     */
+    val translationEngine: TranslationEngine = TranslationEngine.GEMMA_AUDIO,
+    /** Cascade echo-residue gate: Moonshine lines with RMS below this are
+     *  dropped (F0 corpus: voice >= ~2200, residue <= ~1300). */
+    val asrLineRmsThreshold: Double = 1800.0,
 ) {
     init {
         require(modelDirPath.isNotBlank()) { "modelDirPath must not be blank" }
@@ -449,4 +459,10 @@ data class AstConfig(
         const val RMS_SLIDER_MIN = 200.0
         const val RMS_SLIDER_MAX = 4000.0
     }
+}
+
+enum class TranslationEngine(val label: String) {
+    GEMMA_AUDIO("Gemma audio (actual)"),
+    CASCADE_MLKIT("Rápido: Moonshine + ML Kit"),
+    CASCADE_GEMMA_TEXT("Natural: Moonshine + Gemma texto"),
 }

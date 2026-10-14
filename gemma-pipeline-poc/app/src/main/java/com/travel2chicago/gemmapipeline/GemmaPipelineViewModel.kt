@@ -103,6 +103,11 @@ data class GemmaPipelineUiState(
     val skipNonSpanish: Boolean = false,
     /** Mirrors [AstConfig.echoTextFilterEnabled]. Restarts the AST router on flip. */
     val echoTextFilterEnabled: Boolean = true,
+    /** Mirrors [AstConfig.translationEngine] (cascade A/B selector). */
+    val translationEngine: com.travel2chicago.gemmapipeline.ast.TranslationEngine =
+        com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO,
+    /** Loading / error status of the cascade components (Moonshine, ML Kit). */
+    val cascadeStatus: String = "",
     /** Capa 3 — live RMS gate, mirrors [AstConfig.rmsThreshold]. Hot-swapped
      *  into the running router (no restart). */
     val rmsThreshold: Double = AstConfig().rmsThreshold,
@@ -273,6 +278,9 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var pipeline: VadChunkingPipeline? = null
 
     @Volatile private var gemmaEngine: GemmaAstEngine? = null
+    /** Cascade components, loaded on first selection of a cascade engine. */
+    @Volatile private var moonshineAsr: com.travel2chicago.gemmapipeline.asr.MoonshineAsr? = null
+    @Volatile private var mlKitTranslator: com.travel2chicago.gemmapipeline.mt.MlKitTranslator? = null
     @Volatile private var router: AstChunkRouter? = null
 
     @Volatile private var kokoroEngine: KokoroTtsEngine? = null
@@ -343,6 +351,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         nativeEngine.close()
         sileroModel?.close()
         gemmaEngine?.close()
+        runCatching { moonshineAsr?.close() }
+        runCatching { mlKitTranslator?.close() }
         kokoroEngine?.close()
         androidTtsEngine?.close()
         aecProcessor?.close()
@@ -607,10 +617,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
         p.start(viewModelScope)
 
-        val r = AstChunkRouter(
-            bus, g, astConfig, sampleRate = audioConfig.format.sampleRate,
-            echoHistory = echoHistory,
-        )
+        val r = buildAstRouter(g)
         r.start(viewModelScope)
         router = r
 
@@ -1090,15 +1097,76 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Router for the selected [com.travel2chicago.gemmapipeline.ast.TranslationEngine].
+     * Cascade modes wrap Moonshine + a text translator as the router's engine
+     * and turn off the Gemma-audio prompt features (English: marker, SKIP)
+     * that do not apply to them. Falls back to Gemma audio if the cascade
+     * components are not loaded yet.
+     */
+    private fun buildAstRouter(g: GemmaAstEngine): AstChunkRouter {
+        val mode = astConfig.translationEngine
+        val asr = moonshineAsr
+        val translator: com.travel2chicago.gemmapipeline.mt.TextTranslator? = when (mode) {
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO -> null
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT -> mlKitTranslator
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_GEMMA_TEXT ->
+                (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
+        }
+        if (mode != com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO && (asr == null || translator == null)) {
+            log("[WARN] $mode not ready (asr=${asr != null}, mt=${translator != null}) — using Gemma audio")
+        }
+        val engine: GemmaAstEngine
+        val cfg: AstConfig
+        if (asr != null && translator != null) {
+            engine = com.travel2chicago.gemmapipeline.ast.CascadeAstEngine(asr, translator, astConfig.asrLineRmsThreshold)
+            cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false)
+        } else {
+            engine = g
+            cfg = astConfig
+        }
+        log("AST engine: ${engine.backendUsed}")
+        return AstChunkRouter(
+            bus, engine, cfg, sampleRate = audioConfig.format.sampleRate,
+            echoHistory = echoHistory,
+        )
+    }
+
+    /**
+     * Cascade A/B selector. Loads Moonshine (and ML Kit's es->en model, a
+     * one-time ~30 MB download) on first use, then rebuilds the router.
+     */
+    fun setTranslationEngine(mode: com.travel2chicago.gemmapipeline.ast.TranslationEngine) {
+        if (astConfig.translationEngine == mode) return
+        astConfig = astConfig.copy(translationEngine = mode)
+        _state.update { it.copy(translationEngine = mode) }
+        log("Translation engine → $mode")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (mode != com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO && moonshineAsr == null) {
+                    _state.update { it.copy(cascadeStatus = "Cargando Moonshine…") }
+                    moonshineAsr = com.travel2chicago.gemmapipeline.asr.MoonshineAsr.load()
+                }
+                if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT && mlKitTranslator == null) {
+                    _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
+                    mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
+                }
+                _state.update { it.copy(cascadeStatus = "") }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Cascade load failed", t)
+                _state.update { it.copy(cascadeStatus = "Error: ${t.message}") }
+                log("[ERROR] Cascade load failed: ${t.message}")
+            }
+            restartAstRouter("translationEngine=$mode")
+        }
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router
         if (g != null && oldRouter != null) {
             oldRouter.cancel()
-            val newRouter = AstChunkRouter(
-                bus, g, astConfig, sampleRate = audioConfig.format.sampleRate,
-                echoHistory = echoHistory,
-            )
+            val newRouter = buildAstRouter(g)
             newRouter.start(viewModelScope)
             router = newRouter
             log("AST router restarted ($reason)")

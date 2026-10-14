@@ -311,7 +311,10 @@ class LiteRtGemmaAstEngine private constructor(
      * text MT). Same one-Conversation discipline and cumulative-message
      * handling as [translateStreaming]. Returns (text, firstTokenMs, totalMs).
      */
-    suspend fun translateText(prompt: String): Triple<String, Long, Long> {
+    suspend fun translateText(
+        prompt: String,
+        onToken: suspend (String) -> Unit = {},
+    ): Triple<String, Long, Long> {
         check(!closed) { "Engine is closed" }
         closeCurrentConversation()
         val conv = engine.createConversation(ConversationConfig(samplerConfig = samplerConfig))
@@ -325,11 +328,14 @@ class LiteRtGemmaAstEngine private constructor(
                 val piece = msg.toString()
                 if (piece.isEmpty()) return@collect
                 if (firstMs < 0) firstMs = (System.nanoTime() - startNs) / 1_000_000
-                if (full.isNotEmpty() && piece.length >= full.length && startsWithBuffer(piece, full)) {
-                    full.append(piece, full.length, piece.length)
+                val delta = if (full.isNotEmpty() && piece.length >= full.length && startsWithBuffer(piece, full)) {
+                    piece.substring(full.length)
                 } else {
-                    full.append(piece)
+                    piece
                 }
+                if (delta.isEmpty()) return@collect
+                full.append(delta)
+                onToken(delta)
             }
         return Triple(full.toString().trim(), firstMs, (System.nanoTime() - startNs) / 1_000_000)
     }

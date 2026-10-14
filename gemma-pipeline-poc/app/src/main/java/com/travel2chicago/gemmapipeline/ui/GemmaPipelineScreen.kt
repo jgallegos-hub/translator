@@ -47,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.travel2chicago.gemmapipeline.GemmaPipelineViewModel
 import com.travel2chicago.gemmapipeline.TranslationEntry
 import com.travel2chicago.gemmapipeline.ast.AstConfig
+import com.travel2chicago.gemmapipeline.ast.TranslationEngine
 import com.travel2chicago.gemmapipeline.audio.AudioDeviceManager
 import com.travel2chicago.gemmapipeline.audio.VadState
 import com.travel2chicago.gemmapipeline.tts.TtsConfig
@@ -297,6 +298,33 @@ fun GemmaPipelineScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(6.dp))
+                // Cascade A/B selector (docs/plan-cascada-2026-10.md, step 1d).
+                Text(
+                    "Motor de traducción",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                for (mode in TranslationEngine.values()) {
+                    if (state.translationEngine == mode) {
+                        Button(onClick = {}, modifier = Modifier.fillMaxWidth()) { Text(mode.label) }
+                    } else {
+                        OutlinedButton(
+                            onClick = { viewModel.setTranslationEngine(mode) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(mode.label) }
+                    }
+                }
+                if (state.cascadeStatus.isNotEmpty()) {
+                    Text(state.cascadeStatus, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.translationEngine == TranslationEngine.CASCADE_MLKIT) {
+                    // ML Kit Translation terms require Google attribution.
+                    Text(
+                        "Translated by Google (ML Kit, on-device)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(6.dp))
                 SwitchRow(
                     label = "WebRTC AEC3 (software AEC for external mic + BT speaker)",
