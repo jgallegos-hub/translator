@@ -346,3 +346,21 @@ Orden de más factible a más complicado:
 5. Opcional: modo nube (Claude Haiku / Gemini Flash-Lite) con interruptor de
    privacidad; Gemini Nano (Prompt API, el 15T Pro es compatible) a medir.
 6. Voz-a-voz end-to-end: no por ahora (licencias NC, lag > 5 s, sin Android).
+
+## Plan para la próxima sesión (acordado 14-oct, cierre)
+
+1. **Banco de Claude Haiku 5.5 en PC** (clave de API ya configurada en la PC de
+   Abraham; no se escribe ni se muestra): las 74 frases del guion F0 + salidas
+   de Moonshine, en dos variantes — (a) frase suelta; (b) "modo sesión":
+   instrucciones fijas cacheadas + glosario de slang/lugares + 2–5 frases
+   anteriores como contexto. Medir latencia real desde la red de Abraham y
+   calidad vs Gemma texto y ML Kit. Costo estimado < US$0.01.
+2. **Investigar el traductor en tiempo real de ChatGPT** (cómo logra baja
+   latencia: audio nativo, streaming, interrupciones, voz) y qué se puede
+   aplicar a nuestra app.
+3. Según resultados: diseñar el modo en línea (backend propio — p. ej. Supabase
+   Edge Function con la clave guardada ahí — y respaldo automático al modo Auto
+   local sin señal o si tarda > ~1.5 s; aviso de privacidad).
+4. Pendientes locales en orden: filtro de muletillas / palabras fuera de
+   vocabulario; Gemma 4 E2B + MTP (pedir permiso para ~2.6 GB); bake-off
+   Pocket TTS vs Kokoro; clasificador YAMNet para risas.

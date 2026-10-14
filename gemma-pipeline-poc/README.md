@@ -8,6 +8,13 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Cascada ASR → MT (14 octubre 2026)** — selector "Motor de traducción"
+  en la UI; default **Auto**: Moonshine Tiny-es (on-device, ~0.1 s) → ML Kit
+  (< 10 palabras) / Gemma 4 E4B en modo texto (≥ 10) → Kokoro (speed 1.0, 6
+  hilos). Primer audio p50 ~1.3 s (Rápido) vs ~3.2 s con Gemma audio, sin
+  frases inventadas. Gemma audio sigue disponible en el selector. Plan, datos y
+  research en `docs/plan-cascada-2026-10.md`. Requiere los modelos Moonshine en
+  `/sdcard/Download/moonshine/` y `python tools/vendor_moonshine.py` antes de compilar.
 - ✅ Fase 4 + Fase 5 COMPLETADAS on Xiaomi 15T Pro (junio 2026).
 - ✅ Fase 6 (streaming) VALIDADA on device (julio 2026) — 3-round
   protocol passed with 0 errors. **Both streaming flags default ON**;

@@ -2032,3 +2032,34 @@ be hungry?"`) salía como "oración" suelta `"` hacia el TTS → ahora se pega a
 
 **Pendiente (banco de prompts):** chunks cortos de ~1.5 s todavía producen
 frases que parecen inventadas ("I'll get a call later.", "And of course.").
+
+## Cascada ASR → MT: de Gemma audio a Moonshine + ML Kit / Gemma texto (14 octubre 2026)
+
+Detalle completo, tablas y logs en `docs/plan-cascada-2026-10.md`. Resumen:
+
+- **F0 corpus:** guion de 74 frases (`tools/corpus/guion_f0.md`) leído con la
+  app en vivo (dataset `20261014_103127`). Línea base de Gemma audio en la misma
+  sesión (1.er token ~1.13 s).
+- **ASR:** Moonshine Tiny-es (MIT) WER 14.6 % en el teléfono, 83 ms/chunk
+  (RTF 0.03); el error son inserciones por residuo de eco → compuerta de RMS
+  por línea (1800; 2400 mientras suena el TTS). Keyterms probados y descartados.
+  Convivencia de runtimes: onnxruntime-android 1.23.2 + AAR de Moonshine sin su
+  ORT (`tools/vendor_moonshine.py`).
+- **MT:** ML Kit 16 ms/frase pero literal y malo con slang; Gemma E4B en modo
+  texto: la mejor calidad (slang ~20/20), 1.er token ~0.85 s.
+- **Integración:** `CascadeAstEngine` implementa `GemmaAstEngine`, así que el
+  router, filtros y TTS no cambiaron. Modos: Gemma audio / Rápido / Natural /
+  **Auto (default)**. Traducciones siempre con puntuación final (quitó el "ahhh").
+- **Rondas en vivo:** r12 A/B (Rápido 1.28 s, Natural 2.19 s, Gemma audio 3.17 s
+  al 1.er audio); r13 Rápido (literal en conversación real); r14 Auto ("mucho
+  mejor"). Kokoro es ahora el cuello de botella: 6 hilos (RTF 0.42), velocidad
+  1.2 → 1.0 (más natural), corte en comas sólo para oraciones ≥ 20 palabras.
+- **Research** (`docs/research-tts-ruido-2026-10.md`,
+  `docs/research-s2s-llm-offline-2026-10.md`): Pocket TTS como candidato de voz
+  con streaming; filtros de muletillas / palabras fuera de vocabulario /
+  YAMNet para risas; Gemma 4 E2B + MTP como traductor más rápido; S2S
+  end-to-end aún no viable. La API de Claude no acepta audio → un modo en línea
+  sería Moonshine → Claude Haiku (texto) → voz.
+
+Pendiente para la próxima sesión: ver "Plan para la próxima sesión" en
+`docs/plan-cascada-2026-10.md`.
