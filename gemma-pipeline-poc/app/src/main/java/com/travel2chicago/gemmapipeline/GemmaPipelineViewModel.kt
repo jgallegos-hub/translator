@@ -1057,6 +1057,21 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * On-device Moonshine ASR spike (see [com.travel2chicago.gemmapipeline.asr.MoonshineBench]).
+     * Also waits for Gemma + Kokoro so it runs under real-session memory pressure
+     * and proves Moonshine coexists with the shared onnxruntime.
+     */
+    fun runMoonshineBench() {
+        viewModelScope.launch(Dispatchers.IO) {
+            var waited = 0
+            while (!(_state.value.gemmaLoaded && _state.value.kokoroLoaded) && waited < 180) {
+                delay(1_000); waited++
+            }
+            com.travel2chicago.gemmapipeline.asr.MoonshineBench.run { log(it) }
+        }
+    }
+
     private fun restartAstRouter(reason: String) {
         val g = gemmaEngine
         val oldRouter = router

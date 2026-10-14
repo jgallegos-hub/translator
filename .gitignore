@@ -25,3 +25,4 @@ gemma-pipeline-poc/tools/datasets/
 gemma-pipeline-poc/tools/aec3-offline/build/
 gemma-pipeline-poc/tools/aec3-offline/.gradle/
 gemma-pipeline-poc/tools/.venv-cascade/
+gemma-pipeline-poc/app/libs/moonshine-voice-*-noort.aar

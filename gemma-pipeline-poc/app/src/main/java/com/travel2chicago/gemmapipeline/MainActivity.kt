@@ -46,6 +46,11 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("kokoro_bench", false) == true) {
             viewModel.runKokoroBench()
         }
+        // Dev hook: `--ez moonshine_bench true` runs the on-device Moonshine
+        // ASR spike (logcat tag MoonshineBench).
+        if (intent?.getBooleanExtra("moonshine_bench", false) == true) {
+            viewModel.runMoonshineBench()
+        }
 
         setContent {
             GemmaPipelineTheme {

@@ -173,3 +173,26 @@ Implicaciones para la Opción 1:
    Park, Roosevelt…).
 4. Si el inglés del hablante importa, evaluar un ASR multilingüe (Whisper /
    Parakeet v3) en la sección E.
+
+## Resultados 1b: spike Moonshine en el teléfono (14-oct)
+
+- La API Android (`ai.moonshine.voice.Transcriber`) acepta **nuestro PCM**:
+  `loadFromFiles(dir, arch)`, `transcribeWithoutStreaming(float[], 16000)`,
+  `addAudio`/streams, `setKeyterms`. Ojo: `Transcript.text()` devuelve sólo la
+  primera línea; hay que unir `lines`.
+- Convivencia de runtimes: el AAR trae su `libonnxruntime.so` 1.23.2 (choca con
+  onnxruntime-android). Solución: `onnxruntime-android` → 1.23.2 y AAR re-empacado
+  sin su ORT (`tools/vendor_moonshine.py`, arm64). Silero, Kokoro, Gemma y
+  Moonshine cargan juntos.
+- Velocidad en Xiaomi 15T Pro con Gemma + Kokoro cargados (84 chunks F0):
+
+| Modelo | carga | p50/chunk | p90 | máx (12 s) | RTF | WER |
+|---|---|---|---|---|---|---|
+| **Tiny-es** | 0.25 s | **83 ms** | 275 ms | 465 ms | **0.030** | **14.6 %** |
+| Small-es | 0.54 s | 180 ms | 626 ms | 1 141 ms | 0.066 | 16.5 % |
+
+  (WER igual que en PC; el error sigue siendo de inserciones por residuo de eco.)
+- Regresión Kokoro con ORT 1.23.2: fp16-cpu4 RTF 0.44 (igual). int8 pasó de
+  0.85 a 0.45.
+- Comparado con Gemma (1.er token ~1.13 s, total 1.5–2.5 s), el ASR con Tiny
+  cuesta ~0.1 s. **Riesgo 1b cerrado. Siguiente: ML Kit (1c).**

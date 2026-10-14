@@ -111,6 +111,13 @@ dependencies {
     // median echo RMS -35 dB, voice intact (tools/aec3-offline/).
     implementation("cn.enaium.webrtc.aec3:webrtc-aec3-kmp:1.0.3")
 
+    // Moonshine Voice (ASR for the ASR -> MT cascade, docs/plan-cascada-2026-10.md).
+    // Built by tools/vendor_moonshine.py: arm64 only and WITHOUT its bundled
+    // libonnxruntime.so, which would collide with onnxruntime-android (pinned
+    // to the same 1.23.2 that Moonshine was built against).
+    implementation(files("libs/moonshine-voice-0.1.5-noort.aar"))
+    implementation("androidx.appcompat:appcompat:1.6.1")   // Transcriber.loadFromAssets signature
+
     testImplementation(libs.junit)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
