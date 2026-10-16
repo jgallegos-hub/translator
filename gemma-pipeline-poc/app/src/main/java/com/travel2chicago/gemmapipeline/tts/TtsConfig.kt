@@ -153,8 +153,11 @@ data class TtsConfig(
     /** Even with [clauseSplitting] off, a single sentence of at least this many
      *  words is cut at its commas (pieces <= [maxPieceWords]) so Kokoro does not
      *  synthesise 9 s of audio before the first sound (device 2026-10-14: a
-     *  31-word Gemma sentence waited 5.6 s). 0 disables. */
-    val longSentenceSplitWords: Int = 20,
+     *  31-word Gemma sentence waited 5.6 s). 0 disables. Lowered 20 -> 12 on
+     *  2026-10-16 once playback was decoupled from synthesis (the next piece is
+     *  synthesised while the first plays, so the cut leaves no audible gap);
+     *  12-19 words are cut only at commas. */
+    val longSentenceSplitWords: Int = 12,
 ) {
     companion object {
         const val MIN_SPEED = 0.8f

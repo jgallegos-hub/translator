@@ -1130,7 +1130,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 strictLineRmsThreshold = astConfig.asrLineRmsThresholdDuringTts,
                 isTtsActive = { ttsPlaying.get() },
             )
-            cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false)
+            cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false, eagerSentenceEmit = true)
         } else {
             engine = g
             cfg = astConfig
@@ -1357,6 +1357,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 log("Chunk #${_state.value.chunksEmitted}: ${event.durationMs}ms peak=${event.peak}")
             }
             is AudioEvent.TranslationReady -> {
+                // Empty final event = utterance-closing marker (eager mode), not a translation.
+                if (event.text.isBlank()) return
                 val r = router
                 val nextIdx = (r?.totalTranslated ?: 0L).toInt()
                 val entry = TranslationEntry(

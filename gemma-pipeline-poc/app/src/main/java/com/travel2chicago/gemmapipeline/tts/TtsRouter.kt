@@ -62,6 +62,21 @@ class TtsRouter(
 
     @Volatile private var producerJob: Job? = null
     @Volatile private var consumerJob: Job? = null
+    @Volatile private var playbackJob: Job? = null
+
+    /**
+     * Streaming path only: synthesis and playback are decoupled (2026-10-16).
+     * The consumer synthesises and enqueues here; [playbackJob] drains it into
+     * the sink. Before, `sink.play` blocked the consumer for the whole piece
+     * (device r14: up to 7.3 s), so the next piece / utterance could not be
+     * synthesised meanwhile — gaps between clauses and a 12 s queue wait.
+     */
+    private sealed interface PlayItem {
+        data object Begin : PlayItem
+        class Pcm(val pcm: ShortArray, val sampleRate: Int, val firstOfUtteranceTs: Long?, val enqueuedNs: Long) : PlayItem
+        data object End : PlayItem
+    }
+    private val playChannel: Channel<PlayItem> = Channel(Channel.UNLIMITED)
 
     /**
      * Current Kokoro synthesis speed multiplier. Seeded from [config.speed] at
@@ -133,6 +148,32 @@ class TtsRouter(
                 processTranslation(tr)
             }
         }
+
+        val sink = player
+        if (sink != null) playbackJob = scope.launch(ioDispatcher) { runPlayback(sink) }
+    }
+
+    /** Drains [playChannel] into the sink; keeps begin/end balanced even when cancelled. */
+    private suspend fun runPlayback(sink: TtsPlayerSink) {
+        var open = 0
+        try {
+            for (item in playChannel) {
+                when (item) {
+                    PlayItem.Begin -> { sink.beginUtterance(); open++ }
+                    PlayItem.End -> if (open > 0) { sink.endUtterance(); open-- }
+                    is PlayItem.Pcm -> {
+                        val queuedMs = (System.nanoTime() - item.enqueuedNs) / 1_000_000
+                        item.firstOfUtteranceTs?.let {
+                            firstAudioLatencyMsAtomic.set((System.nanoTime() - it) / 1_000_000)
+                        }
+                        Log.i(TAG, "TTSDIAG playback: waitedMs=$queuedMs audioMs=${item.pcm.size * 1000L / item.sampleRate}")
+                        sink.play(item.pcm)
+                    }
+                }
+            }
+        } finally {
+            withContext(NonCancellable) { repeat(open) { sink.endUtterance() } }
+        }
     }
 
     /**
@@ -142,9 +183,12 @@ class TtsRouter(
     fun cancel() {
         producerJob?.cancel()
         consumerJob?.cancel()
+        playbackJob?.cancel()
         producerJob = null
         consumerJob = null
+        playbackJob = null
         channel.close()
+        playChannel.close()
         Log.i(TAG, "TTS router cancelled. synthesized=$totalSynthesized dropped=$totalDropped errors=$totalErrors")
     }
 
@@ -169,6 +213,11 @@ class TtsRouter(
             consumer?.cancel()
         }
         consumerJob = null
+        // Let already-synthesised audio finish playing (bounded by the same timeout).
+        playChannel.close()
+        val playback = playbackJob
+        if (withTimeoutOrNull(drainTimeoutMs) { playback?.join(); true } == null) playback?.cancel()
+        playbackJob = null
 
         val completed = (synthesizedCount.get() - before).toInt()
         Log.i(TAG, "TTS router stopped gracefully. drained=$completed timedOut=${drained == null} " +
@@ -218,6 +267,13 @@ class TtsRouter(
             "queue=${queueDepth.get()} chars=${tr.text.length} isFinal=${tr.isFinal}")
         val text = tr.text.trim()
         if (text.isEmpty()) {
+            // Eager-emit utterance closer: every sentence already went out.
+            if (tr.isFinal && tr.sourceChunkTimestampNs == openUtteranceTs) {
+                openUtteranceTs = null
+                if (config.useFastMode && androidEngine != null) player?.endUtterance()
+                else playChannel.send(PlayItem.End)
+                return
+            }
             Log.w(TAG, "Empty translation, skipping")
             return
         }
@@ -374,38 +430,33 @@ class TtsRouter(
     private suspend fun processTranslationStreaming(
         tr: AudioEvent.TranslationReady,
         text: String,
-        sink: TtsPlayerSink,
+        @Suppress("UNUSED_PARAMETER") sink: TtsPlayerSink,
     ) {
         val newUtterance = tr.sourceChunkTimestampNs != openUtteranceTs
         if (newUtterance) {
             val prev = openUtteranceTs
             if (prev != null) {
                 Log.w(TAG, "Streaming: utterance ts=$prev never terminated; endUtterance defensively")
-                sink.endUtterance()
+                playChannel.send(PlayItem.End)
             }
             openUtteranceTs = tr.sourceChunkTimestampNs
-            sink.beginUtterance()
+            playChannel.send(PlayItem.Begin)
         }
-        // Latency landmark: record the utterance's first sink.play. If this
-        // TranslationReady starts a new utterance, arm the recorder; the
-        // callback below fires it exactly once on the first PCM chunk.
+        // Latency landmark: the playback coroutine records the utterance's
+        // first sink.play (marked on the first piece of a new utterance).
         var firstAudioPending = newUtterance
         var tMark = System.nanoTime()
 
         val result = try {
             engine.synthesizeStreaming(text, config.voice, currentSpeed) { pcm, sr, _ ->
                 val tSynth = System.nanoTime()
-                sink.play(pcm)
-                val tPlayed = System.nanoTime()
                 Log.i(TAG, "TTSDIAG piece: synthMs=${(tSynth - tMark) / 1_000_000} " +
-                    "audioMs=${pcm.size * 1000L / sr} playBlockMs=${(tPlayed - tSynth) / 1_000_000}")
-                tMark = tPlayed
-                if (firstAudioPending) {
-                    firstAudioLatencyMsAtomic.set(
-                        (System.nanoTime() - tr.sourceChunkTimestampNs) / 1_000_000,
-                    )
-                    firstAudioPending = false
-                }
+                    "audioMs=${pcm.size * 1000L / sr}")
+                playChannel.send(
+                    PlayItem.Pcm(pcm, sr, if (firstAudioPending) tr.sourceChunkTimestampNs else null, tSynth),
+                )
+                firstAudioPending = false
+                tMark = System.nanoTime()
                 bus.emit(
                     AudioEvent.TtsAudioReady(
                         samples = pcm,
@@ -427,14 +478,11 @@ class TtsRouter(
                 "Kokoro synthesizeStreaming failed: ${t.javaClass.simpleName}: ${t.message}",
                 tr,
             )
-            // On error we still balance the bookend so the sink doesn't get
-            // stuck muted. isFinal treatment: if the failing event was
-            // supposed to close the utterance, do it now; if not, the next
-            // event with a different sourceChunkTimestampNs will trigger the
-            // defensive endUtterance path above.
+            // Balance the bookend so the sink doesn't get stuck muted; if not
+            // final, the next utterance's defensive End closes it.
             if (tr.isFinal) {
                 openUtteranceTs = null
-                sink.endUtterance()
+                playChannel.send(PlayItem.End)
             }
             return
         }
@@ -444,7 +492,7 @@ class TtsRouter(
 
         if (tr.isFinal) {
             openUtteranceTs = null
-            sink.endUtterance()
+            playChannel.send(PlayItem.End)
         }
     }
 

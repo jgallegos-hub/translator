@@ -521,6 +521,10 @@ class AstChunkRouter(
                     emitPendingAsNonFinal()
                     pendingText = sentence
                     pendingIndex = sentenceCounter++
+                    // Cascade: text MT emits no preambles, so don't hold the
+                    // sentence until the next one closes — TTS starts now and
+                    // an empty isFinal marker closes the utterance at flow end.
+                    if (config.eagerSentenceEmit) emitPendingAsNonFinal()
                 }
             }
         } catch (t: Throwable) {
@@ -644,6 +648,22 @@ class AstChunkRouter(
                 )
                 pendingText = null
                 pendingIndex = -1
+            }
+            sentenceCounter > 0 -> {
+                // Eager mode: every sentence already went out as non-final;
+                // an empty final event only closes the TTS utterance.
+                bus.emit(
+                    AudioEvent.TranslationReady(
+                        text = "",
+                        sourceChunkTimestampNs = chunk.timestampNs,
+                        sourceDurationMs = chunk.durationMs,
+                        sourcePeak = chunk.peak,
+                        latencyMs = result.latencyMs,
+                        timestampNs = System.nanoTime(),
+                        sentenceIndex = sentenceCounter,
+                        isFinal = true,
+                    ),
+                )
             }
             // else: reply was empty — emit nothing (consumer sees the
             // metrics increment but no TranslationReady, same as the

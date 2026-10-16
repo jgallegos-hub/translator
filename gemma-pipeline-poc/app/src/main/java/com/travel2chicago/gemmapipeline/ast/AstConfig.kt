@@ -263,6 +263,15 @@ data class AstConfig(
     val streamingEnabled: Boolean = true,
 
     /**
+     * Streaming only: emit each sentence as soon as its terminator arrives
+     * instead of holding it until the next one closes (the hold exists so the
+     * meta-text guard can discard a Gemma-audio preamble). The utterance is
+     * closed by an empty `isFinal` event. Set for the text cascade, whose MT
+     * never emits preambles (2026-10-16).
+     */
+    val eagerSentenceEmit: Boolean = false,
+
+    /**
      * Multi-Token Prediction (MTP) / speculative decoding for Gemma decode.
      *
      * When `true`, [LiteRtGemmaAstEngine.load] sets

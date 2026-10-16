@@ -79,6 +79,33 @@ class KokoroTtsEngineUtilsTest {
     }
 
     @Test
+    fun `splitFirstClause cuts before a conjunction or after a comma`() {
+        assertEquals(
+            listOf("The sky is blue", "and the sun is yellow."),
+            KokoroOnnxEngine.splitFirstClause("The sky is blue and the sun is yellow."),
+        )
+        assertEquals(
+            listOf("I booked the room online,", "but now they say breakfast is not included."),
+            KokoroOnnxEngine.splitFirstClause("I booked the room online, but now they say breakfast is not included."),
+        )
+        // Short pieces and pieces without a boundary in range stay whole.
+        assertEquals(listOf("How are you?"), KokoroOnnxEngine.splitFirstClause("How are you?"))
+        val noBoundary = "They are ready to start these new maintenance jobs today."
+        assertEquals(listOf(noBoundary), KokoroOnnxEngine.splitFirstClause(noBoundary))
+    }
+
+    @Test
+    fun `splitLongSentences cuts mid-length sentences only at commas`() {
+        val withComma = "If it rains tomorrow we will go to the aquarium, and then we can grab lunch."
+        assertEquals(
+            listOf("If it rains tomorrow we will go to the aquarium,", "and then we can grab lunch."),
+            KokoroOnnxEngine.splitLongSentences(withComma, minWords = 12, maxWords = 12),
+        )
+        val noComma = "We waited for the bus for almost forty minutes and in the end it came full."
+        assertEquals(listOf(noComma), KokoroOnnxEngine.splitLongSentences(noComma, minWords = 12, maxWords = 12))
+    }
+
+    @Test
     fun `splitLongSentences only cuts sentences at or above the word threshold`() {
         val long = "Just let me know, or if you'd prefer I sing a sad song, if you can sing it to me " +
             "or if we can sing together, or just tell me how we can do it."

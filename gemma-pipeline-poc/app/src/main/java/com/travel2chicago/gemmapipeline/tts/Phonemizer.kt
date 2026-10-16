@@ -61,6 +61,10 @@ class DictionaryPhonemizer(
     private fun lookup(word: String): String {
         val clean = word.trim(*PUNCT)
         if (clean.isEmpty()) return ""
+        // The dictionary only has the acronym reading of "it" / "us" (I.T.,
+        // U.S.) — device 2026-10-16: "it" was spoken as "ai-tí". Use the word
+        // reading unless the token is written all-caps.
+        if (clean != clean.uppercase()) WORD_OVERRIDES[clean.lowercase()]?.let { return it }
         // Dict words are uppercase (CMU convention).
         dict[clean.uppercase()]?.let { return it }
         // Try once more without internal apostrophes.
@@ -80,6 +84,7 @@ class DictionaryPhonemizer(
     private fun ltsFallback(word: String): String = "ə".repeat(word.length)
 
     companion object {
+        private val WORD_OVERRIDES = mapOf("it" to "ɪt", "us" to "ʌs")
         private val PUNCT = charArrayOf(
             '.', ',', '!', '?', ';', ':', '"', '(', ')', '[', ']', '{', '}',
             '“', '”', '‘', '’',

@@ -150,6 +150,7 @@ class KokoroOnnxEngine private constructor(
         val sentences = when {
             clauseSplitting -> splitForStreaming(text, maxPieceWords)
             longSentenceSplitWords > 0 -> splitLongSentences(text, longSentenceSplitWords, maxPieceWords)
+                .let { pieces -> splitFirstClause(pieces.first()) + pieces.drop(1) }
             else -> splitIntoSentences(text)
         }
         var totalSamples = 0
@@ -401,11 +402,50 @@ class KokoroOnnxEngine private constructor(
             return if (out.isEmpty()) listOf(text.trim()) else out
         }
 
+        private val CLAUSE_STARTERS = setOf(
+            "and", "but", "because", "so", "or", "when", "if", "while", "which", "where", "then",
+        )
+
+        /** First-sound latency (2026-10-16): Kokoro needs ~0.65 x audio
+         *  duration on device before anything plays, so a [minSentenceWords]+
+         *  word piece is cut at its first natural boundary — after a comma or
+         *  before a conjunction — leaving a head of [minHead]..[maxHead] words.
+         *  The tail is synthesised while the head plays (decoupled playback). */
+        internal fun splitFirstClause(
+            piece: String,
+            minSentenceWords: Int = 8,
+            minHead: Int = 3,
+            maxHead: Int = 7,
+        ): List<String> {
+            val words = piece.trim().split(WHITESPACE)
+            if (words.size < minSentenceWords) return listOf(piece)
+            for (i in minHead..minOf(maxHead, words.size - minHead)) {
+                val afterComma = words[i - 1].endsWith(",") || words[i - 1].endsWith(";")
+                val beforeConj = words[i].lowercase().trimEnd(',') in CLAUSE_STARTERS
+                if (afterComma || beforeConj) {
+                    return listOf(words.take(i).joinToString(" "), words.drop(i).joinToString(" "))
+                }
+            }
+            return listOf(piece)
+        }
+
         /** Sentences as-is, except those with >= [minWords] words, which are
-         *  cut into clauses like [splitForStreaming]. */
-        internal fun splitLongSentences(text: String, minWords: Int, maxWords: Int): List<String> =
+         *  cut at their commas like [splitForStreaming]. Comma-less clauses are
+         *  only cut into <= [maxWords]-word pieces from [forceSplitWords] words
+         *  on (a cut with no natural pause sounds wrong). */
+        internal fun splitLongSentences(
+            text: String,
+            minWords: Int,
+            maxWords: Int,
+            forceSplitWords: Int = 20,
+        ): List<String> =
             splitIntoSentences(text).flatMap { s ->
-                if (s.split(WHITESPACE).size >= minWords) splitForStreaming(s, maxWords) else listOf(s)
+                val n = s.split(WHITESPACE).size
+                when {
+                    n < minWords -> listOf(s)
+                    n >= forceSplitWords -> splitForStreaming(s, maxWords)
+                    else -> splitForStreaming(s, Int.MAX_VALUE)
+                }
             }
 
         internal fun splitIntoSentences(text: String): List<String> {

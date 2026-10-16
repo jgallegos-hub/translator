@@ -158,7 +158,9 @@ class AstChunkRouterTest {
         useOfficialAstPrompt: Boolean = false,
         skipNonSpanish: Boolean = true,
         echoTextFilterEnabled: Boolean = true,
+        eagerSentenceEmit: Boolean = false,
     ) = AstConfig(
+        eagerSentenceEmit = eagerSentenceEmit,
         skipNonSpanish = skipNonSpanish,
         echoTextFilterEnabled = echoTextFilterEnabled,
         modelDirPath = "/sdcard/unused-in-test",
@@ -652,6 +654,39 @@ class AstChunkRouterTest {
             }
             assertEquals(1, engine.translateCalls.get())
             assertEquals(1L, router.totalTranslated)
+            router.cancel()
+        }
+
+    @Test
+    fun `eager mode emits each sentence immediately and closes with an empty final event`() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bus = AudioEventBus()
+            val engine = FakeStreamingEngine(tokens = listOf("Hello", ". ", "World", "."), latencyMs = 42L)
+            val router = AstChunkRouter(
+                bus, engine,
+                config(streamingEnabled = true, eagerSentenceEmit = true),
+                ioDispatcher = UnconfinedTestDispatcher(testScheduler), producerDispatcher = UnconfinedTestDispatcher(testScheduler),
+            )
+            router.start(backgroundScope)
+            advanceUntilIdle()
+
+            bus.events.filterIsInstance<AudioEvent.TranslationReady>().test {
+                bus.emit(chunk(seed = 1))
+                advanceUntilIdle()
+
+                val first = awaitItem()
+                assertEquals("Hello.", first.text)
+                assertFalse(first.isFinal)
+                val second = awaitItem()
+                assertEquals("World.", second.text)
+                assertFalse(second.isFinal)
+                val closer = awaitItem()
+                assertEquals("", closer.text)
+                assertTrue(closer.isFinal)
+                assertEquals(first.sourceChunkTimestampNs, closer.sourceChunkTimestampNs)
+
+                cancelAndConsumeRemainingEvents()
+            }
             router.cancel()
         }
 

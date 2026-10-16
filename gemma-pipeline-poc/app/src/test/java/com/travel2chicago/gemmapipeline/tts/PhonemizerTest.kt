@@ -28,6 +28,15 @@ class PhonemizerTest {
     }
 
     @Test
+    fun `it and us use the word reading unless written all-caps`() {
+        val p = DictionaryPhonemizer(mapOf("IT" to "ˌaɪtˈiː", "US" to "jˌuːˈɛs"))
+        assertEquals("ɪt", p.phonemize("it"))
+        assertEquals("ɪt", p.phonemize("It."))
+        assertEquals("ʌs", p.phonemize("us"))
+        assertEquals("jˌuːˈɛs", p.phonemize("US"))
+    }
+
+    @Test
     fun `multiple words are joined with a single space`() {
         val p = dict()
         // "həloʊ" + " " + "wɜrld" = "həloʊ wɜrld"
