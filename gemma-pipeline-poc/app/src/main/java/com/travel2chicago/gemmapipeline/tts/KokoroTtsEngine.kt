@@ -416,7 +416,7 @@ class KokoroOnnxEngine private constructor(
             piece: String,
             minSentenceWords: Int = 8,
             minHead: Int = 3,
-            maxHead: Int = 7,
+            maxHead: Int = 8,
         ): List<String> {
             val words = piece.trim().split(WHITESPACE)
             if (words.size < minSentenceWords) return listOf(piece)

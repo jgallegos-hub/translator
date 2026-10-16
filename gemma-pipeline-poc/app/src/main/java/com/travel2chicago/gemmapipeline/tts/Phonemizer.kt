@@ -80,6 +80,12 @@ class DictionaryPhonemizer(
         // Try once more without internal apostrophes.
         val noApostrophe = clean.replace("'", "")
         dict[noApostrophe.uppercase()]?.let { return it }
+        // Hyphenated compounds ("fifteen-minute", device 2026-10-16): look up
+        // each part.
+        if ('-' in clean) {
+            val parts = clean.split('-').filter { it.isNotEmpty() }
+            if (parts.size > 1) return parts.joinToString(" ") { lookup(it) }
+        }
         oovHits += 1
         Log.w(TAG, "OOV: '$clean' — applying schwa fallback")
         return ltsFallback(clean)

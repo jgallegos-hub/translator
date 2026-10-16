@@ -28,6 +28,12 @@ class PhonemizerTest {
     }
 
     @Test
+    fun `hyphenated compounds are looked up part by part`() {
+        val p = DictionaryPhonemizer(mapOf("FIFTEEN" to "fɪftin", "MINUTE" to "mɪnɪt"))
+        assertEquals("fɪftin mɪnɪt", p.phonemize("fifteen-minute"))
+    }
+
+    @Test
     fun `all-caps short tokens are spelled letter by letter`() {
         val letters = ('A'..'Z').associate { it.toString() to it.lowercase() }
         val p = DictionaryPhonemizer(letters + mapOf("UPS" to "ʌps", "OK" to "oʊkeɪ"))

@@ -2095,3 +2095,9 @@ UPS and CRAC units.
 - Bake-off Pocket TTS vs Kokoro (pedir permiso de descarga).
 - Filtro de risas/muletillas (YAMNet + OOV) para el modo local.
 - Opcional: servidor siempre encendido en vez de Edge Function (−0.35 s).
+
+**Kokoro bajo carga (16-oct, tarde)**: banco con la app en Start (`--ez kokoro_bench_live true`,
+enviado con `am start -f 0x20000000`): 6 hilos RTF 0.62, 5 → 0.59, **4 → 0.47**; Silero VAD a
+1 hilo. En la ronda hablada r19 la mediana de Kokoro bajó de 0.67× a **0.45×** la duración del
+audio (frase corta ~0.8 s). Además: palabras con guion ("fifteen-minute") se buscan por partes
+y la primera pieza admite hasta 8 palabras.
