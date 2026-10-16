@@ -281,6 +281,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     /** Cascade components, loaded on first selection of a cascade engine. */
     @Volatile private var moonshineAsr: com.travel2chicago.gemmapipeline.asr.MoonshineAsr? = null
     @Volatile private var mlKitTranslator: com.travel2chicago.gemmapipeline.mt.MlKitTranslator? = null
+    @Volatile private var onlineTranslator: com.travel2chicago.gemmapipeline.mt.OnlineTranslator? = null
     @Volatile private var router: AstChunkRouter? = null
 
     @Volatile private var kokoroEngine: KokoroTtsEngine? = null
@@ -1114,6 +1115,17 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO -> mlKitTranslator
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_GEMMA_TEXT ->
                 (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE -> {
+                val online = onlineTranslator
+                val mlKit = mlKitTranslator
+                if (online == null || mlKit == null) null else {
+                    val gemmaText = (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
+                    val longWords = astConfig.autoLongPhraseWords
+                    com.travel2chicago.gemmapipeline.mt.FallbackTranslator(online, local = { es ->
+                        if (gemmaText != null && es.trim().split(Regex("""\s+""")).size >= longWords) gemmaText else mlKit
+                    })
+                }
+            }
         }
         if (mode != com.travel2chicago.gemmapipeline.ast.TranslationEngine.GEMMA_AUDIO && (asr == null || translator == null)) {
             log("[WARN] $mode not ready (asr=${asr != null}, mt=${translator != null}) — using Gemma audio")
@@ -1167,9 +1179,13 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 moonshineAsr = com.travel2chicago.gemmapipeline.asr.MoonshineAsr.load()
             }
             if ((mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT ||
-                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO) && mlKitTranslator == null) {
+                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO ||
+                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE) && mlKitTranslator == null) {
                 _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
                 mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
+            }
+            if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE && onlineTranslator == null) {
+                onlineTranslator = com.travel2chicago.gemmapipeline.mt.OnlineTranslator.fromConfigFile()
             }
             _state.update { it.copy(cascadeStatus = "") }
             log("Cascade ready for $mode")

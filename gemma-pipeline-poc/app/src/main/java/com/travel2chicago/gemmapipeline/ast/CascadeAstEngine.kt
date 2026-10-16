@@ -83,7 +83,7 @@ class CascadeAstEngine(
         val totalMs = (System.nanoTime() - t0) / 1_000_000
         Log.i(
             TAG,
-            "CASCADE mt=${mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
+            "CASCADE mt=${(mt as? com.travel2chicago.gemmapipeline.mt.FallbackTranslator)?.lastUsed ?: mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
                 "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} es='$spanish' en='$english'",
         )
         return AstResult(english, totalMs, backendUsed)
