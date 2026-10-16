@@ -46,6 +46,9 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra("kokoro_bench", false) == true) {
             viewModel.runKokoroBench()
         }
+        if (intent?.getBooleanExtra("kokoro_bench_live", false) == true) {
+            viewModel.runKokoroBench(live = true)
+        }
         // Dev hook: `--ez moonshine_bench true` runs the on-device Moonshine
         // ASR spike (logcat tag MoonshineBench).
         if (intent?.getBooleanExtra("moonshine_bench", false) == true) {
@@ -68,6 +71,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** Dev hook while the pipeline runs: `am start ... --ez kokoro_bench_live true`. */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("kokoro_bench_live", false)) viewModel.runKokoroBench(live = true)
     }
 
     override fun onResume() {

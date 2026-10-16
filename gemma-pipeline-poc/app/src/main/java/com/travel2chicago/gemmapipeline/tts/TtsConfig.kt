@@ -136,8 +136,11 @@ data class TtsConfig(
     /** ONNX Runtime intra-op threads for Kokoro. 6 since 2026-10-14 (ORT
      *  1.23.2, fp16 benchmark on the Xiaomi 15T Pro: 2 thr RTF 0.82, 4 thr
      *  0.44-0.49, 6 thr 0.42, 8 thr 0.39). 8 left free for the audio/ASR
-     *  threads that run concurrently with continuous speech. */
-    val intraOpThreads: Int = 6,
+     *  threads that run concurrently with continuous speech.
+     *  6 -> 4 on 2026-10-16: benchmarked WITH the pipeline running, 6 threads
+     *  degrade to RTF 0.62 (contention with VAD/ASR/AEC) while 4 hold 0.48
+     *  (4-word sentence 1177 -> 822 ms). */
+    val intraOpThreads: Int = 4,
 
     /** Streaming only: cut sentences into clauses / ≤ [maxPieceWords]-word
      *  pieces so the first audio comes from a short synthesis. OFF after the
@@ -149,6 +152,10 @@ data class TtsConfig(
     /** Run Kokoro through ONNX Runtime's XNNPACK execution provider (ARM-
      *  optimised kernels). Experimental — see the in-app Kokoro benchmark. */
     val useXnnpack: Boolean = false,
+    /** ORT `session.intra_op.allow_spinning`: idle pool threads busy-wait for
+     *  the next op. Faster in isolation, but with VAD/ASR/AEC running they
+     *  steal CPU from each other (in-app RTF 0.58-0.69 vs 0.41 in the bench). */
+    val allowSpinning: Boolean = true,
     val maxPieceWords: Int = 12,
     /** Even with [clauseSplitting] off, a single sentence of at least this many
      *  words is cut at its commas (pieces <= [maxPieceWords]) so Kokoro does not

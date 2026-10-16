@@ -251,7 +251,9 @@ class SileroVadOnnxModel private constructor(
 
             val env = OrtEnvironment.getEnvironment()
             val options = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(2)
+                // 1 thread (2026-10-16): a 32 ms window is tiny; a 2-thread pool
+                // only adds spinning threads that slow Kokoro down.
+                setIntraOpNumThreads(1)
             }
             val session = env.createSession(modelBytes, options)
 

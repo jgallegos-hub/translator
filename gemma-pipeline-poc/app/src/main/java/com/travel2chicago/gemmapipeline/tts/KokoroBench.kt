@@ -43,9 +43,29 @@ object KokoroBench {
         "fp32-xnn6" to base.copy(modelFilename = "kokoro-v1.0.onnx", intraOpThreads = 6, useXnnpack = true),
     )
 
-    suspend fun run(context: Context, base: TtsConfig, log: (String) -> Unit) {
-        log("Kokoro benchmark STARTED (${variants(base).size} variants)")
-        for ((name, cfg) in variants(base)) {
+    /** Run with the pipeline started (2026-10-16): in-app synthesis is ~1.5x
+     *  slower than this bench in isolation — find the thread/spinning setup
+     *  that holds up under VAD/ASR/AEC load. */
+    fun liveVariants(base: TtsConfig): List<Pair<String, TtsConfig>> {
+        val fp16 = base.copy(modelFilename = "kokoro-v1.0.fp16.onnx", useXnnpack = false)
+        return listOf(
+            // Round 1 (Silero 2 threads): cpu6-spin 0.63, cpu6-nospin 0.51,
+            // cpu4-spin 0.48, cpu4-nospin 0.50, cpu3-nospin 0.61.
+            "live-cpu4-spin" to fp16.copy(intraOpThreads = 4, allowSpinning = true),
+            "live-cpu5-spin" to fp16.copy(intraOpThreads = 5, allowSpinning = true),
+            "live-cpu6-spin" to fp16.copy(intraOpThreads = 6, allowSpinning = true),
+            "live-cpu4-spin-again" to fp16.copy(intraOpThreads = 4, allowSpinning = true),
+        )
+    }
+
+    suspend fun run(
+        context: Context,
+        base: TtsConfig,
+        variantList: List<Pair<String, TtsConfig>> = variants(base),
+        log: (String) -> Unit,
+    ) {
+        log("Kokoro benchmark STARTED (${variantList.size} variants)")
+        for ((name, cfg) in variantList) {
             if (!java.io.File(cfg.modelPath).isFile) {
                 Log.w(TAG, "KOKOROBENCH variant=$name SKIPPED (missing ${cfg.modelPath})")
                 continue

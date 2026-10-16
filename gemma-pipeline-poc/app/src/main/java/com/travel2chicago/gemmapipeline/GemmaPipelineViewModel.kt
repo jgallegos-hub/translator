@@ -1056,13 +1056,16 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * Waits for Gemma + Kokoro to finish loading so the measurement runs under
      * the same memory/thermal conditions as a real session (Gemma idle).
      */
-    fun runKokoroBench() {
+    fun runKokoroBench(live: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             var waited = 0
             while (!(_state.value.gemmaLoaded && _state.value.kokoroLoaded) && waited < 180) {
                 delay(1_000); waited++
             }
-            com.travel2chicago.gemmapipeline.tts.KokoroBench.run(getApplication(), ttsConfig) { log(it) }
+            val bench = com.travel2chicago.gemmapipeline.tts.KokoroBench
+            val variants = if (live) bench.liveVariants(ttsConfig) else bench.variants(ttsConfig)
+            Log.i(TAG, "Kokoro bench live=$live pipelineRunning=${_state.value.pipelineRunning}")
+            bench.run(getApplication(), ttsConfig, variants) { log(it) }
         }
     }
 

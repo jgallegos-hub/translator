@@ -307,6 +307,7 @@ class KokoroOnnxEngine private constructor(
                 } else {
                     setIntraOpNumThreads(config.intraOpThreads)
                 }
+                if (!config.allowSpinning) addConfigEntry("session.intra_op.allow_spinning", "0")
             }
             val session = env.createSession(modelBytes, options)
 
