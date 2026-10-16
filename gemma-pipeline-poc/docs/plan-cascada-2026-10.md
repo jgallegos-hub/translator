@@ -364,3 +364,45 @@ Orden de más factible a más complicado:
 4. Pendientes locales en orden: filtro de muletillas / palabras fuera de
    vocabulario; Gemma 4 E2B + MTP (pedir permiso para ~2.6 GB); bake-off
    Pocket TTS vs Kokoro; clasificador YAMNet para risas.
+
+## Resultados: Claude Haiku 5.5 como MT en línea (16-oct, banco en PC)
+
+`tools/haiku_bench.py` (SDK `anthropic`, `claude-haiku-5-5`, sin pensamiento, effort `low`,
+streaming; red de casa de Abraham). Dos variantes: **suelto** (prompt mínimo, el mismo de
+GemmaTextBench) y **sesión** (instrucciones de intérprete + glosario es-MX + lugares de
+Chicago, cacheados; + 3 frases previas como contexto). CSV en `tools/logs/cascade/haiku_*.csv`.
+
+| Entrada | Variante | 1.er token p50 / p90 | Total p50 / p90 / máx | Costo |
+|---|---|---|---|---|
+| guion (74) | suelto | 504 / 756 ms | 619 / 827 / 2200 ms | US$0.0038 ambas |
+| guion (74) | sesión | 560 / 828 ms | 649 / 845 / 2370 ms | (caché: 96 k tok leídos) |
+| Moonshine (84) | sesión | 583 / 719 ms | 700 / 894 / 2241 ms | US$0.0028 |
+
+Referencia (teléfono): ML Kit ~1–10 ms; Gemma E4B texto 0.9–2.4 s total (1.er token ~0.85 s).
+
+**Calidad:**
+- Slang: igual o mejor que Gemma y muy por encima de ML Kit ("Me late" → *I really like that
+  idea*, "Ya me cayó el veinte" → *Oh, now I get it*, "Mande" → *Sorry, what?*).
+- **Corrige errores del ASR con el contexto/glosario** (lo que Gemma y ML Kit no hacen):
+  "vamos a neybe peer y luego a mi venian park" → *Navy Pier … Millennium Park* (Gemma: "maybe
+  peer … my Venian Park"); "¿por qué la hora es?" → *What time is it?*; Roosevelt → *Roosevelt Road*.
+- **Suelto no sirve para la voz**: mete comillas, alternativas ("Okay." / "Alright.") y una
+  explicación entera para "Mande." → el modo sesión las elimina.
+- Riesgos vistos en modo sesión: (1) entradas vacías o raras → texto meta ("the current
+  utterance is missing…", "Mirin is likely…") — la app ya no manda chunks vacíos, pero hace
+  falta un guard de salida (filtro meta-texto existente o salida estructurada); (2) a veces
+  "rellena" ASR roto con contenido plausible ("mañana y bebe" → *my wife and I*); (3) "Le
+  comento…" quedó como *I'd like to point out* (bien) pero en el guion como *I told you* (mal).
+- Ruido (sección H): "¡Ja! ¡Gracias! ¡Gra" → *Ha! Thanks! Thanks*; no filtra risas por sí solo.
+
+**Conclusión:** Haiku en línea da **la mejor calidad** (slang + corrección de nombres) con
+**~0.65–0.7 s** de traducción completa — más rápido que Gemma texto en el teléfono (~1.3–2 s) y
+apenas por encima del primer token de Gemma. Con datos móviles se esperan +100–300 ms [I].
+Costo ≈ US$0.00004 por frase (≈ 1–2 centavos de dólar por día de uso intenso). Vale la pena
+construir el **modo en línea** con respaldo local (ver plan siguiente).
+
+## Research traductor en tiempo real de ChatGPT (16-oct)
+Resumen en `docs/research-chatgpt-realtime-2026-10.md`. Clave: OpenAI no traduce "más
+rápido por frase" que nosotros; traduce **sin esperar el fin de frase** (simultánea,
+~1.5–2.7 s detrás según mediciones de terceros). Lo aplicable: MT en streaming → TTS por
+cláusulas, fin de turno semántico, y opcionalmente probar `gpt-realtime-translate`.
