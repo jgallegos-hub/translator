@@ -308,6 +308,12 @@ class KokoroOnnxEngine private constructor(
                     setIntraOpNumThreads(config.intraOpThreads)
                 }
                 if (!config.allowSpinning) addConfigEntry("session.intra_op.allow_spinning", "0")
+                if (config.useNnapi) {
+                    val flags = java.util.EnumSet.noneOf(ai.onnxruntime.providers.NNAPIFlags::class.java)
+                    if (config.nnapiFp16) flags += ai.onnxruntime.providers.NNAPIFlags.USE_FP16
+                    if (config.nnapiCpuDisabled) flags += ai.onnxruntime.providers.NNAPIFlags.CPU_DISABLED
+                    addNnapi(flags)
+                }
             }
             val session = env.createSession(modelBytes, options)
 

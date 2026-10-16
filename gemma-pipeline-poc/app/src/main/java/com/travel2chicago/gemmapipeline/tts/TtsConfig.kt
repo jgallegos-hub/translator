@@ -156,6 +156,12 @@ data class TtsConfig(
      *  the next op. Faster in isolation, but with VAD/ASR/AEC running they
      *  steal CPU from each other (in-app RTF 0.58-0.69 vs 0.41 in the bench). */
     val allowSpinning: Boolean = true,
+    /** Experimental (2026-10-16): ORT NNAPI execution provider, which can hand
+     *  supported ops to the GPU/NPU drivers. [nnapiFp16] relaxes fp32 to fp16;
+     *  [nnapiCpuDisabled] forbids NNAPI's own CPU reference fallback. */
+    val useNnapi: Boolean = false,
+    val nnapiFp16: Boolean = true,
+    val nnapiCpuDisabled: Boolean = false,
     val maxPieceWords: Int = 12,
     /** Even with [clauseSplitting] off, a single sentence of at least this many
      *  words is cut at its commas (pieces <= [maxPieceWords]) so Kokoro does not

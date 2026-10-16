@@ -51,10 +51,13 @@ object KokoroBench {
         return listOf(
             // Round 1 (Silero 2 threads): cpu6-spin 0.63, cpu6-nospin 0.51,
             // cpu4-spin 0.48, cpu4-nospin 0.50, cpu3-nospin 0.61.
-            "live-cpu4-spin" to fp16.copy(intraOpThreads = 4, allowSpinning = true),
-            "live-cpu5-spin" to fp16.copy(intraOpThreads = 5, allowSpinning = true),
-            "live-cpu6-spin" to fp16.copy(intraOpThreads = 6, allowSpinning = true),
-            "live-cpu4-spin-again" to fp16.copy(intraOpThreads = 4, allowSpinning = true),
+            // Round 2 (Silero 1 thread): cpu4 0.47, cpu5 0.59, cpu6 0.62 -> 4 threads.
+            // Round 3: NNAPI (GPU/NPU drivers) vs the CPU baseline.
+            "live-cpu4" to fp16.copy(intraOpThreads = 4),
+            "nnapi-fp32m-fp16" to fp16.copy(modelFilename = "kokoro-v1.0.onnx", intraOpThreads = 4, useNnapi = true, nnapiFp16 = true),
+            "nnapi-fp32m-fp32" to fp16.copy(modelFilename = "kokoro-v1.0.onnx", intraOpThreads = 4, useNnapi = true, nnapiFp16 = false),
+            "nnapi-fp16m" to fp16.copy(intraOpThreads = 4, useNnapi = true, nnapiFp16 = true),
+            "nnapi-fp32m-nocpu" to fp16.copy(modelFilename = "kokoro-v1.0.onnx", intraOpThreads = 4, useNnapi = true, nnapiFp16 = true, nnapiCpuDisabled = true),
         )
     }
 
