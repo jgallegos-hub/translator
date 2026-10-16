@@ -40,3 +40,12 @@ onnxruntime.ai/docs/execution-providers/WebGPU-ExecutionProvider.html ·
 developers.google.com/edge/litert/next/mediatek · github.com/kyutai-labs/pocket-tts ·
 huggingface.co/mlboydaisuke/Pocket-TTS-LiteRT · huggingface.co/Supertone/supertonic-3 ·
 picovoice.ai/blog/on-device-tts/ · arxiv.org/html/2610.00063v1 · github.com/k2-fsa/sherpa-onnx/issues/2443 (>6m)
+
+## A/B Supertonic 3 vs Kokoro en PC (16-oct, `tools/supertonic_bench.py`, `tools/kokoro_pc_bench.py`)
+Mismas 7 frases, 4 hilos, misma PC. RTF: Kokoro 0.49 · Supertonic 2 pasos 0.19 · 3 pasos 0.22 ·
+5 pasos 0.28. Frase de 11 palabras: Kokoro 2225 ms vs Supertonic(3) 864 ms; frase corta 570 vs 489 ms.
+**Escucha de Abraham:** Kokoro "suena muy bien"; de Supertonic sólo M3·3 pasos es decente pero con
+sonido "de videollamada"; M1·5 pasos suena limpio como Kokoro (RTF 0.28, ~1.7× más rápido).
+**Decisión: Kokoro se queda**; Supertonic no compensa (voz y control de pronunciación).
+Dato útil: Kokoro en la PC (0.49) no es más rápido que en el Xiaomi (0.45) → una PC/mini-PC/Raspberry
+no acelera la voz; la ganancia real sería GPU de servidor o TTS en la nube con streaming.

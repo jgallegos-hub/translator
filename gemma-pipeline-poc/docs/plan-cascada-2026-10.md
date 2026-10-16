@@ -411,3 +411,12 @@ cláusulas, fin de turno semántico, y opcionalmente probar `gpt-realtime-transl
 Ver PROGRESS.md "Banco Haiku, voz más ágil y modo en línea con Supabase" y
 `backend/README.md`. Decisión de Abraham: por calidad, el stack Moonshine → Haiku (en línea)
 → Kokoro va ganando; modo Auto local queda como respaldo sin señal.
+
+## Reflexión de arquitectura (16-oct, Abraham) → siguiente fase
+Con Haiku resolviendo la calidad, el teléfono potente deja de ser requisito. Propuesta: **cliente
+ligero** (micrófono + Moonshine + reproducción en la JBL) y **servidor propio** que reciba el texto,
+traduzca con Haiku y sintetice la voz, devolviendo audio en streaming (varios clientes; quita el
+salto de Supabase ~0.35 s). El modo local actual (Kokoro + ML Kit/Gemma) queda como respaldo sin señal.
+Descartado: Raspberry/mini-PC para la voz (más hardware, CPU más lenta que el Xiaomi).
+Aclaración: lo deprecado por Google es NNAPI, no Kokoro (modelo Apache-2.0 sobre ONNX Runtime).
+Research de servidores y TTS en la nube: `docs/research-server-tts-2026-10.md`.

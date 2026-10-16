@@ -2101,3 +2101,16 @@ enviado con `am start -f 0x20000000`): 6 hilos RTF 0.62, 5 → 0.59, **4 → 0.4
 1 hilo. En la ronda hablada r19 la mediana de Kokoro bajó de 0.67× a **0.45×** la duración del
 audio (frase corta ~0.8 s). Además: palabras con guion ("fifteen-minute") se buscan por partes
 y la primera pieza admite hasta 8 palabras.
+
+**GPU/NPU, Supertonic y nueva dirección (16-oct, cierre)**: NNAPI (GPU/NPU vía ORT) duplica el tiempo
+de Kokoro → descartado; no hay ruta GPU/NPU madura para Kokoro en 2026
+(`docs/research-tts-gpu-npu-2026-10.md`). Supertonic 3 probado en PC (2–2.5× más rápido en frases
+largas) pero Abraham prefiere la voz de Kokoro → **Kokoro se queda**. Reflexión de Abraham: con Haiku
+la calidad ya no depende del teléfono → siguiente fase: **servidor propio** (relay en Chicago +
+voz en el servidor, streaming de audio, varios clientes) con el modo local como respaldo
+(`docs/research-server-tts-2026-10.md`: recomendado Fly.io `ord` + Kokoro vía DeepInfra).
+
+### Siguiente
+- Diseñar y prototipar el relay (WebSocket, Haiku directo, chunker por cláusula, TTS en streaming).
+- Medir Kokoro en DeepInfra (voz am_puck, primer audio) y, como A/B, Inworld/ElevenLabs Flash.
+- Pendientes menores: validar deletreo de siglas en vivo; filtro de risas para el modo local.
