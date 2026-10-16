@@ -406,3 +406,8 @@ Resumen en `docs/research-chatgpt-realtime-2026-10.md`. Clave: OpenAI no traduce
 rápido por frase" que nosotros; traduce **sin esperar el fin de frase** (simultánea,
 ~1.5–2.7 s detrás según mediciones de terceros). Lo aplicable: MT en streaming → TTS por
 cláusulas, fin de turno semántico, y opcionalmente probar `gpt-realtime-translate`.
+
+## Modo en línea con Supabase (16-oct, rondas r15–r18)
+Ver PROGRESS.md "Banco Haiku, voz más ágil y modo en línea con Supabase" y
+`backend/README.md`. Decisión de Abraham: por calidad, el stack Moonshine → Haiku (en línea)
+→ Kokoro va ganando; modo Auto local queda como respaldo sin señal.

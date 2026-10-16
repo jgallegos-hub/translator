@@ -2063,3 +2063,35 @@ Detalle completo, tablas y logs en `docs/plan-cascada-2026-10.md`. Resumen:
 
 Pendiente para la próxima sesión: ver "Plan para la próxima sesión" en
 `docs/plan-cascada-2026-10.md`.
+
+## Banco Haiku, voz más ágil y modo en línea con Supabase (16 octubre 2026)
+
+**Banco Claude Haiku 5.5 (PC, `tools/haiku_bench.py`)**: modo "sesión" (instrucciones +
+glosario + contexto) ~0.65–0.7 s por frase, mejor calidad que Gemma texto y ML Kit, corrige
+errores del ASR ("neybe peer" → Navy Pier). Modo suelto inservible para voz (comillas,
+explicaciones). Costo ≈ US$0.00004/frase. Research del traductor de ChatGPT en
+`docs/research-chatgpt-realtime-2026-10.md` (traduce simultáneo, ~1.5–2.7 s detrás; no
+publica latencias).
+
+**Voz (r15–r16)**:
+- `TtsRouter` desacopla síntesis y reproducción (cola propia): antes `play` bloqueaba hasta
+  7.3 s y la siguiente frase esperaba 12 s.
+- Emisión inmediata de oraciones en la cascada (`eagerSentenceEmit`, cierre con evento vacío).
+- Kokoro: corte en comas desde 12 palabras; primera pieza cortada tras coma o antes de
+  conjunción (3–7 palabras): "What do you think / if we get hands?" 1.9 → 0.95 s.
+- Fonemizador: "it"/"us" se leían como siglas I.T./U.S.; siglas en mayúsculas (UPS, CRAC)
+  ahora se deletrean.
+- Abraham: "más rápido y natural". Kokoro queda como cuello de botella (~1 s mínimo).
+
+**Modo en línea (r17–r18)**: Edge Function `translate` en el proyecto Supabase
+`illinois-libraries` (clave de Anthropic sólo en secretos; token propio de la app).
+Teléfono: Haiku 0.5–0.7 s vía relay local, ~0.95 s p50 vía Supabase (arranque en frío 1.9 s
+→ ahora se calienta al dar Start). Abraham: "por temas de calidad este stack va ganando";
+resolvió "chingada madre", "no mamen", "ira condicionado" → air conditioning, "ups y cras" →
+UPS and CRAC units.
+
+### Siguiente
+- Validar deletreo de siglas y calentamiento en el teléfono.
+- Bake-off Pocket TTS vs Kokoro (pedir permiso de descarga).
+- Filtro de risas/muletillas (YAMNet + OOV) para el modo local.
+- Opcional: servidor siempre encendido en vez de Edge Function (−0.35 s).

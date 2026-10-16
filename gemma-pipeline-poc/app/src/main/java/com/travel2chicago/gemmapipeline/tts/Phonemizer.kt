@@ -65,6 +65,16 @@ class DictionaryPhonemizer(
         // U.S.) — device 2026-10-16: "it" was spoken as "ai-tí". Use the word
         // reading unless the token is written all-caps.
         if (clean != clean.uppercase()) WORD_OVERRIDES[clean.lowercase()]?.let { return it }
+        // All-caps 2-5 letters (optionally plural) = acronym, spelled letter by
+        // letter: device 2026-10-16 "UPS" was read as the word "ups" and "CRAC"
+        // (not in the dictionary) as schwas. Acronyms said as words are kept.
+        ACRONYM.matchEntire(clean)?.let { m ->
+            val letters = m.groupValues[1]
+            if (letters !in SPOKEN_AS_WORD) {
+                val spelled = letters.map { dict[it.toString()] ?: return@let }.joinToString("")
+                return if (m.groupValues[2].isEmpty()) spelled else spelled + "z"
+            }
+        }
         // Dict words are uppercase (CMU convention).
         dict[clean.uppercase()]?.let { return it }
         // Try once more without internal apostrophes.
@@ -85,6 +95,11 @@ class DictionaryPhonemizer(
 
     companion object {
         private val WORD_OVERRIDES = mapOf("it" to "ɪt", "us" to "ʌs")
+        private val ACRONYM = Regex("""([A-Z]{2,5})('?s)?""")
+        private val SPOKEN_AS_WORD = setOf(
+            "OK", "NASA", "NATO", "FIFA", "UNICEF", "SIM", "PIN", "LASER", "RADAR", "SCUBA", "COVID", "AIDS",
+            "OPEC", "ASAP",
+        )
         private val PUNCT = charArrayOf(
             '.', ',', '!', '?', ';', ':', '"', '(', ')', '[', ']', '{', '}',
             '“', '”', '‘', '’',

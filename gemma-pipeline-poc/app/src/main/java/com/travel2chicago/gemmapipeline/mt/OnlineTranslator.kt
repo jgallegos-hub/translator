@@ -79,6 +79,29 @@ class OnlineTranslator(
             }
         }
 
+    /**
+     * Boots the Edge Function so the first real phrase doesn't pay its cold
+     * start (device r18: 1.9 s vs ~0.95 s warm). An empty text returns at once
+     * without calling Anthropic. Errors are ignored.
+     */
+    fun warmUp() {
+        runCatching {
+            val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5_000
+                readTimeout = 5_000
+                doOutput = true
+                setRequestProperty("content-type", "application/json")
+                setRequestProperty("x-app-token", appToken)
+            }
+            val t0 = System.nanoTime()
+            conn.outputStream.use { it.write("""{"text":""}""".toByteArray()) }
+            val code = conn.responseCode
+            conn.disconnect()
+            Log.i(TAG, "warm-up HTTP $code in ${(System.nanoTime() - t0) / 1_000_000} ms")
+        }.onFailure { Log.w(TAG, "warm-up failed: ${it.message}") }
+    }
+
     override fun close() = Unit
 
     companion object {

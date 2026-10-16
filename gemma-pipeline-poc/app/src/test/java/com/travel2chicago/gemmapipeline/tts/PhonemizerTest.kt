@@ -28,6 +28,17 @@ class PhonemizerTest {
     }
 
     @Test
+    fun `all-caps short tokens are spelled letter by letter`() {
+        val letters = ('A'..'Z').associate { it.toString() to it.lowercase() }
+        val p = DictionaryPhonemizer(letters + mapOf("UPS" to "ʌps", "OK" to "oʊkeɪ"))
+        assertEquals("ups", p.phonemize("UPS"))
+        assertEquals("crac", p.phonemize("CRAC"))
+        assertEquals("cracz", p.phonemize("CRACs"))
+        assertEquals("oʊkeɪ", p.phonemize("OK"))
+        assertEquals("ʌps", p.phonemize("ups"))
+    }
+
+    @Test
     fun `it and us use the word reading unless written all-caps`() {
         val p = DictionaryPhonemizer(mapOf("IT" to "ˌaɪtˈiː", "US" to "jˌuːˈɛs"))
         assertEquals("ɪt", p.phonemize("it"))

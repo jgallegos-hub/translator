@@ -1119,6 +1119,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 val online = onlineTranslator
                 val mlKit = mlKitTranslator
                 if (online == null || mlKit == null) null else {
+                    viewModelScope.launch(Dispatchers.IO) { online.warmUp() }
                     val gemmaText = (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
                     val longWords = astConfig.autoLongPhraseWords
                     com.travel2chicago.gemmapipeline.mt.FallbackTranslator(online, local = { es ->

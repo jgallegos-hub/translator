@@ -8,6 +8,13 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Modo en línea con Claude Haiku 5.5 (16 octubre 2026)** — "En línea: Claude
+  Haiku (respaldo Auto)": Moonshine → Supabase Edge Function (`backend/`) → Haiku
+  (instrucciones de intérprete + glosario es-MX + lugares de Chicago + 3 frases
+  previas) → Kokoro. Mejor calidad hasta ahora (slang, groserías, muletillas,
+  corrige errores del ASR y términos técnicos); ~0.95 s p50 al primer texto vía
+  Supabase. Sin red o > 1.8 s → modo Auto local. Voz: síntesis y reproducción
+  desacopladas, primera pieza cortada en coma/conjunción, siglas deletreadas.
 - ✅ **Cascada ASR → MT (14 octubre 2026)** — selector "Motor de traducción"
   en la UI; default **Auto**: Moonshine Tiny-es (on-device, ~0.1 s) → ML Kit
   (< 10 palabras) / Gemma 4 E4B en modo texto (≥ 10) → Kokoro (speed 1.0, 6
