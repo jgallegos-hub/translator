@@ -31,3 +31,4 @@ gemma-pipeline-poc/app/libs/moonshine-voice-*-noort.aar
 gemma-pipeline-poc/backend/.app_token
 gemma-pipeline-poc/backend/.env*
 gemma-pipeline-poc/backend/supabase/.temp/
+gemma-pipeline-poc/tools/models/
