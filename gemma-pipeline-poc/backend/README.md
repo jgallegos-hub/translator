@@ -27,3 +27,14 @@ allowed only for 127.0.0.1/localhost, see `res/xml/network_security_config.xml`)
 ## Latency (2026-10-16, home network, first text)
 Direct API ~0.55 s p50 · local Deno ~0.55 s · Supabase ~0.9 s p50 (p90 1.0–2.2 s, cold start ~1.8 s).
 Region pinning (`x-region`) made no difference.
+
+# Own relay with voice (backend/relay) — Fly.io
+
+Deployed 2026-10-20 as Fly app **`traductor-t2c`** (region `ord`, 1 always-on shared-cpu-1x 512 MB):
+`https://traductor-t2c.fly.dev` (`POST /speak`, `GET /health`, `GET /health?warm=1` with the app token).
+Secrets (Fly): ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, APP_TOKEN — imported from a temp file
+(`cmd /c "flyctl secrets import --app traductor-t2c < file"`; PowerShell 5.1 pipes add a BOM).
+Deploy: `cd backend && flyctl deploy --remote-only --ha=false`. Phone config:
+`/sdcard/Download/translator/server.json` = `{"url": "https://traductor-t2c.fly.dev", "token": "<app token>"}`.
+Local run: `deno run --allow-net --allow-env --allow-read relay/main.ts` (+ DEBUG_WAV_DIR to dump replies).
+PC → Fly first audio p50 ~1.03 s (local relay ~0.91 s).
