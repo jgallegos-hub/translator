@@ -122,12 +122,14 @@ class OnlineTranslator(
  * timeout to every phrase. If it fails mid-stream, the partial text stands.
  */
 class FallbackTranslator(
-    private val online: OnlineTranslator,
+    /** [OnlineTranslator] (text back, local Kokoro speaks) or [ServerVoiceTranslator]
+     *  (server speaks; throws only before any audio, so falling back never repeats audio). */
+    private val online: TextTranslator,
     /** Local MT chosen per phrase (Auto: ML Kit short / Gemma long). */
     private val local: (spanish: String) -> TextTranslator,
     private val cooldownMs: Long = 30_000,
 ) : TextTranslator {
-    override val name = "Haiku+fallback"
+    override val name = "${online.name}+fallback"
 
     @Volatile private var onlineDisabledUntil = 0L
     @Volatile var lastUsed: String = ""

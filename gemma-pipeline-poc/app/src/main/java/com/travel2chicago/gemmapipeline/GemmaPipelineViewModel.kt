@@ -282,6 +282,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var moonshineAsr: com.travel2chicago.gemmapipeline.asr.MoonshineAsr? = null
     @Volatile private var mlKitTranslator: com.travel2chicago.gemmapipeline.mt.MlKitTranslator? = null
     @Volatile private var onlineTranslator: com.travel2chicago.gemmapipeline.mt.OnlineTranslator? = null
+    @Volatile private var serverVoice: com.travel2chicago.gemmapipeline.mt.ServerVoiceTranslator? = null
     @Volatile private var router: AstChunkRouter? = null
 
     @Volatile private var kokoroEngine: KokoroTtsEngine? = null
@@ -354,6 +355,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         gemmaEngine?.close()
         runCatching { moonshineAsr?.close() }
         runCatching { mlKitTranslator?.close() }
+        runCatching { serverVoice?.close() }
         kokoroEngine?.close()
         androidTtsEngine?.close()
         aecProcessor?.close()
@@ -1118,6 +1120,18 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO -> mlKitTranslator
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_GEMMA_TEXT ->
                 (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
+            com.travel2chicago.gemmapipeline.ast.TranslationEngine.SERVER_VOICE -> {
+                val server = serverVoice
+                val mlKit = mlKitTranslator
+                if (server == null || mlKit == null) null else {
+                    viewModelScope.launch(Dispatchers.IO) { server.warmUp() }
+                    val gemmaText = (g as? LiteRtGemmaAstEngine)?.let { com.travel2chicago.gemmapipeline.mt.GemmaTextTranslator(it) }
+                    val longWords = astConfig.autoLongPhraseWords
+                    com.travel2chicago.gemmapipeline.mt.FallbackTranslator(server, local = { es ->
+                        if (gemmaText != null && es.trim().split(Regex("""\s+""")).size >= longWords) gemmaText else mlKit
+                    })
+                }
+            }
             com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE -> {
                 val online = onlineTranslator
                 val mlKit = mlKitTranslator
@@ -1184,9 +1198,21 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             }
             if ((mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_MLKIT ||
                     mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_AUTO ||
-                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE) && mlKitTranslator == null) {
+                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE ||
+                    mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.SERVER_VOICE) && mlKitTranslator == null) {
                 _state.update { it.copy(cascadeStatus = "Cargando ML Kit es→en…") }
                 mlKitTranslator = com.travel2chicago.gemmapipeline.mt.MlKitTranslator.load()
+            }
+            if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.SERVER_VOICE && serverVoice == null) {
+                // The server speaks through the same sink as Kokoro (VAD mute + AEC reference);
+                // the text goes to the echo-text history and the UI via TtsAudioReady.
+                serverVoice = com.travel2chicago.gemmapipeline.mt.ServerVoiceTranslator.fromConfigFile(ttsPlayer, onSpoken = { en: String ->
+                    val now = System.nanoTime()
+                    bus.emit(AudioEvent.TtsAudioReady(
+                        samples = ShortArray(0), sampleRate = 0, sourceText = en,
+                        sourceTranslationTimestampNs = now, latencyMs = 0L, timestampNs = now,
+                    ))
+                })
             }
             if (mode == com.travel2chicago.gemmapipeline.ast.TranslationEngine.CASCADE_ONLINE && onlineTranslator == null) {
                 onlineTranslator = com.travel2chicago.gemmapipeline.mt.OnlineTranslator.fromConfigFile()

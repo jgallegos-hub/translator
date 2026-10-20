@@ -484,4 +484,5 @@ enum class TranslationEngine(val label: String) {
     CASCADE_GEMMA_TEXT("Natural: Moonshine + Gemma texto"),
     CASCADE_AUTO("Auto: ML Kit cortas + Gemma largas"),
     CASCADE_ONLINE("En línea: Claude Haiku (respaldo Auto)"),
+    SERVER_VOICE("Servidor: Haiku + voz Eric (respaldo local)"),
 }
