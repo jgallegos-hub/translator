@@ -81,6 +81,22 @@ const SAY: [RegExp, string][] = [
 ];
 export const forSpeech = (t: string) => SAY.reduce((s, [re, to]) => s.replace(re, to), t);
 
+/** Where Haiku stops translating and starts commenting on the input (device r23: "...three
+ *  CRACs" — this looks like a maintenance instruction, so I..."). Returns the index or -1. */
+const META = new RegExp(
+  [
+    String.raw`["”]\s*[—–]\s*(this|that|it)\b`,
+    String.raw`[—–]\s*(this|that|it) (looks|seems|sounds|appears|is (likely|probably))\b`,
+    String.raw`\b(probably|likely|possibly) (means|refers|a typo|a mis)`,
+    String.raw`\btranscri(pt|ption|bed)\b`,
+    String.raw`\bspeech recogni`,
+    String.raw`\b(note|translation):`,
+    String.raw`\(note\b`,
+  ].join("|"),
+  "i",
+);
+export const metaIndex = (s: string) => s.search(META);
+
 /** Starts ElevenLabs synthesis now; the caller reads the body later, in clause order. */
 function startTts(text: string, previous: string): Promise<Response> {
   return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=pcm_24000`, {
@@ -157,6 +173,13 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
       if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
         if (stats.haikuFirstMs === undefined) stats.haikuFirstMs = Math.round(performance.now() - t0);
         buf += ev.delta.text;
+        const meta = metaIndex(buf);
+        if (meta >= 0) {
+          stats.metaDropped = buf.slice(meta, meta + 80);
+          buf = buf.slice(0, meta);
+          stream.abort();
+          break;
+        }
         let cut: [string, string] | null;
         while ((cut = takeClause(buf)) !== null) {
           if (stats.firstClauseMs === undefined) stats.firstClauseMs = Math.round(performance.now() - t0);
