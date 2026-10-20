@@ -436,9 +436,10 @@ data class AstConfig(
     /** Cascade echo-residue gate: Moonshine lines with RMS below this are
      *  dropped (F0 corpus: voice >= ~2200, residue <= ~1300). */
     val asrLineRmsThreshold: Double = 1800.0,
-    /** Same gate while our TTS is playing (residue reached 1850-2200 in the
-     *  2026-10-14 validation round; Abraham's speech stays >= ~3500). */
-    val asrLineRmsThresholdDuringTts: Double = 2400.0,
+    /** Same gate while our TTS is (or was, during the chunk) playing. Residue reached 1850-2200
+     *  (2026-10-14) and up to 2911 with the server voice talking over (2026-10-20, r24); Abraham's
+     *  speech stays >= ~3500. 2400 -> 3000. */
+    val asrLineRmsThresholdDuringTts: Double = 3000.0,
     /** Auto mode: Spanish transcripts with at least this many words go to
      *  Gemma text, shorter ones to ML Kit. */
     val autoLongPhraseWords: Int = 10,

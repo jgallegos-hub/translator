@@ -122,6 +122,15 @@ class TtsAudioPlayer(
      *  [mutex] tomado. Junto con `playbackHeadPosition` da la ocupación. */
     @Volatile private var framesWritten: Long = 0L
 
+    /** When the speaker last went quiet (after the un-mute tail). */
+    @Volatile private var lastPlaybackEndNs: Long = 0L
+
+    /** True if our TTS was audible at any point in the last [windowMs] — i.e. during a chunk of
+     *  that length that just ended (device r24: a chunk recorded mostly over Eric ended 0.4 s
+     *  after playback and was judged with the normal gate, so the echo got translated). */
+    fun playedWithinMs(windowMs: Long): Boolean =
+        ttsPlaying.get() || (System.nanoTime() - lastPlaybackEndNs) / 1_000_000 < windowMs
+
     /** Pending delayed un-mute (see [endUtterance]); bumped to cancel it. */
     private val unmuteGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val unmuteScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
@@ -209,6 +218,7 @@ class TtsAudioPlayer(
             unmuteScheduler.schedule({
                 if (unmuteGeneration.get() == gen && utteranceDepth.get() == 0) {
                     ttsPlaying.set(false)
+                    lastPlaybackEndNs = System.nanoTime()
                     Log.i(TAG, "endUtterance: VAD mute OFF (after ${delayMs} ms: queued $queuedMs + tail $UNMUTE_TAIL_MS)")
                 }
             }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
@@ -261,7 +271,7 @@ class TtsAudioPlayer(
                 framesWritten += written
             }
         } finally {
-            if (standalone) ttsPlaying.set(false)
+            if (standalone) { ttsPlaying.set(false); lastPlaybackEndNs = System.nanoTime() }
         }
     }
 

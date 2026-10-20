@@ -1158,7 +1158,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 longTranslator = longT,
                 longPhraseWords = astConfig.autoLongPhraseWords,
                 strictLineRmsThreshold = astConfig.asrLineRmsThresholdDuringTts,
-                isTtsActive = { ttsPlaying.get() },
+                isTtsActive = { chunkMs -> ttsPlayer.playedWithinMs(chunkMs + 300) },
             )
             cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false, eagerSentenceEmit = true)
         } else {

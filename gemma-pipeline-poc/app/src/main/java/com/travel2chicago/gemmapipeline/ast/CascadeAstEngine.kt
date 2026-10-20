@@ -30,7 +30,8 @@ class CascadeAstEngine(
     /** Stricter residue gate while our own TTS is playing (validation round
      *  2026-10-14: residue lines reached RMS 1850-2200 during playback). */
     private val strictLineRmsThreshold: Double = lineRmsThreshold,
-    private val isTtsActive: () -> Boolean = { false },
+    /** Was our own TTS audible during the last `chunkMs` (the chunk being transcribed)? */
+    private val isTtsActive: (chunkMs: Long) -> Boolean = { false },
 ) : GemmaAstEngine {
 
     override val isLoaded: Boolean = true
@@ -51,7 +52,7 @@ class CascadeAstEngine(
         val samples = pcmFromWav(wavBytes)
         val lines = asr.transcribe(samples)
         val asrMs = (System.nanoTime() - t0) / 1_000_000
-        val ttsActive = isTtsActive()
+        val ttsActive = isTtsActive(samples.size * 1000L / 16_000)
         val gate = if (ttsActive) strictLineRmsThreshold else lineRmsThreshold
         val kept = lines.filter { it.rms >= gate }
         for (l in lines - kept.toSet()) {
