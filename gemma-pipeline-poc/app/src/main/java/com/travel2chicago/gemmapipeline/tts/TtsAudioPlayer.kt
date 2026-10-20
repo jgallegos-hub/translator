@@ -16,8 +16,9 @@ import java.util.concurrent.atomic.AtomicInteger
 private const val TAG = "TtsAudioPlayer"
 private const val KEEPALIVE_CHUNK_MS = 20
 private const val KEEPALIVE_MAX_QUEUED_MS = 40
-/** Speaker→mic latency margin after the queue drains (AEC3 measured ~380 ms pre-delay). */
-private const val UNMUTE_TAIL_MS = 350L
+/** Speaker→mic latency margin after the queue drains. 350 ms (AEC3 pre-delay) was not enough
+ *  for the JBL over Bluetooth: device r22 still caught the last words as "¿y algún tipo? Roder.". */
+private const val UNMUTE_TAIL_MS = 800L
 
 /**
  * Abstraction over the sink [TtsRouter] writes PCM to. `TtsAudioPlayer` is

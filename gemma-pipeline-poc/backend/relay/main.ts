@@ -22,6 +22,24 @@ const TTS_MODEL = Deno.env.get("TTS_MODEL") ?? "eleven_flash_v2_5";
 const ELEVEN_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const APP_TOKEN = Deno.env.get("APP_TOKEN") ?? "";
 
+/** Diagnostics only: when set, every reply is also saved as a WAV there (contains no secrets,
+ *  but it is the translated speech — keep the folder out of git). */
+const DEBUG_WAV_DIR = Deno.env.get("DEBUG_WAV_DIR") ?? "";
+
+async function saveWav(chunks: Uint8Array[], es: string) {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const wav = new Uint8Array(44 + n);
+  const v = new DataView(wav.buffer);
+  const str = (o: number, t: string) => [...t].forEach((c, i) => (wav[o + i] = c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + n, true); str(8, "WAVEfmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 24000, true); v.setUint32(28, 48000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n, true);
+  let o = 44;
+  for (const c of chunks) { wav.set(c, o); o += c.length; }
+  const slug = es.normalize("NFKD").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 40);
+  await Deno.writeFile(`${DEBUG_WAV_DIR}/${new Date().toISOString().replace(/[:.]/g, "-")}_${slug}.wav`, wav);
+}
+
 const anthropic = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY"), maxRetries: 1 });
 const enc = new TextEncoder();
 
@@ -58,6 +76,8 @@ export function takeClause(buf: string): [string, string] | null {
 const SAY: [RegExp, string][] = [
   [/\bCRACs\b/g, "cracks"],
   [/\bCRAC\b/g, "crack"],
+  [/\bCRAHs\b/g, "crahs"],
+  [/\bCRAH\b/g, "crah"],
 ];
 export const forSpeech = (t: string) => SAY.reduce((s, [re, to]) => s.replace(re, to), t);
 
@@ -76,6 +96,7 @@ function startTts(text: string, previous: string): Promise<Response> {
 async function speak(text: string, history: string[], out: WritableStreamDefaultWriter<Uint8Array>) {
   const t0 = performance.now();
   const stats: Record<string, number | string> = {};
+  const debugPcm: Uint8Array[] = [];
   const prev = history.length ? history.map((h) => `- ${h}`).join("\n") : "(none)";
   const pending: { clause: string; tts: Promise<Response> }[] = [];
   let spoken = "";
@@ -107,6 +128,7 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
         if (chunk.length % 2) { carry = chunk.slice(chunk.length - 1); chunk = chunk.slice(0, chunk.length - 1); }
         if (!chunk.length) continue;
         if (!firstAudioSent) { firstAudioSent = true; stats.firstAudioMs = Math.round(performance.now() - t0); }
+        if (DEBUG_WAV_DIR) debugPcm.push(chunk);
         await out.write(frame(2, chunk));
       }
     }
@@ -152,6 +174,7 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
   }
   await writer;
   stats.totalMs = Math.round(performance.now() - t0);
+  if (DEBUG_WAV_DIR && debugPcm.length) await saveWav(debugPcm, text).catch(() => {});
   stats.english = spoken;
   console.log(JSON.stringify({ es: text, ...stats }));
   await out.write(frame(3, enc.encode(JSON.stringify(stats))));

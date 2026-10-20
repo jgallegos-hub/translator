@@ -159,8 +159,8 @@ class ServerVoiceTranslator(
 
     companion object {
         private const val IDLE_LEAD_IN_AFTER_NS = 3_000_000_000L
-        /** 150 ms of inaudible dither (±2 LSB) at 24 kHz. */
-        private val leadIn = ShortArray(3_600) { if (it % 2 == 0) 2 else -2 }
+        /** 300 ms of inaudible dither (±2 LSB) at 24 kHz (150 ms still clipped "Hey", r22). */
+        private val leadIn = ShortArray(7_200) { if (it % 2 == 0) 2 else -2 }
 
         /** Not in the APK or git: pushed by adb ({"url": ..., "token": ...}). */
         const val CONFIG_PATH = "/sdcard/Download/translator/server.json"
