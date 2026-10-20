@@ -420,3 +420,16 @@ salto de Supabase ~0.35 s). El modo local actual (Kokoro + ML Kit/Gemma) queda c
 Descartado: Raspberry/mini-PC para la voz (más hardware, CPU más lenta que el Xiaomi).
 Aclaración: lo deprecado por Google es NNAPI, no Kokoro (modelo Apache-2.0 sobre ONNX Runtime).
 Research de servidores y TTS en la nube: `docs/research-server-tts-2026-10.md`.
+
+## Servidor propio con voz (20-oct, rondas r20–r22) y tarea para producción
+Relay `backend/relay` (Haiku → cláusulas → ElevenLabs "Eric"): primer audio p50 ~0.9 s desde que el
+teléfono manda el texto, independiente del largo. Abraham: "muy rápido, la experiencia general fue
+muy buena". Despliegue preparado en `backend/Dockerfile` + `backend/fly.toml` (Fly.io `ord`).
+
+**Antes de producción (pregunta de Abraham: ¿los retrasos dependen del teléfono?) — sí:** el margen
+de reactivación del micrófono (`UNMUTE_TAIL_MS` = 800 ms) y el arranque para bocinas dormidas
+(300 ms) están calibrados para Xiaomi 15T Pro + JBL. Cambian con el teléfono, la bocina y el códec
+Bluetooth. Plan: medir en cada equipo — (1) latencia real de salida con `AudioTrack.getTimestamp`
+(en muchos equipos incluye el Bluetooth); (2) calibración de ~2 s con un tono al conectar una bocina
+nueva (como la estimación de retardo del AEC); (3) los valores fijos actuales como respaldo.
+Lo independiente del teléfono: Haiku, la voz y el servidor.
