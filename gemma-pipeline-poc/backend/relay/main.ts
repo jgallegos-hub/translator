@@ -53,13 +53,23 @@ export function takeClause(buf: string): [string, string] | null {
   return null;
 }
 
+/** How acronyms are *said* (the displayed text keeps them as written). ElevenLabs spells all-caps
+ *  words; in data centers CRAC is said "crack" (device r21: Eric spelled C-R-A-C). UPS stays spelled. */
+const SAY: [RegExp, string][] = [
+  [/\bCRACs\b/g, "cracks"],
+  [/\bCRAC\b/g, "crack"],
+];
+export const forSpeech = (t: string) => SAY.reduce((s, [re, to]) => s.replace(re, to), t);
+
 /** Starts ElevenLabs synthesis now; the caller reads the body later, in clause order. */
 function startTts(text: string, previous: string): Promise<Response> {
   return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=pcm_24000`, {
     method: "POST",
     headers: { "xi-api-key": ELEVEN_KEY, "content-type": "application/json" },
     // previous_text keeps prosody continuous across clause requests.
-    body: JSON.stringify({ text, model_id: TTS_MODEL, ...(previous ? { previous_text: previous } : {}) }),
+    body: JSON.stringify({
+      text: forSpeech(text), model_id: TTS_MODEL, ...(previous ? { previous_text: forSpeech(previous) } : {}),
+    }),
   });
 }
 

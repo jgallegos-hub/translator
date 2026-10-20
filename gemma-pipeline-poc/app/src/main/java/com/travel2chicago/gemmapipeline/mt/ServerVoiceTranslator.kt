@@ -59,11 +59,17 @@ class ServerVoiceTranslator(
     init {
         playScope.launch {
             var open = 0
+            var lastAudioNs = 0L
             try {
                 for (p in playQueue) when (p) {
-                    Play.Begin -> { sink.beginUtterance(); open++ }
-                    Play.End -> if (open > 0) { sink.endUtterance(); open-- }
-                    is Play.Pcm -> sink.play(p.samples)
+                    Play.Begin -> {
+                        sink.beginUtterance(); open++
+                        // ElevenLabs speech starts ~50 ms in (Kokoro had a natural lead-in); after
+                        // an idle speaker the first word got swallowed ("Hey friends", device r21).
+                        if (System.nanoTime() - lastAudioNs > IDLE_LEAD_IN_AFTER_NS) sink.play(leadIn)
+                    }
+                    Play.End -> { if (open > 0) { sink.endUtterance(); open-- }; lastAudioNs = System.nanoTime() }
+                    is Play.Pcm -> { sink.play(p.samples); lastAudioNs = System.nanoTime() }
                 }
             } finally {
                 withContext(NonCancellable) { repeat(open) { sink.endUtterance() } }
@@ -152,6 +158,10 @@ class ServerVoiceTranslator(
     }
 
     companion object {
+        private const val IDLE_LEAD_IN_AFTER_NS = 3_000_000_000L
+        /** 150 ms of inaudible dither (±2 LSB) at 24 kHz. */
+        private val leadIn = ShortArray(3_600) { if (it % 2 == 0) 2 else -2 }
+
         /** Not in the APK or git: pushed by adb ({"url": ..., "token": ...}). */
         const val CONFIG_PATH = "/sdcard/Download/translator/server.json"
 

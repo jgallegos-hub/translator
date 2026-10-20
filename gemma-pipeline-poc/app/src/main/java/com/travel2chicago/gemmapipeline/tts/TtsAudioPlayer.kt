@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger
 private const val TAG = "TtsAudioPlayer"
 private const val KEEPALIVE_CHUNK_MS = 20
 private const val KEEPALIVE_MAX_QUEUED_MS = 40
+/** Speaker→mic latency margin after the queue drains (AEC3 measured ~380 ms pre-delay). */
+private const val UNMUTE_TAIL_MS = 350L
 
 /**
  * Abstraction over the sink [TtsRouter] writes PCM to. `TtsAudioPlayer` is
@@ -117,7 +119,13 @@ class TtsAudioPlayer(
 
     /** Frames entregados al AudioTrack (voz + silencio). Sólo se toca con
      *  [mutex] tomado. Junto con `playbackHeadPosition` da la ocupación. */
-    private var framesWritten: Long = 0L
+    @Volatile private var framesWritten: Long = 0L
+
+    /** Pending delayed un-mute (see [endUtterance]); bumped to cancel it. */
+    private val unmuteGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val unmuteScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "tts-unmute").apply { isDaemon = true }
+    }
 
     fun setKeepAlive(enabled: Boolean) {
         keepAliveEnabled = enabled
@@ -173,6 +181,7 @@ class TtsAudioPlayer(
      * speaking.
      */
     override fun beginUtterance() {
+        unmuteGeneration.incrementAndGet() // cancel a pending delayed un-mute
         val newDepth = utteranceDepth.incrementAndGet()
         if (newDepth == 1) {
             ttsPlaying.set(true)
@@ -186,8 +195,22 @@ class TtsAudioPlayer(
         // negative and stick the VAD in a permanently-muted state.
         val newDepth = utteranceDepth.updateAndGet { d -> maxOf(0, d - 1) }
         if (newDepth == 0) {
-            ttsPlaying.set(false)
-            Log.i(TAG, "endUtterance: VAD mute OFF")
+            // endUtterance fires when the last PCM was *handed* to the AudioTrack, not when it
+            // was heard. With the server voice (faster than real time) up to ~1.3 s was still
+            // queued, so the mic re-opened while the speaker talked and the echo got translated
+            // ("How are you all doing?" -> "o a john", device r21). Keep the mute until the queue
+            // drains plus the Bluetooth/speaker latency.
+            val t = track
+            val queuedMs = if (t == null) 0L else
+                ((framesWritten - (t.playbackHeadPosition.toLong() and 0xFFFFFFFFL)) * 1000 / sampleRate).coerceAtLeast(0)
+            val delayMs = queuedMs + UNMUTE_TAIL_MS
+            val gen = unmuteGeneration.incrementAndGet()
+            unmuteScheduler.schedule({
+                if (unmuteGeneration.get() == gen && utteranceDepth.get() == 0) {
+                    ttsPlaying.set(false)
+                    Log.i(TAG, "endUtterance: VAD mute OFF (after ${delayMs} ms: queued $queuedMs + tail $UNMUTE_TAIL_MS)")
+                }
+            }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
         }
     }
 
@@ -277,6 +300,7 @@ class TtsAudioPlayer(
     }
 
     override fun close() {
+        unmuteScheduler.shutdownNow()
         keepAliveThread?.interrupt()
         keepAliveThread = null
         runCatching { track?.stop() }
