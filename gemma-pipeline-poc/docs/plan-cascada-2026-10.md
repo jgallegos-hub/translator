@@ -433,3 +433,20 @@ Bluetooth. Plan: medir en cada equipo — (1) latencia real de salida con `Audio
 (en muchos equipos incluye el Bluetooth); (2) calibración de ~2 s con un tono al conectar una bocina
 nueva (como la estimación de retardo del AEC); (3) los valores fijos actuales como respaldo.
 Lo independiente del teléfono: Haiku, la voz y el servidor.
+
+## Frentes abiertos tras r24 (20-oct, cierre)
+1. **Interpretación simultánea (hablar encima de la traducción).** Modo dúplex activo: el micrófono
+   nunca se silencia y AEC3 resta la voz de Eric. En r24, al hablar encima, la mezcla de su voz con
+   restos de eco produjo transcripciones erróneas ("Ebraron al centro…", "el alma un poco…").
+   Mitigado (commit 71e512f): el filtro estricto aplica si el TTS sonó en cualquier momento del
+   pedazo, umbral 2400 → 3000 (eco ≤ 2911, voz 3500–6800). No resuelve las mezclas con voz dominante.
+   Abraham quiere hablar de forma continua, "como en una conversación". Opciones a evaluar: afinar AEC3
+   para doble habla, transcribir sólo tramos sin TTS, separación de fuente/voz, bajar el volumen de
+   Eric mientras él habla (ducking), y medirlo con datasets propios.
+2. **El interlocutor habla inglés.** El micrófono también lo capta; Moonshine-es lo convertiría en
+   español inventado y Eric lo "traduciría". Antes de usarlo en Chicago: detección de idioma (descartar
+   inglés), botón "hablo yo", o traducción bidireccional (inglés → español a los audífonos de Abraham).
+3. Pendientes previos: retención por pausas + muletillas, filtro de risas, calibración por
+   teléfono/bocina, plan de pago de ElevenLabs.
+Costo corriendo: 1 máquina Fly siempre encendida (traductor-t2c) — detener con
+`flyctl scale count 0 --app traductor-t2c` si no se usará por un tiempo.

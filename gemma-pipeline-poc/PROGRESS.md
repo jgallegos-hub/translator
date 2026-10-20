@@ -2135,3 +2135,7 @@ voz en el servidor, streaming de audio, varios clientes) con el modo local como 
 - Filtro de risas en el teléfono (Moonshine convierte risas en frases).
 - Calibración de retrasos por teléfono/bocina antes de producción (ver plan).
 - Plan de pago de ElevenLabs antes del viaje (el gratuito no alcanza para uso diario).
+
+**r24 (20-oct, cierre):** turnos normales correctos; al hablar encima de Eric, mezclas de voz + eco se
+tradujeron mal. Fix parcial del filtro de eco (71e512f). Nuevos frentes documentados en el plan:
+interpretación simultánea y el inglés del interlocutor.
