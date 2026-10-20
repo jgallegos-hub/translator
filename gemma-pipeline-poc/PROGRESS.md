@@ -2114,3 +2114,24 @@ voz en el servidor, streaming de audio, varios clientes) con el modo local como 
 - Diseñar y prototipar el relay (WebSocket, Haiku directo, chunker por cláusula, TTS en streaming).
 - Medir Kokoro en DeepInfra (voz am_puck, primer audio) y, como A/B, Inworld/ElevenLabs Flash.
 - Pendientes menores: validar deletreo de siglas en vivo; filtro de risas para el modo local.
+
+## Servidor propio con voz en Fly.io (20 octubre 2026)
+
+- Bench en PC (`tools/relay_bench.py`): ElevenLabs Flash v2.5 primer audio ~0.23 s sin importar el largo
+  (Kokoro en el teléfono 0.7–2.5 s). Abraham eligió la voz **Eric** ("muy parecida a mi voz y natural").
+- `backend/relay` (Deno): Haiku en streaming → cortes por cláusula (sólo en puntuación) → ElevenLabs por
+  cláusula con `previous_text` → audio PCM en streaming al teléfono. Glosario de su trabajo (UPS, CRAC,
+  CRAH, PDU, PPE…) y cómo los oye Moonshine; pronunciación para voz (CRAC→"crack", CRAH→"crah");
+  limpieza de comillas; calentamiento real (cache del prompt + conexiones); corte de comentarios de Haiku.
+- App: modo **"Servidor: Haiku + voz Eric (respaldo local)"** (`ServerVoiceTranslator`); el audio usa el
+  mismo sink (silencia VAD, referencia AEC); el micrófono se reactiva sólo cuando la cola se vació +
+  800 ms (antes el eco de Eric se traducía); 300 ms de arranque tras bocina inactiva.
+- Desplegado en Fly.io como **`traductor-t2c`** (Chicago, siempre encendido). Ronda r23 sin PC:
+  primer audio p50 **1.01 s con Wi-Fi, 1.08 s con datos móviles**, sin fallos. Abraham: "muy rápido,
+  la experiencia general fue muy buena".
+
+### Siguiente
+- Retención por pausas / muletillas (el VAD corta al pensar; "este" → palabras inventadas).
+- Filtro de risas en el teléfono (Moonshine convierte risas en frases).
+- Calibración de retrasos por teléfono/bocina antes de producción (ver plan).
+- Plan de pago de ElevenLabs antes del viaje (el gratuito no alcanza para uso diario).
