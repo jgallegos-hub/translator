@@ -147,9 +147,38 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
   await out.write(frame(3, enc.encode(JSON.stringify(stats))));
 }
 
+/** Primes the Anthropic prompt cache and keeps HTTP connections to both APIs open, so the
+ *  first phrase after Start doesn't pay cold TLS + cache write (device r20: 1.3 s vs ~0.9 s). */
+let lastWarm = 0;
+async function warm(): Promise<number> {
+  const t0 = performance.now();
+  await Promise.allSettled([
+    anthropic.messages.create({
+      model: MODEL, max_tokens: 1, thinking: { type: "disabled" }, output_config: { effort: "low" },
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: "Previous utterances:\n(none)\n\nCurrent utterance:\nhola" }],
+    }),
+    fetch("https://api.elevenlabs.io/", { method: "HEAD" }).then((r) => r.body?.cancel()),
+  ]);
+  lastWarm = Date.now();
+  return Math.round(performance.now() - t0);
+}
+let lastSpeak = 0;
+// Keep the prompt cache (5 min TTL) warm while someone used the relay in the last 30 min.
+setInterval(() => {
+  if (Date.now() - lastSpeak < 30 * 60_000 && Date.now() - lastWarm > 4 * 60_000) warm().catch(() => {});
+}, 60_000);
+
 Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8080), hostname: "0.0.0.0" }, async (req) => {
   const url = new URL(req.url);
-  if (req.method === "GET" && url.pathname === "/health") return new Response("ok");
+  if (req.method === "GET" && url.pathname === "/health") {
+    // ?warm=1 only for authenticated clients (it spends a tiny Anthropic call).
+    if (url.searchParams.has("warm") && sameToken(req.headers.get("x-app-token") ?? "", APP_TOKEN)) {
+      lastSpeak = Date.now();
+      return new Response(`warm ${await warm()} ms`);
+    }
+    return new Response("ok");
+  }
   if (req.method !== "POST" || url.pathname !== "/speak") return new Response("not found", { status: 404 });
   if (!sameToken(req.headers.get("x-app-token") ?? "", APP_TOKEN)) return new Response("unauthorized", { status: 401 });
   let body: { text?: unknown; history?: unknown };
@@ -162,6 +191,7 @@ Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8080), hostname: "0.0.0.0" }, 
   const history = Array.isArray(body.history)
     ? body.history.filter((h): h is string => typeof h === "string").slice(-MAX_HISTORY).map((h) => h.slice(0, MAX_TEXT))
     : [];
+  lastSpeak = Date.now();
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const out = writable.getWriter();
   (async () => {

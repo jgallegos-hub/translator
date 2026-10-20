@@ -1208,6 +1208,15 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 // the text goes to the echo-text history and the UI via TtsAudioReady.
                 serverVoice = com.travel2chicago.gemmapipeline.mt.ServerVoiceTranslator.fromConfigFile(ttsPlayer, onSpoken = { en: String ->
                     val now = System.nanoTime()
+                    // The router emits no TranslationReady in this mode (it would make Kokoro
+                    // speak too), so list the server's translation here (device r20).
+                    _state.update {
+                        val entry = TranslationEntry(
+                            index = it.translations.size, text = en, latencyMs = 0L,
+                            sourceDurationMs = 0, sourcePeak = 0, timestampNs = now,
+                        )
+                        it.copy(translations = (listOf(entry) + it.translations).take(TRANSLATION_HISTORY_CAP))
+                    }
                     bus.emit(AudioEvent.TtsAudioReady(
                         samples = ShortArray(0), sampleRate = 0, sourceText = en,
                         sourceTranslationTimestampNs = now, latencyMs = 0L, timestampNs = now,

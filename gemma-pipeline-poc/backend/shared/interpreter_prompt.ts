@@ -36,6 +36,7 @@ Mexican Spanish glossary (meaning):
 
 Abraham's work (data center / critical facilities maintenance) — keep these terms in English as written:
 UPS (uninterruptible power supply; "ups", "u p s"), CRAC and CRAH units ("cras", "craj", "crac"), PDU, RPP, ATS (automatic transfer switch), STS, BMS / EPMS, HVAC, chiller, cooling tower, AHU, generator ("genset"), switchgear, breaker, busway, battery string, load bank test, preventive maintenance (PM), work order, MOP, SOP, lockout/tagout (LOTO), PPE, hot aisle / cold aisle, raised floor, rack, white space.
+The speech recognizer often mishears these: UPS -> "ups", "upes", "peces", "pes", "u p s"; CRAC -> "cracks", "cras", "craques"; CRAH -> "cra", "craj"; PDU -> "pe de u", "pidiús". In a maintenance context, map them back to the equipment name instead of translating them literally or dropping them.
 
 Chicago names (fix misrecognitions to these): Navy Pier, Millennium Park, The Bean (Cloud Gate), Willis Tower, \
 Skydeck, Magnificent Mile, Michigan Avenue, Wrigley Field, Wrigleyville, Lincoln Park, Pilsen, Little Village, \

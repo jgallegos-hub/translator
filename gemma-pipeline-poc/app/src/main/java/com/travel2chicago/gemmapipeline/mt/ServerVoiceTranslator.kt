@@ -132,15 +132,17 @@ class ServerVoiceTranslator(
             text to firstAudioMs
         }
 
-    /** Boots the relay's connections (GET /health). Errors ignored. */
+    /** Asks the relay to warm Haiku's prompt cache and its API connections. Errors ignored. */
     fun warmUp() {
         runCatching {
-            val conn = (URL("$baseUrl/health").openConnection() as HttpURLConnection).apply {
-                connectTimeout = 5_000; readTimeout = 5_000
+            val conn = (URL("$baseUrl/health?warm=1").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 5_000; readTimeout = 10_000
+                setRequestProperty("x-app-token", appToken)
             }
             val code = conn.responseCode
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
             conn.disconnect()
-            Log.i(TAG, "warm-up HTTP $code")
+            Log.i(TAG, "warm-up HTTP $code ($body)")
         }.onFailure { Log.w(TAG, "warm-up failed: ${it.message}") }
     }
 
