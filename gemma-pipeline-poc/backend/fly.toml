@@ -1,0 +1,25 @@
+# Fly.io config for the translator relay. Secrets (never here): ANTHROPIC_API_KEY,
+# ELEVENLABS_API_KEY, APP_TOKEN — set with `fly secrets import` from a temp file.
+app = "travel2chicago-relay"
+primary_region = "ord"   # Chicago
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # always on: no cold starts (first phrase latency)
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

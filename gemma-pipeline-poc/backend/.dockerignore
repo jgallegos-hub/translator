@@ -1,0 +1,4 @@
+.app_token
+.env*
+supabase
+README.md
