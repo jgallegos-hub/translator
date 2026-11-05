@@ -20,6 +20,10 @@ const MAX_TEXT = 1000;
 const MAX_HISTORY = 3;
 const VOICE_ID = Deno.env.get("VOICE_ID") ?? "cjVigY5qzO86Huf0OWal"; // ElevenLabs "Eric"
 const TTS_MODEL = Deno.env.get("TTS_MODEL") ?? "eleven_flash_v2_5";
+/** Eric at 1.0 runs ~4.2 words/s and felt rushed; Abraham picked 0.90 + 200 ms by ear (2026-11-05).
+ *  0.85 produced a stretched, shout-like artifact at a sentence end. */
+const TTS_SPEED = Number(Deno.env.get("TTS_SPEED") ?? "0.9");
+const SENTENCE_PAUSE = new Uint8Array(2 * Math.round(24_000 * 0.2)); // 200 ms of PCM s16le silence
 const ELEVEN_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const APP_TOKEN = Deno.env.get("APP_TOKEN") ?? "";
 
@@ -92,7 +96,8 @@ function startTts(text: string, previous: string): Promise<Response> {
     headers: { "xi-api-key": ELEVEN_KEY, "content-type": "application/json" },
     // previous_text keeps prosody continuous across clause requests.
     body: JSON.stringify({
-      text: forSpeech(text), model_id: TTS_MODEL, ...(previous ? { previous_text: forSpeech(previous) } : {}),
+      text: forSpeech(text), model_id: TTS_MODEL, voice_settings: { speed: TTS_SPEED },
+      ...(previous ? { previous_text: forSpeech(previous) } : {}),
     }),
   });
 }
@@ -105,6 +110,7 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
   const pending: { clause: string; tts: Promise<Response> }[] = [];
   let spoken = "";
   let firstAudioSent = false;
+  let audioSentences = 0;
 
   // Writer: drains clauses in order while Haiku is still generating later ones.
   let producerDone = false;
@@ -124,6 +130,10 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
       if (!res.ok || !res.body) {
         await out.write(frame(4, enc.encode(`tts HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)));
         continue;
+      }
+      if (audioSentences++ > 0) {
+        if (DEBUG_WAV_DIR) debugPcm.push(SENTENCE_PAUSE);
+        await out.write(frame(2, SENTENCE_PAUSE));
       }
       // PCM s16le: forward whole samples only.
       let carry: Uint8Array | null = null;
