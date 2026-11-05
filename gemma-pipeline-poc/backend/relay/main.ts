@@ -13,11 +13,12 @@
 //      TTS_MODEL (default eleven_flash_v2_5), PORT (default 8080).
 import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
 import { SYSTEM } from "../shared/interpreter_prompt.ts";
-import { SayFilter, takeClause } from "./say.ts";
+import { hedged, SayFilter, takeClause } from "./say.ts";
 
 const MODEL = "claude-haiku-5-5";
 const MAX_TEXT = 1000;
 const MAX_HISTORY = 3;
+const HEDGE_MS = Number(Deno.env.get("HEDGE_MS") ?? "1200"); // normal first token ~0.5 s
 const VOICE_ID = Deno.env.get("VOICE_ID") ?? "cjVigY5qzO86Huf0OWal"; // ElevenLabs "Eric"
 const TTS_MODEL = Deno.env.get("TTS_MODEL") ?? "eleven_flash_v2_5";
 /** Eric at 1.0 runs ~4.2 words/s and felt rushed; Abraham picked 0.90 + 200 ms by ear (2026-11-05).
@@ -158,14 +159,24 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
   };
 
   try {
-    const stream = anthropic.messages.stream({
-      model: MODEL,
-      max_tokens: 300,
-      thinking: { type: "disabled" },
-      output_config: { effort: "low" },
-      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: `Previous utterances:\n${prev}\n\nCurrent utterance:\n${text}` }],
-    });
+    const startHaiku = () => {
+      const stream = anthropic.messages.stream({
+        model: MODEL,
+        max_tokens: 300,
+        thinking: { type: "disabled" },
+        output_config: { effort: "low" },
+        system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: `Previous utterances:\n${prev}\n\nCurrent utterance:\n${text}` }],
+      });
+      stream.on("error", () => {}); // an aborted loser must not surface as an unhandled rejection
+      // Text deltas only: the hedge must wait for real text, not the immediate message_start.
+      const items = (async function* () {
+        for await (const ev of stream) {
+          if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") yield ev.delta.text;
+        }
+      })();
+      return { items, abort: () => stream.abort() };
+    };
     const say = new SayFilter();
     let buf = "";
     const onText = (spoken: string) => {
@@ -184,15 +195,10 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
       }
       return false;
     };
-    for await (const ev of stream) {
-      if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
-        if (stats.haikuFirstMs === undefined) stats.haikuFirstMs = Math.round(performance.now() - t0);
-        const stop = onText(say.push(ev.delta.text));
-        if (stop || say.closed) {
-          stream.abort();
-          break;
-        }
-      }
+    // Leaving the loop early returns the generator, which stops reading the winning stream.
+    for await (const delta of hedged(startHaiku, HEDGE_MS, () => (stats.hedged = 1))) {
+      if (stats.haikuFirstMs === undefined) stats.haikuFirstMs = Math.round(performance.now() - t0);
+      if (onText(say.push(delta)) || say.closed) break;
     }
     onText(say.flush());
     if (!say.sawTag) stats.noSayTag = 1;

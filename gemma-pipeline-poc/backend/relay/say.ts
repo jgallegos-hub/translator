@@ -75,3 +75,48 @@ export function takeClause(buf: string): [string, string] | null {
   }
   return null;
 }
+
+/**
+ * Hedged first response: if the first stream yields nothing within [hedgeMs], start a second one
+ * and keep whichever yields first (the loser is aborted). Haiku's first token is usually ~0.5 s but
+ * spiked past 2 s on 2 of 31 phrases in device round r26, which pushed the app to its local voice.
+ */
+export async function* hedged<T>(
+  start: () => { items: AsyncIterable<T>; abort: () => void },
+  hedgeMs: number,
+  onHedge: () => void = () => {},
+): AsyncGenerator<T> {
+  type Step = { run: Run; res: IteratorResult<T> };
+  type Run = { abort: () => void; it: AsyncIterator<T>; next: Promise<Step> };
+  const launch = (): Run => {
+    const handle = start();
+    const it = handle.items[Symbol.asyncIterator]();
+    const run = { abort: handle.abort, it } as Run;
+    run.next = it.next().then((res) => ({ run, res }));
+    return run;
+  };
+  const first = launch();
+  let timer: number | undefined;
+  const timeout = new Promise<"hedge">((r) => (timer = setTimeout(() => r("hedge"), hedgeMs)));
+  const early = await Promise.race([first.next, timeout]);
+  clearTimeout(timer);
+  let winner: Step;
+  if (early === "hedge") {
+    onHedge();
+    const second = launch();
+    // Promise.any: a failed attempt must not beat one that may still answer.
+    try {
+      winner = await Promise.any([first.next, second.next]);
+    } catch (e) {
+      throw e instanceof AggregateError ? e.errors[0] : e;
+    }
+    (winner.run === first ? second : first).abort();
+  } else {
+    winner = early;
+  }
+  let res = winner.res;
+  while (!res.done) {
+    yield res.value;
+    res = await winner.run.it.next();
+  }
+}

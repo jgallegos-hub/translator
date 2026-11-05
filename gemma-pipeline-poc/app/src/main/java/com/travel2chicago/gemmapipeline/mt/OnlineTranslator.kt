@@ -117,9 +117,10 @@ class OnlineTranslator(
 
 /**
  * Online first, local fallback. Falls back when the online call fails before
- * producing any text (no signal, timeout, HTTP error); after a failure the
- * online path is skipped for [cooldownMs] so a dead network doesn't add a
- * timeout to every phrase. If it fails mid-stream, the partial text stands.
+ * producing any text (no signal, timeout, HTTP error). After two failures in a
+ * row the online path is skipped for [cooldownMs] so a dead network doesn't add a
+ * timeout to every phrase; one slow reply must not silence the server voice for
+ * 30 s (device r26). If it fails mid-stream, the partial text stands.
  */
 class FallbackTranslator(
     /** [OnlineTranslator] (text back, local Kokoro speaks) or [ServerVoiceTranslator]
@@ -132,6 +133,7 @@ class FallbackTranslator(
     override val name = "${online.name}+fallback"
 
     @Volatile private var onlineDisabledUntil = 0L
+    private var consecutiveFailures = 0
     @Volatile var lastUsed: String = ""
         private set
 
@@ -141,6 +143,7 @@ class FallbackTranslator(
             try {
                 val r = online.translate(spanish) { partial.append(it); onToken(it) }
                 lastUsed = online.name
+                consecutiveFailures = 0
                 return r
             } catch (t: Throwable) {
                 if (partial.isNotEmpty()) {
@@ -148,9 +151,11 @@ class FallbackTranslator(
                     lastUsed = online.name
                     return partial.toString().trim() to 0L
                 }
-                onlineDisabledUntil = System.currentTimeMillis() + cooldownMs
-                Log.w(TAG, "online failed (${t.javaClass.simpleName}: ${t.message}) — local fallback, " +
-                    "online paused ${cooldownMs / 1000}s")
+                consecutiveFailures++
+                val pause = consecutiveFailures >= 2
+                if (pause) onlineDisabledUntil = System.currentTimeMillis() + cooldownMs
+                Log.w(TAG, "online failed #$consecutiveFailures (${t.javaClass.simpleName}: ${t.message}) — local fallback" +
+                    if (pause) ", online paused ${cooldownMs / 1000}s" else "")
             }
         }
         val mt = local(spanish)

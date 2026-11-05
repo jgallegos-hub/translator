@@ -41,7 +41,7 @@ class ServerVoiceTranslator(
     private val onSpoken: (english: String) -> Unit,
     private val connectTimeoutMs: Int = 1_500,
     /** No first frame within this time -> fail (local fallback). */
-    private val firstByteTimeoutMs: Int = 2_000,
+    private val firstByteTimeoutMs: Int = 3_000,
     private val historySize: Int = 3,
 ) : TextTranslator {
     override val name = "Servidor (Haiku+Eric)"
