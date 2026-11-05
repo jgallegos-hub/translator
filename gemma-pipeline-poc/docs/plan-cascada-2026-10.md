@@ -450,3 +450,7 @@ Lo independiente del teléfono: Haiku, la voz y el servidor.
    teléfono/bocina, plan de pago de ElevenLabs.
 Costo corriendo: 1 máquina Fly siempre encendida (traductor-t2c) — detener con
 `flyctl scale count 0 --app traductor-t2c` si no se usará por un tiempo.
+
+## Decisiones 5-nov
+Bluetooth + Moonshine en el teléfono + Haiku en el servidor. Descartados por ahora: transcripción en la nube,
+bocina cableada obligatoria y cambiar de modelo. Detalle y datos en PROGRESS.md (5 noviembre 2026).

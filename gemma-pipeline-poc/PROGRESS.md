@@ -2139,3 +2139,30 @@ voz en el servidor, streaming de audio, varios clientes) con el modo local como 
 **r24 (20-oct, cierre):** turnos normales correctos; al hablar encima de Eric, mezclas de voz + eco se
 tradujeron mal. Fix parcial del filtro de eco (71e512f). Nuevos frentes documentados en el plan:
 interpretación simultánea y el inglés del interlocutor.
+
+## Etiqueta `<say>`, voz por oraciones y fallback sin cambio de voz (5 noviembre 2026)
+
+Decisiones de Abraham: seguir con Bluetooth (calibración automática más adelante) y mantener Moonshine en
+el teléfono; no pasar a transcripción en la nube. Haiku se queda.
+
+- **Modelo (`tools/model_bench.py`, frases confusas reales):** Sonnet 5.5 con `<say>` 1.10 s p50 vs Haiku
+  0.52 s (máx. 2.32 vs 0.72 s), 20× más caro y más respuestas vacías (15 vs 7 de 45).
+- **Comentarios de Haiku:** sin razonamiento 9/45, con razonamiento adaptativo 7/45 (hasta 6 s y se negaba a
+  traducir groserías). Solución: sólo se habla lo que va entre `<say>…</say>` (0/45). `relay/say.ts` + tests.
+- **Fluidez:** cortes por oración, no por coma (salvo ≥ 18 palabras); Eric a 0.90 + 200 ms entre oraciones,
+  elegido a oído (`tools/speed_ab.py`; a 1.0 iba ~4.2 palabras/s; 0.85 estiró el sonido).
+- **Prompt para voz:** números en palabras, sin rayas ni comillas, groserías con su fuerza real; lo sin
+  sentido queda en silencio (riesgo: una frase real mal transcrita también callaría).
+- **Eco inicial:** filtro 4500 hasta que AEC3 oye ~6 s de voz (r25: "Let's see" 4020, "maxi" 3195; después
+  ≤ 2453). Frase duplicada por Moonshine se colapsa.
+- **Cambio de voz (r26):** 2 de 31 frases superaron 2 s por picos de Haiku; la app cayó a Kokoro y dejó el
+  servidor 30 s. Ahora: segunda petición a Haiku a 1.2 s, espera de 3 s y pausa sólo tras 2 fallas seguidas.
+  Abraham valoró que el respaldo funcionó sin notar espera. **Sin validar en vivo.**
+- **Hablar encima (r26):** 3 de 3 frases transcritas bien; muestra pequeña. Cada traducción espera a que
+  Eric termine, así que el retraso se acumula si se habla de corrido.
+
+### Siguiente sesión
+Ronda r27: (1) ~10 frases seguidas sin cambio de voz; (2) 3 frases en inglés avisando el momento (aún sin
+datos del filtro); (3) ~30 s de habla continua para medir el retraso acumulado. Foco: dúplex, filtro de
+inglés y eco. Después: pausas/muletillas, risas, calibración por dispositivo, plan de pago de ElevenLabs.
+Capturar también la etiqueta de logcat `OnlineTranslator` (registra las caídas al respaldo).
