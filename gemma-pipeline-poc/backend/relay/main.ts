@@ -13,6 +13,7 @@
 //      TTS_MODEL (default eleven_flash_v2_5), PORT (default 8080).
 import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
 import { SYSTEM } from "../shared/interpreter_prompt.ts";
+import { SayFilter, takeClause } from "./say.ts";
 
 const MODEL = "claude-haiku-5-5";
 const MAX_TEXT = 1000;
@@ -56,19 +57,6 @@ function frame(type: number, payload: Uint8Array): Uint8Array {
   new DataView(out.buffer).setUint32(1, payload.length);
   out.set(payload, 5);
   return out;
-}
-
-/** Cut at . , ! ? ; : followed by whitespace — or at a final ! ? that ends the buffer — once the
- *  clause has >= 3 words. Never mid-phrase. */
-export function takeClause(buf: string): [string, string] | null {
-  const re = /[.,!?;:](\s+)|[!?]$/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(buf)) !== null) {
-    const end = m.index + 1;
-    const clause = buf.slice(0, end).trim();
-    if (clause.split(/\s+/).length >= 3) return [clause, buf.slice(end + (m[1]?.length ?? 0))];
-  }
-  return null;
 }
 
 /** How acronyms are *said* (the displayed text keeps them as written). ElevenLabs spells all-caps
@@ -168,26 +156,36 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
       system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: `Previous utterances:\n${prev}\n\nCurrent utterance:\n${text}` }],
     });
+    const say = new SayFilter();
     let buf = "";
+    const onText = (spoken: string) => {
+      buf += spoken;
+      const meta = metaIndex(buf);
+      if (meta >= 0) {
+        stats.metaDropped = buf.slice(meta, meta + 80);
+        buf = buf.slice(0, meta);
+        return true;
+      }
+      let cut: [string, string] | null;
+      while ((cut = takeClause(buf)) !== null) {
+        if (stats.firstClauseMs === undefined) stats.firstClauseMs = Math.round(performance.now() - t0);
+        enqueue(cut[0]);
+        buf = cut[1];
+      }
+      return false;
+    };
     for await (const ev of stream) {
       if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
         if (stats.haikuFirstMs === undefined) stats.haikuFirstMs = Math.round(performance.now() - t0);
-        buf += ev.delta.text;
-        const meta = metaIndex(buf);
-        if (meta >= 0) {
-          stats.metaDropped = buf.slice(meta, meta + 80);
-          buf = buf.slice(0, meta);
+        const stop = onText(say.push(ev.delta.text));
+        if (stop || say.closed) {
           stream.abort();
           break;
         }
-        let cut: [string, string] | null;
-        while ((cut = takeClause(buf)) !== null) {
-          if (stats.firstClauseMs === undefined) stats.firstClauseMs = Math.round(performance.now() - t0);
-          enqueue(cut[0]);
-          buf = cut[1];
-        }
       }
     }
+    onText(say.flush());
+    if (!say.sawTag) stats.noSayTag = 1;
     if (buf.trim()) enqueue(buf.trim());
   } catch (e) {
     await out.write(frame(4, enc.encode(`haiku: ${e instanceof Error ? e.message : String(e)}`)));
