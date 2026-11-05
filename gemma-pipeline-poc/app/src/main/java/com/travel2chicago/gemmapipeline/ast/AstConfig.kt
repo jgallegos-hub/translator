@@ -440,6 +440,10 @@ data class AstConfig(
      *  (2026-10-14) and up to 2911 with the server voice talking over (2026-10-20, r24); Abraham's
      *  speech stays >= ~3500. 2400 -> 3000. */
     val asrLineRmsThresholdDuringTts: Double = 3000.0,
+    /** Same gate before AEC3 has heard [echoConvergedAfterSpeechMs] of our speech (device r25:
+     *  echo at 4020 and 3195 right after Start, real speech over 4600 in the same stretch). */
+    val asrLineRmsThresholdEchoConverging: Double = 4500.0,
+    val echoConvergedAfterSpeechMs: Long = 6_000L,
     /** Auto mode: Spanish transcripts with at least this many words go to
      *  Gemma text, shorter ones to ML Kit. */
     val autoLongPhraseWords: Int = 10,

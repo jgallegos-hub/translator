@@ -122,6 +122,12 @@ class TtsAudioPlayer(
      *  [mutex] tomado. Junto con `playbackHeadPosition` da la ocupación. */
     @Volatile private var framesWritten: Long = 0L
 
+    /** Speech handed to the speaker since this player started (no keep-alive dither). */
+    @Volatile private var speechFrames: Long = 0L
+
+    /** Milliseconds of our own speech so far: how much the echo canceller has had to learn from. */
+    val spokenMs: Long get() = speechFrames * 1000 / sampleRate
+
     /** When the speaker last went quiet (after the un-mute tail). */
     @Volatile private var lastPlaybackEndNs: Long = 0L
 
@@ -179,6 +185,7 @@ class TtsAudioPlayer(
         t.play()
         track = t
         framesWritten = 0L
+        speechFrames = 0L
         isInitialized = true
         startKeepAlive()
         Log.i(TAG, "AudioTrack started (state=${t.state}, playState=${t.playState})")
@@ -269,6 +276,7 @@ class TtsAudioPlayer(
                 }
                 off += written
                 framesWritten += written
+                speechFrames += written
             }
         } finally {
             if (standalone) { ttsPlaying.set(false); lastPlaybackEndNs = System.nanoTime() }

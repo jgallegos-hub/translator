@@ -32,6 +32,11 @@ class CascadeAstEngine(
     private val strictLineRmsThreshold: Double = lineRmsThreshold,
     /** Was our own TTS audible during the last `chunkMs` (the chunk being transcribed)? */
     private val isTtsActive: (chunkMs: Long) -> Boolean = { false },
+    /** Gate over our own TTS while AEC3 is still learning the speaker (see [isEchoConverging]). */
+    private val convergingLineRmsThreshold: Double = strictLineRmsThreshold,
+    /** Device r25: echo lines reached RMS 4020 and 3195 in the first seconds of speech, then
+     *  stayed <= 2453 once the canceller had heard ~6 s of it. */
+    private val isEchoConverging: () -> Boolean = { false },
 ) : GemmaAstEngine {
 
     override val isLoaded: Boolean = true
@@ -53,12 +58,19 @@ class CascadeAstEngine(
         val lines = asr.transcribe(samples)
         val asrMs = (System.nanoTime() - t0) / 1_000_000
         val ttsActive = isTtsActive(samples.size * 1000L / 16_000)
-        val gate = if (ttsActive) strictLineRmsThreshold else lineRmsThreshold
+        val gate = when {
+            !ttsActive -> lineRmsThreshold
+            isEchoConverging() -> convergingLineRmsThreshold
+            else -> strictLineRmsThreshold
+        }
         val kept = lines.filter { it.rms >= gate }
         for (l in lines - kept.toSet()) {
             Log.i(TAG, "CASCADE drop echo-residue line rms=${"%.0f".format(l.rms)} gate=${"%.0f".format(gate)} ttsActive=$ttsActive text='${l.text}'")
         }
-        val spanish = kept.joinToString(" ") { it.text }.trim()
+        val spanish = collapseDuplicatedSentence(
+            kept.joinToString(" ") { it.text }.trim(),
+            samples.size * 1000L / 16_000,
+        )
         if (spanish.isEmpty()) {
             Log.i(TAG, "CASCADE asrMs=$asrMs empty transcript (lines=${lines.size}) — nothing to translate")
             return AstResult("", asrMs, backendUsed)
@@ -93,6 +105,23 @@ class CascadeAstEngine(
     companion object {
         private val TERMINATORS = setOf('.', '!', '?')
         private val WHITESPACE = Regex("""\s+""")
+        private val SENTENCE = Regex("""[^.!?]+[.!?]*""")
+        private const val DUPLICATE_MAX_CHUNK_MS = 2_500L
+        private const val DUPLICATE_MIN_WORDS = 3
+
+        /**
+         * Moonshine sometimes doubles a short chunk ("Hola, buenos días. Hola, buenos días." in a
+         * 1.8 s chunk, device 2026-11-05), so it was translated and spoken twice. Two identical
+         * sentences of 3+ words in under 2.5 s become one; anything else is left untouched.
+         */
+        fun collapseDuplicatedSentence(text: String, chunkMs: Long): String {
+            if (chunkMs >= DUPLICATE_MAX_CHUNK_MS) return text
+            val parts = SENTENCE.findAll(text).map { it.value.trim() }.filter { it.isNotEmpty() }.toList()
+            if (parts.size != 2) return text
+            val key = { s: String -> s.lowercase().filter { it.isLetterOrDigit() || it.isWhitespace() }.trim() }
+            val same = key(parts[0]) == key(parts[1])
+            return if (same && parts[0].split(WHITESPACE).size >= DUPLICATE_MIN_WORDS) parts[0] else text
+        }
 
         /** Capitalise and make sure [text] ends with . ! or ? (quotes allowed after it). */
         fun finishSentence(text: String): String {
