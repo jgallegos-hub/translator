@@ -48,3 +48,16 @@ picovoice.ai/docs/benchmark/speaker-recognition · arxiv.org/html/2604.26327v2 �
 developers.google.com/edge/mediapipe/solutions/audio/audio_classifier · tensorflow/models research/audioset/yamnet ⚠ ·
 github.com/fschmid56/EfficientAT ⚠ · github.com/RicherMans/CED ⚠ · arxiv.org/pdf/2609.12642 · arxiv.org/abs/1908.04284 ⚠ ·
 arxiv.org/abs/2204.03793v3 ⚠
+
+## 6. Evaluación con el audio de Abraham (10-nov, `tools/gate_eval.py`)
+Set r30 (`tools/logs/gate_dataset/`, fuera de git): 66 pedazos reales del pipeline en 5 partes (muestra de
+voz, español por turnos, risas/muletillas, inglés sintético por las bocinas de la PC, hablar encima de Eric).
+- **CAM++ en_voxceleb no sirve con sherpa-onnx 2.0.1**: misma voz 0.14, voces distintas 0.89 (prueba con
+  David/Zira/Eric limpios). **CAM++ zh_en advanced** se comporta bien (misma voz 0.67–0.92, distintas 0.05–0.24).
+- Con zh_en advanced, enrolando con los 5 pedazos de la muestra (27.7 s): Abraham mín 0.48 / mediana 0.84
+  (n=29); todo lo demás máx 0.35 / mediana 0.18 (n=24: inglés 0.04–0.25, español de otra voz 0.30–0.34, eco
+  de Eric 0.09–0.30, su risa 0.35). Umbral 0.36–0.45: 0 % de errores en este set.
+- Costo en la PC: ~16 ms por segundo de audio (1 hilo); YAMNet ~2 ms/s. YAMNet marca risa 0.41 en los
+  pedazos de risa, pero la verificación de voz ya los rechaza.
+- Límites: set pequeño y en silencio; voces en inglés sintéticas; frases cortas de Abraham 0.48–0.56.
+  Siguiente: integrar en modo sombra (registrar sin bloquear), probar con ruido, luego activar (~0.40).
