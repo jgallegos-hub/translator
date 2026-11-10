@@ -61,3 +61,15 @@ voz, español por turnos, risas/muletillas, inglés sintético por las bocinas d
   pedazos de risa, pero la verificación de voz ya los rechaza.
 - Límites: set pequeño y en silencio; voces en inglés sintéticas; frases cortas de Abraham 0.48–0.56.
   Siguiente: integrar en modo sombra (registrar sin bloquear), probar con ruido, luego activar (~0.40).
+
+## 7. En el teléfono: sombra (r28, r29) y bloqueo (r30), 10-nov tarde
+
+- Integrado sin sherpa-onnx (choca su ORT 1.28.2): fbank propio en Kotlin + CAM++ en el ORT 1.23.2 de la
+  app. Teléfono vs PC: diferencia ≤ 0.0005. Costo 52–382 ms por pedazo, en paralelo con Moonshine.
+- Sombra r28 (video en inglés) y r29 (música, respuestas cortas, hablando encima de Eric): Abraham 0.52–0.87,
+  lo demás 0.11–0.32. En r29 se dijeron 3 cosas que el filtro habría frenado, y Haiku calló 6 frases suyas
+  por las reglas anti-inglés → prompt `SYSTEM_VERIFIED` cuando el filtro confirma su voz (réplica: 14–17/75
+  calladas → 0/75).
+- Bloqueo r30: 24/24 suyos traducidos, 17 bloqueados. Pero entre los bloqueados había **colas suyas tras una
+  pausa** ("no, no.", "no no no", "ay!", 0.14–0.19), y también eran suyas las tres de r29. Con ~1.5 s de poca
+  voz la huella no es confiable. Plan: `docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md` §7.

@@ -8,6 +8,11 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Versión estable `stable-2026-11-10-gate` — filtro de voz antes del traductor** — la huella de
+  voz CAM++ (en el teléfono, en paralelo con Moonshine) deja pasar sólo a Abraham: música, inglés de otros,
+  eco de Eric y risas no llegan a Haiku, y lo suyo va con un prompt que ya no calla frases raras (r30: 24/24
+  suyas traducidas, 17 ajenas frenadas). Pendiente: colas cortas tras una pausa se bloquean. Detalle y plan:
+  **[`docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md`](docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md)**.
 - ✅ **Versión estable `stable-2026-11-10` — servidor propio con voz** — Moonshine en el teléfono →
   servidor en Fly.io (`traductor-t2c`, Chicago) → Claude Haiku 5.5 (sólo se habla lo que pone entre
   `<say>`) → ElevenLabs "Eric" en streaming → bocina JBL. Primer audio ~0.95 s con Wi-Fi o datos;

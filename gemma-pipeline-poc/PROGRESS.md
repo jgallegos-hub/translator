@@ -2179,3 +2179,21 @@ Capturar también la etiqueta de logcat `OnlineTranslator` (registra las caídas
   Research: `docs/research-audio-gate-2026-11.md` (CAM++ para "¿es Abraham?", YAMNet para risa/tos).
 - Herramienta de diagnóstico: volcado de pedazos con `--ez dump_chunks true` (queda en el teléfono).
 - **Etiqueta `stable-2026-11-10`** + `docs/ESTADO-ESTABLE-2026-11-10.md`.
+
+## Filtro de voz antes del traductor (10 noviembre 2026, tarde)
+
+- CAM++ en la app (fbank Kaldi propio + ORT de la app, idéntico a sherpa/PC), en paralelo con Moonshine.
+  Rondas r28/r29 en sombra, r30 bloqueando a 0.40: 24/24 frases de Abraham traducidas, 17 fragmentos ajenos
+  (música, video en inglés, eco, risas) frenados antes de Haiku, primer audio mediana 0.98 s.
+- Relay v7: si el filtro confirmó su voz (`verified`), Haiku usa `SYSTEM_VERIFIED` sin las reglas de
+  "cállate si suena raro" (réplica r29: 14–17/75 frases suyas calladas → 0/75) y sin reenviar frases previas.
+- Falla encontrada: colas cortas tras una pausa al final de la oración se bloquean (0.14–0.19); Abraham
+  confirmó que eran suyas (r30 y las tres de r29).
+- **Etiqueta `stable-2026-11-10-gate`** + `docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md`.
+
+### Siguiente sesión
+
+Plan detallado en `docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md` §7: set etiquetado de colas cortas →
+comparar offline continuación / zona dudosa decidida por Haiku con contexto / cortar menos en el VAD, con
+criterio de no sumar latencia ni invención; luego frases coladas sin sentido, contexto de sesión para Haiku,
+re-enrolar con frases cortas.
