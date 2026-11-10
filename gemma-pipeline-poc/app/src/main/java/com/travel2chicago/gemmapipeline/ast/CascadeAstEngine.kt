@@ -37,6 +37,8 @@ class CascadeAstEngine(
     /** Device r25: echo lines reached RMS 4020 and 3195 in the first seconds of speech, then
      *  stayed <= 2453 once the canceller had heard ~6 s of it. */
     private val isEchoConverging: () -> Boolean = { false },
+    /** Diagnostics: saves each chunk with its outcome (see [ChunkDump]). */
+    private val chunkDump: ChunkDump? = null,
 ) : GemmaAstEngine {
 
     override val isLoaded: Boolean = true
@@ -71,8 +73,12 @@ class CascadeAstEngine(
             kept.joinToString(" ") { it.text }.trim(),
             samples.size * 1000L / 16_000,
         )
+        val chunkMs = samples.size * 1000L / 16_000
+        val lineInfo = lines.map { "${"%.0f".format(it.rms)}:${it.text}" }
         if (spanish.isEmpty()) {
             Log.i(TAG, "CASCADE asrMs=$asrMs empty transcript (lines=${lines.size}) — nothing to translate")
+            chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, "", "",
+                if (lines.isEmpty()) "no_speech" else "below_gate")
             return AstResult("", asrMs, backendUsed)
         }
         val words = spanish.split(WHITESPACE).size
@@ -99,6 +105,8 @@ class CascadeAstEngine(
             "CASCADE mt=${(mt as? com.travel2chicago.gemmapipeline.mt.FallbackTranslator)?.lastUsed ?: mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
                 "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} es='$spanish' en='$english'",
         )
+        chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, spanish, english,
+            if (english.isBlank()) "silenced" else "spoken")
         return AstResult(english, totalMs, backendUsed)
     }
 

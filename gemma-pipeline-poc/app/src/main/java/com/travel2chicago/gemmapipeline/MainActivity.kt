@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra("kokoro_bench_live", false)) viewModel.runKokoroBench(live = true)
+        if (intent.hasExtra("dump_chunks")) viewModel.setChunkDump(intent.getBooleanExtra("dump_chunks", false))
     }
 
     override fun onResume() {

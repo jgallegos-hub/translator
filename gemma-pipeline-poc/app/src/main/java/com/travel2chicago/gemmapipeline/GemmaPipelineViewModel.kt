@@ -1161,6 +1161,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 isTtsActive = { chunkMs -> ttsPlayer.playedWithinMs(chunkMs + 300) },
                 convergingLineRmsThreshold = astConfig.asrLineRmsThresholdEchoConverging,
                 isEchoConverging = { ttsPlayer.spokenMs < astConfig.echoConvergedAfterSpeechMs },
+                chunkDump = chunkDump,
             )
             cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false, eagerSentenceEmit = true)
         } else {
@@ -1178,6 +1179,21 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
      * Cascade A/B selector. Loads Moonshine (and ML Kit's es->en model, a
      * one-time ~30 MB download) on first use, then rebuilds the router.
      */
+    /** Diagnostics (see [com.travel2chicago.gemmapipeline.ast.ChunkDump]); off unless enabled by adb. */
+    @Volatile private var chunkDump: com.travel2chicago.gemmapipeline.ast.ChunkDump? = null
+
+    /** Dev hook: `am start ... --ez dump_chunks true|false`. Saves every cascade chunk + outcome to
+     *  `<externalFiles>/chunk_dump/<timestamp>/` from the next router (re)start. */
+    fun setChunkDump(enabled: Boolean) {
+        chunkDump = if (!enabled) null else {
+            val base = getApplication<Application>().getExternalFilesDir(null) ?: return
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+            com.travel2chicago.gemmapipeline.ast.ChunkDump(File(base, "chunk_dump/$stamp"))
+        }
+        log("Chunk dump ${if (enabled) "ON" else "OFF"}")
+        restartAstRouter("chunkDump=$enabled")
+    }
+
     fun setTranslationEngine(mode: com.travel2chicago.gemmapipeline.ast.TranslationEngine) {
         if (astConfig.translationEngine == mode) return
         astConfig = astConfig.copy(translationEngine = mode)
