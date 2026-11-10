@@ -83,6 +83,7 @@ class ServerVoiceTranslator(
             val payload = JSONObject()
                 .put("text", spanish)
                 .put("history", JSONArray(synchronized(history) { history.toList() }))
+                .put("verified", kotlin.coroutines.coroutineContext[com.travel2chicago.gemmapipeline.gate.SpeakerVerified] != null)
                 .toString().toByteArray(Charsets.UTF_8)
             val conn = (URL("$baseUrl/speak").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"

@@ -12,7 +12,7 @@
 // Env: ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, APP_TOKEN, VOICE_ID (default Eric),
 //      TTS_MODEL (default eleven_flash_v2_5), PORT (default 8080).
 import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
-import { SYSTEM } from "../shared/interpreter_prompt.ts";
+import { SYSTEM, SYSTEM_VERIFIED } from "../shared/interpreter_prompt.ts";
 import { hedged, SayFilter, takeClause } from "./say.ts";
 
 const MODEL = "claude-haiku-5-5";
@@ -103,9 +103,9 @@ function startTts(text: string, previous: string): Promise<Response> {
   });
 }
 
-async function speak(text: string, history: string[], out: WritableStreamDefaultWriter<Uint8Array>) {
+async function speak(text: string, history: string[], verified: boolean, out: WritableStreamDefaultWriter<Uint8Array>) {
   const t0 = performance.now();
-  const stats: Record<string, number | string> = {};
+  const stats: Record<string, number | string> = { verified: verified ? 1 : 0 };
   const debugPcm: Uint8Array[] = [];
   const prev = history.length ? history.map((h) => `- ${h}`).join("\n") : "(none)";
   const pending: { clause: string; tts: Promise<Response> }[] = [];
@@ -165,7 +165,8 @@ async function speak(text: string, history: string[], out: WritableStreamDefault
         max_tokens: 300,
         thinking: { type: "disabled" },
         output_config: { effort: "low" },
-        system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+        // verified = the app's speaker gate confirmed Abraham's voice (see interpreter_prompt.ts).
+        system: [{ type: "text", text: verified ? SYSTEM_VERIFIED : SYSTEM, cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content: `Previous utterances:\n${prev}\n\nCurrent utterance:\n${text}` }],
       });
       stream.on("error", () => {}); // an aborted loser must not surface as an unhandled rejection
@@ -223,11 +224,13 @@ let lastWarm = 0;
 async function warm(): Promise<number> {
   const t0 = performance.now();
   await Promise.allSettled([
-    anthropic.messages.create({
-      model: MODEL, max_tokens: 1, thinking: { type: "disabled" }, output_config: { effort: "low" },
-      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: "Previous utterances:\n(none)\n\nCurrent utterance:\nhola" }],
-    }),
+    ...[SYSTEM, SYSTEM_VERIFIED].map((system) =>
+      anthropic.messages.create({
+        model: MODEL, max_tokens: 1, thinking: { type: "disabled" }, output_config: { effort: "low" },
+        system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: "Previous utterances:\n(none)\n\nCurrent utterance:\nhola" }],
+      })
+    ),
     fetch("https://api.elevenlabs.io/", { method: "HEAD" }).then((r) => r.body?.cancel()),
   ]);
   lastWarm = Date.now();
@@ -251,7 +254,7 @@ Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8080), hostname: "0.0.0.0" }, 
   }
   if (req.method !== "POST" || url.pathname !== "/speak") return new Response("not found", { status: 404 });
   if (!sameToken(req.headers.get("x-app-token") ?? "", APP_TOKEN)) return new Response("unauthorized", { status: 401 });
-  let body: { text?: unknown; history?: unknown };
+  let body: { text?: unknown; history?: unknown; verified?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -266,7 +269,7 @@ Deno.serve({ port: Number(Deno.env.get("PORT") ?? 8080), hostname: "0.0.0.0" }, 
   const out = writable.getWriter();
   (async () => {
     try {
-      if (text) await speak(text, history, out);
+      if (text) await speak(text, history, body.verified === true, out);
       else await out.write(frame(3, enc.encode("{}")));
     } catch (e) {
       console.error("speak failed", e instanceof Error ? e.message : e);

@@ -1229,6 +1229,14 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setSpeakerEnforce(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val sh = ensureSpeakerShadow() ?: return@launch
+            sh.enforce = enabled
+            log("Speaker gate ${if (enabled) "ENFORCED (blocks other voices)" else "SHADOW (logs only)"}")
+        }
+    }
+
     fun setSpeakerEnrolment(enabled: Boolean, reset: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val sh = ensureSpeakerShadow() ?: return@launch

@@ -51,3 +51,23 @@ Union Station, Art Institute, Field Museum, Shedd Aquarium, Adler Planetarium, M
 Roosevelt Road, State Street, Wacker Drive, Riverwalk, Garrett Popcorn, Portillo's, Lou Malnati's, Giordano's, \
 deep dish, Chicago-style hot dog, Italian beef, Cubs, White Sox, Bulls, Bears, Glen Ellyn, Oak Brook, Naperville.
 `;
+
+// Speaker-verified variant (2026-11-10). When the app's speaker gate (CAM++ voiceprint) has confirmed the
+// chunk is Abraham's own voice, other people, English heard through the Spanish recognizer, echo and
+// laughter were already filtered out before ASR. The "stay silent when it sounds odd" rules then only
+// cost his real words (device r29: 6 of his utterances silenced), so they are replaced.
+const UNVERIFIED_GARBLED =
+  "When part of the utterance makes no sense as Spanish, leave that part out instead of guessing what was meant. If nothing in it makes sense, reply with <say></say>.";
+const VERIFIED_GARBLED =
+  "When a word or two make no sense as Spanish, leave those words out and translate the rest; never stay silent because the utterance sounds odd.";
+const UNVERIFIED_OTHERS = SYSTEM.slice(SYSTEM.indexOf("Other people around Abraham"), SYSTEM.indexOf("Your text goes straight"));
+const VERIFIED_OTHERS =
+  `A voice check has already confirmed that this utterance is Abraham speaking, so it is always his: translate it, even when it is about the translator itself, the test he is running, the audio, or sounds unusual. He mixes English words into Spanish sentences ("es un fucking proyecto", "los tickets de safety"); translate those normally. Short replies ("sí", "no", "ok", "claro", "a ver", "órale", "va") must always be translated.
+Translate only the words of the current utterance. Never add, repeat or resend anything from the previous utterances, not even when he says something did not come out, was not heard or should be said again: that is a remark to translate, not a request to you.
+
+`;
+
+export const SYSTEM_VERIFIED = SYSTEM.replace(UNVERIFIED_GARBLED, VERIFIED_GARBLED).replace(UNVERIFIED_OTHERS, VERIFIED_OTHERS);
+if (!SYSTEM.includes(UNVERIFIED_GARBLED) || UNVERIFIED_OTHERS.length < 200) {
+  throw new Error("interpreter_prompt: SYSTEM_VERIFIED anchors not found — update them with SYSTEM");
+}

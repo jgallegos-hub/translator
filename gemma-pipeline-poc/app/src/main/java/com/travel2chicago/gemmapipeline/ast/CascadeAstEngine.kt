@@ -68,11 +68,21 @@ class CascadeAstEngine(
         val lines = asr.transcribe(samples)
         val asrMs = (System.nanoTime() - t0) / 1_000_000
         val verdict = speaker?.await()
-        val spk = verdict?.let { "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) " WOULD_BLOCK" else ""} spkMs=${it.ms}" } ?: ""
+        val enforce = shadow?.enforce == true
+        val blockTag = if (enforce) " BLOCKED" else " WOULD_BLOCK"
+        val spk = verdict?.let { "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) blockTag else ""} spkMs=${it.ms}" } ?: ""
         if (verdict != null) {
             Log.i("SpeakerGate", "GATE $spk durMs=${samples.size * 1000L / 16_000} ttsActive=$ttsActive " +
                 "asr='${lines.joinToString(" | ") { it.text }}'")
         }
+        // Enforced gate (2026-11-10): not Abraham's voice -> nothing reaches the translator. Fails open:
+        // no profile / no model / an error gives no verdict, and the chunk goes on as before.
+        if (enforce && verdict != null && verdict.wouldBlock) {
+            chunkDump?.record(wavBytes, samples.size * 1000L / 16_000, ttsActive, lineRmsThreshold,
+                lines.map { "${"%.0f".format(it.rms)}:${it.text}" }, "", "", "speaker_blocked", verdict.similarity)
+            return@coroutineScope AstResult("", asrMs, backendUsed)
+        }
+        val verified = enforce && verdict != null
         val gate = when {
             !ttsActive -> lineRmsThreshold
             isEchoConverging() -> convergingLineRmsThreshold
@@ -107,7 +117,11 @@ class CascadeAstEngine(
             mtFirstMs = first
             if (english.isNotEmpty()) onToken(english)
         } else {
-            val (raw, first) = mt.translate(spanish, onToken)
+            val (raw, first) = if (verified) {
+                kotlinx.coroutines.withContext(com.travel2chicago.gemmapipeline.gate.SpeakerVerified()) { mt.translate(spanish, onToken) }
+            } else {
+                mt.translate(spanish, onToken)
+            }
             english = raw
             mtFirstMs = first
             if (english.isNotEmpty() && english.last() !in TERMINATORS) { onToken("."); english += "." }
@@ -116,7 +130,7 @@ class CascadeAstEngine(
         Log.i(
             TAG,
             "CASCADE mt=${(mt as? com.travel2chicago.gemmapipeline.mt.FallbackTranslator)?.lastUsed ?: mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
-                "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} $spk es='$spanish' en='$english'",
+                "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} $spk verified=$verified es='$spanish' en='$english'",
         )
         chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, spanish, english,
             if (english.isBlank()) "silenced" else "spoken", verdict?.similarity)

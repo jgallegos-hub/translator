@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("kokoro_bench_live", false)) viewModel.runKokoroBench(live = true)
         if (intent.hasExtra("dump_chunks")) viewModel.setChunkDump(intent.getBooleanExtra("dump_chunks", false))
         if (intent.hasExtra("speaker_shadow")) viewModel.setSpeakerShadow(intent.getBooleanExtra("speaker_shadow", false))
+        if (intent.hasExtra("speaker_enforce")) viewModel.setSpeakerEnforce(intent.getBooleanExtra("speaker_enforce", true))
         if (intent.hasExtra("enroll_speaker")) {
             viewModel.setSpeakerEnrolment(
                 intent.getBooleanExtra("enroll_speaker", false),

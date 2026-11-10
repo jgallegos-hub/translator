@@ -16,6 +16,10 @@ class SpeakerShadow(
     @Volatile var enrolling = false
         private set
 
+    /** true: chunks below [threshold] are dropped before the translator (default since r29);
+     *  false: shadow only, log what would be blocked. adb: --ez speaker_enforce true|false. */
+    @Volatile var enforce = true
+
     data class Verdict(val similarity: Float, val wouldBlock: Boolean, val ms: Long)
 
     fun startEnrolment(reset: Boolean) {
