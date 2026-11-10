@@ -324,6 +324,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         deviceManager.register()
         refreshDevices()
         checkModelFileExists()
+        // Speaker gate (shadow): on whenever the CAM++ model is on the phone, so a process restart keeps it.
+        viewModelScope.launch(Dispatchers.IO) { ensureSpeakerShadow() }
 
         viewModelScope.launch(Dispatchers.Default) {
             bus.events.collect { event -> handleEvent(event) }
