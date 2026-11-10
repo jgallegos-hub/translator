@@ -3,6 +3,7 @@ package com.travel2chicago.gemmapipeline.ast
 import android.util.Log
 import com.travel2chicago.gemmapipeline.asr.MoonshineAsr
 import com.travel2chicago.gemmapipeline.mt.TextTranslator
+import kotlinx.coroutines.async
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -39,6 +40,8 @@ class CascadeAstEngine(
     private val isEchoConverging: () -> Boolean = { false },
     /** Diagnostics: saves each chunk with its outcome (see [ChunkDump]). */
     private val chunkDump: ChunkDump? = null,
+    /** Speaker gate in shadow mode: scored in parallel with ASR, logged, never blocks (2026-11-10). */
+    private val speakerShadow: () -> com.travel2chicago.gemmapipeline.gate.SpeakerShadow? = { null },
 ) : GemmaAstEngine {
 
     override val isLoaded: Boolean = true
@@ -54,12 +57,22 @@ class CascadeAstEngine(
         prompt: String,
         audioAfterText: Boolean,
         onToken: suspend (token: String) -> Unit,
-    ): AstResult {
+    ): AstResult = kotlinx.coroutines.coroutineScope {
         val t0 = System.nanoTime()
         val samples = pcmFromWav(wavBytes)
+        val ttsActive = isTtsActive(samples.size * 1000L / 16_000)
+        val shadow = speakerShadow()
+        val speaker = shadow?.let { sh ->
+            async(kotlinx.coroutines.Dispatchers.Default) { sh.observe(samples, ttsActive) }
+        }
         val lines = asr.transcribe(samples)
         val asrMs = (System.nanoTime() - t0) / 1_000_000
-        val ttsActive = isTtsActive(samples.size * 1000L / 16_000)
+        val verdict = speaker?.await()
+        val spk = verdict?.let { "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) " WOULD_BLOCK" else ""} spkMs=${it.ms}" } ?: ""
+        if (verdict != null) {
+            Log.i("SpeakerGate", "GATE $spk durMs=${samples.size * 1000L / 16_000} ttsActive=$ttsActive " +
+                "asr='${lines.joinToString(" | ") { it.text }}'")
+        }
         val gate = when {
             !ttsActive -> lineRmsThreshold
             isEchoConverging() -> convergingLineRmsThreshold
@@ -76,10 +89,10 @@ class CascadeAstEngine(
         val chunkMs = samples.size * 1000L / 16_000
         val lineInfo = lines.map { "${"%.0f".format(it.rms)}:${it.text}" }
         if (spanish.isEmpty()) {
-            Log.i(TAG, "CASCADE asrMs=$asrMs empty transcript (lines=${lines.size}) — nothing to translate")
+            Log.i(TAG, "CASCADE asrMs=$asrMs empty transcript (lines=${lines.size}) — nothing to translate $spk")
             chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, "", "",
-                if (lines.isEmpty()) "no_speech" else "below_gate")
-            return AstResult("", asrMs, backendUsed)
+                if (lines.isEmpty()) "no_speech" else "below_gate", verdict?.similarity)
+            return@coroutineScope AstResult("", asrMs, backendUsed)
         }
         val words = spanish.split(WHITESPACE).size
         val mt = if (longTranslator != null && words >= longPhraseWords) longTranslator else translator
@@ -103,11 +116,11 @@ class CascadeAstEngine(
         Log.i(
             TAG,
             "CASCADE mt=${(mt as? com.travel2chicago.gemmapipeline.mt.FallbackTranslator)?.lastUsed ?: mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
-                "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} es='$spanish' en='$english'",
+                "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} $spk es='$spanish' en='$english'",
         )
         chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, spanish, english,
-            if (english.isBlank()) "silenced" else "spoken")
-        return AstResult(english, totalMs, backendUsed)
+            if (english.isBlank()) "silenced" else "spoken", verdict?.similarity)
+        AstResult(english, totalMs, backendUsed)
     }
 
     companion object {

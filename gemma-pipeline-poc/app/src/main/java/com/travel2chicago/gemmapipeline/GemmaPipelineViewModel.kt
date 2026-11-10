@@ -1162,6 +1162,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 convergingLineRmsThreshold = astConfig.asrLineRmsThresholdEchoConverging,
                 isEchoConverging = { ttsPlayer.spokenMs < astConfig.echoConvergedAfterSpeechMs },
                 chunkDump = chunkDump,
+                speakerShadow = { speakerShadow },
             )
             cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false, eagerSentenceEmit = true)
         } else {
@@ -1192,6 +1193,46 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
         log("Chunk dump ${if (enabled) "ON" else "OFF"}")
         restartAstRouter("chunkDump=$enabled")
+    }
+
+    /** Speaker gate, shadow mode (see [com.travel2chicago.gemmapipeline.gate.SpeakerShadow]). Loaded on
+     *  first use when the CAM++ model is on the phone; the engine reads it per chunk, so no restart. */
+    @Volatile private var speakerShadow: com.travel2chicago.gemmapipeline.gate.SpeakerShadow? = null
+
+    private fun ensureSpeakerShadow(): com.travel2chicago.gemmapipeline.gate.SpeakerShadow? {
+        speakerShadow?.let { return it }
+        val model = File(com.travel2chicago.gemmapipeline.gate.SpeakerGate.MODEL_PATH)
+        if (!model.isFile) { log("[WARN] speaker gate: model missing at $model"); return null }
+        val base = getApplication<Application>().getExternalFilesDir(null) ?: return null
+        val profile = File(base, "speaker_profile.json")
+        // A profile built on the PC from the labelled set can be pushed to /sdcard/Download/gate/.
+        val seed = File(model.parentFile, "speaker_profile.json")
+        if (!profile.isFile && seed.isFile) runCatching { seed.copyTo(profile) }
+        return runCatching {
+            val t = System.nanoTime()
+            com.travel2chicago.gemmapipeline.gate.SpeakerShadow(
+                com.travel2chicago.gemmapipeline.gate.SpeakerGate.load(profile),
+            ).also {
+                log("Speaker gate (shadow) loaded in ${(System.nanoTime() - t) / 1_000_000} ms")
+            }
+        }.onFailure { log("[WARN] speaker gate load failed: ${it.message}") }.getOrNull()
+            ?.also { speakerShadow = it }
+    }
+
+    /** Dev hooks: `--ez speaker_shadow true|false`, `--ez enroll_speaker true|false` (+ `--ez enroll_reset true`). */
+    fun setSpeakerShadow(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (enabled) ensureSpeakerShadow() else speakerShadow = null
+            log("Speaker gate shadow ${if (enabled && speakerShadow != null) "ON" else "OFF"}")
+        }
+    }
+
+    fun setSpeakerEnrolment(enabled: Boolean, reset: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val sh = ensureSpeakerShadow() ?: return@launch
+            if (enabled) sh.startEnrolment(reset) else sh.stopEnrolment()
+            log("Speaker enrolment ${if (enabled) "START (reset=$reset)" else "STOP"}")
+        }
     }
 
     fun setTranslationEngine(mode: com.travel2chicago.gemmapipeline.ast.TranslationEngine) {

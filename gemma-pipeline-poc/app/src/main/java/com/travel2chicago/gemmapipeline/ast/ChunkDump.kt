@@ -23,7 +23,7 @@ class ChunkDump(private val dir: File) {
     init {
         dir.mkdirs()
         if (!index.exists()) {
-            index.writeText("seq\ttime\tfile\tdurMs\tttsActive\tgate\tlines\tspanish\tenglish\toutcome\n")
+            index.writeText("seq\ttime\tfile\tdurMs\tttsActive\tgate\tlines\tspanish\tenglish\toutcome\tsim\n")
         }
         Log.i(TAG, "dumping chunks to ${dir.absolutePath}")
     }
@@ -37,6 +37,7 @@ class ChunkDump(private val dir: File) {
         spanish: String,
         english: String,
         outcome: String,
+        similarity: Float? = null,
     ) {
         runCatching {
             val n = seq.incrementAndGet()
@@ -48,6 +49,7 @@ class ChunkDump(private val dir: File) {
                     listOf(
                         n, clock.format(Date()), name, durMs, ttsActive, "%.0f".format(gate),
                         clean(lines.joinToString(" | ")), clean(spanish), clean(english), outcome,
+                        similarity?.let { "%.3f".format(it) } ?: "",
                     ).joinToString("\t") + "\n",
                 )
             }

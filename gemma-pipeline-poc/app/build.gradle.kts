@@ -123,6 +123,7 @@ dependencies {
     implementation("com.google.mlkit:translate:17.0.3")
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303") // real org.json: the android.jar stub returns nulls
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)
