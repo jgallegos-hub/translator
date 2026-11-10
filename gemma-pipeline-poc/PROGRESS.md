@@ -2166,3 +2166,16 @@ Ronda r27: (1) ~10 frases seguidas sin cambio de voz; (2) 3 frases en inglés av
 datos del filtro); (3) ~30 s de habla continua para medir el retraso acumulado. Foco: dúplex, filtro de
 inglés y eco. Después: pausas/muletillas, risas, calibración por dispositivo, plan de pago de ElevenLabs.
 Capturar también la etiqueta de logcat `OnlineTranslator` (registra las caídas al respaldo).
+
+## Versión estable y filtro de inglés (10 noviembre 2026)
+
+- r27: 18 frases sin un solo cambio de voz; habla continua ~35 s sin acumular retraso (Eric arranca
+  1.2–1.6 s tras cada pedazo); eco limpio; nombres correctos (Jason, Cameron, Austin→"Oskin").
+- r28/r29 (`tools/english_probe.ps1`, inglés sintético por las bocinas de la PC): a volumen normal el
+  micrófono de corto alcance + filtro de volumen descartan todo; fuerte, pasaban 6/12. Prompt con reglas
+  para inglés: réplica offline 18/30 → 9/30 sin callar frases reales (0/42). Lo que queda es inglés que
+  Moonshine convierte en español válido: no se resuelve por texto.
+- Decisión de Abraham: no gastar Haiku en restricciones; atacar la raíz antes del reconocimiento.
+  Research: `docs/research-audio-gate-2026-11.md` (CAM++ para "¿es Abraham?", YAMNet para risa/tos).
+- Herramienta de diagnóstico: volcado de pedazos con `--ez dump_chunks true` (queda en el teléfono).
+- **Etiqueta `stable-2026-11-10`** + `docs/ESTADO-ESTABLE-2026-11-10.md`.

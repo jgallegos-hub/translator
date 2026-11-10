@@ -8,6 +8,12 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Versión estable `stable-2026-11-10` — servidor propio con voz** — Moonshine en el teléfono →
+  servidor en Fly.io (`traductor-t2c`, Chicago) → Claude Haiku 5.5 (sólo se habla lo que pone entre
+  `<say>`) → ElevenLabs "Eric" en streaming → bocina JBL. Primer audio ~0.95 s con Wi-Fi o datos;
+  respaldo local (ML Kit/Gemma + Kokoro) si el servidor falla. Arquitectura, parámetros, cifras,
+  límites y cómo regresar: **[`docs/ESTADO-ESTABLE-2026-11-10.md`](docs/ESTADO-ESTABLE-2026-11-10.md)**.
+  Siguiente: compuerta de audio antes del reconocimiento (`docs/research-audio-gate-2026-11.md`).
 - ✅ **Modo en línea con Claude Haiku 5.5 (16 octubre 2026)** — "En línea: Claude
   Haiku (respaldo Auto)": Moonshine → Supabase Edge Function (`backend/`) → Haiku
   (instrucciones de intérprete + glosario es-MX + lugares de Chicago + 3 frases
