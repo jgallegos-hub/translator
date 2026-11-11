@@ -33,6 +33,17 @@ class FbankTest {
         assertEquals(g.getDouble("fbank_mean"), feats.average(), 2e-3)
     }
 
+    @Test fun `mixed chunk keeps only his runs joined by short silences`() {
+        val samples = ShortArray(10) { (it + 1).toShort() }
+        val v = SpeakerShadow.Verdict(0.8f, wouldBlock = false, ms = 0, mixed = true, hisRuns = listOf(1..2, 6..7))
+        val cut = v.cut(samples)
+        val gap = SpeakerShadow.GAP_SAMPLES
+        assertEquals(4 + 2 * gap, cut.size)
+        assertEquals(listOf<Short>(2, 3), cut.take(2))
+        assertEquals(listOf<Short>(7, 8), cut.drop(2 + gap).take(2))
+        assertEquals(0, cut[2].toInt())
+    }
+
     @Test fun `similarity helpers`() {
         val a = SpeakerGate.normalise(floatArrayOf(3f, 4f))
         assertEquals(1.0, SpeakerGate.dot(a, a).toDouble(), 1e-6)

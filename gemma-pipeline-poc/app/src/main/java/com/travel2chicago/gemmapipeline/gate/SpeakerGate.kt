@@ -44,14 +44,46 @@ class SpeakerGate private constructor(
     fun embed(pcm: ShortArray): FloatArray {
         val x = FloatArray(pcm.size) { pcm[it] / 32768f }
         val feats = Fbank.compute(x)
-        val frames = feats.size / Fbank.NUM_MEL
+        return embedFrames(feats, 0, feats.size / Fbank.NUM_MEL)
+    }
+
+    /** One window of the speaker scan: frames [startFrame, startFrame + frames), its RMS and similarity. */
+    data class Window(val startFrame: Int, val frames: Int, val rms: Double, val similarity: Float)
+
+    /**
+     * Similarity to the profile over sliding windows of [winFrames] fbank frames (10 ms each) every [hopFrames],
+     * with the fbank computed once for the whole chunk (2026-11-11: speaker segmentation inside mixed chunks).
+     * A chunk shorter than one window gives a single window over all of it.
+     */
+    fun scan(pcm: ShortArray, winFrames: Int, hopFrames: Int): List<Window> {
+        val x = FloatArray(pcm.size) { pcm[it] / 32768f }
+        val feats = Fbank.compute(x)
+        val total = feats.size / Fbank.NUM_MEL
+        val starts = if (total <= winFrames) listOf(0) else (0..total - winFrames step hopFrames).toList()
+        return starts.map { f0 ->
+            val n = minOf(winFrames, total - f0)
+            val s = (f0 * FRAME_SHIFT).coerceAtMost(pcm.size)
+            val e = ((f0 + n) * FRAME_SHIFT).coerceAtMost(pcm.size)
+            var sq = 0.0
+            for (i in s until e) sq += pcm[i].toDouble() * pcm[i]
+            val rms = if (e > s) sqrt(sq / (e - s)) else 0.0
+            val sim = similarity(embedFrames(feats, f0, n)) ?: 0f
+            Window(f0, n, rms, sim)
+        }
+    }
+
+    /** Embedding of fbank frames [f0, f0 + n) of [feats], with global-mean normalisation over those frames. */
+    private fun embedFrames(feats: FloatArray, f0: Int, n: Int): FloatArray {
+        val win = feats.copyOfRange(f0 * Fbank.NUM_MEL, (f0 + n) * Fbank.NUM_MEL)
+        val frames = n
         // feature_normalize_type: global-mean
         for (b in 0 until Fbank.NUM_MEL) {
             var mean = 0.0
-            for (t in 0 until frames) mean += feats[t * Fbank.NUM_MEL + b]
+            for (t in 0 until frames) mean += win[t * Fbank.NUM_MEL + b]
             mean /= frames
-            for (t in 0 until frames) feats[t * Fbank.NUM_MEL + b] -= mean.toFloat()
+            for (t in 0 until frames) win[t * Fbank.NUM_MEL + b] -= mean.toFloat()
         }
+        val feats = win
         OnnxTensor.createTensor(env, FloatBuffer.wrap(feats), longArrayOf(1, frames.toLong(), Fbank.NUM_MEL.toLong())).use { input ->
             session.run(mapOf("x" to input)).use { out ->
                 @Suppress("UNCHECKED_CAST")
@@ -108,6 +140,8 @@ class SpeakerGate private constructor(
 
     companion object {
         const val MODEL_PATH = "/sdcard/Download/gate/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+        /** Samples per fbank frame (10 ms at 16 kHz). */
+        const val FRAME_SHIFT = 160
 
         fun load(profileFile: File, modelPath: String = MODEL_PATH, threads: Int = 2): SpeakerGate {
             val env = OrtEnvironment.getEnvironment()

@@ -66,12 +66,22 @@ class CascadeAstEngine(
         val speaker = shadow?.let { sh ->
             async(kotlinx.coroutines.Dispatchers.Default) { sh.observe(samples, ttsActive) }
         }
-        val lines = asr.transcribe(samples)
-        val asrMs = (System.nanoTime() - t0) / 1_000_000
+        val firstLines = asr.transcribe(samples)
         val verdict = speaker?.await()
+        // Mixed chunk (someone else's voice next to Abraham's): transcribe again over only his runs, so the
+        // other voice never reaches the translator (r32: video + Abraham merged into one line).
+        val lines = if (shadow?.enforce == true && verdict != null && verdict.mixed) {
+            val again = asr.transcribe(verdict.cut(samples))
+            Log.i("SpeakerGate", "GATE MIXED keep ${verdict.keptMs} of ${samples.size * 1000L / 16_000} ms: " +
+                "'${firstLines.joinToString(" | ") { it.text }}' -> '${again.joinToString(" | ") { it.text }}'")
+            again
+        } else firstLines
+        val asrMs = (System.nanoTime() - t0) / 1_000_000
         val enforce = shadow?.enforce == true
         val blockTag = if (enforce) " BLOCKED" else " WOULD_BLOCK"
-        val spk = verdict?.let { "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) blockTag else ""} spkMs=${it.ms}" } ?: ""
+        val spk = verdict?.let {
+            "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) blockTag else ""}${if (it.mixed) " MIXED" else ""} spkMs=${it.ms} win=[${it.windows}]"
+        } ?: ""
         if (verdict != null) {
             Log.i("SpeakerGate", "GATE $spk durMs=${samples.size * 1000L / 16_000} ttsActive=$ttsActive " +
                 "asr='${lines.joinToString(" | ") { it.text }}'")
