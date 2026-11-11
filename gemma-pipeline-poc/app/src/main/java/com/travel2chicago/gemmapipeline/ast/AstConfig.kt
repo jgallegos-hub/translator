@@ -431,8 +431,10 @@ data class AstConfig(
      * original path; the cascade modes run Moonshine Tiny-es first.
      * Default CASCADE_MLKIT after the live A/B (2026-10-14): 1.28 s to first
      * audio vs 3.17 s for Gemma audio, and no invented sentences.
+     * Default SERVER_VOICE since 2026-11-11 (Abraham): Haiku + Eric with the local
+     * cascade as fallback is the stable mode; it had to be picked by hand after every restart.
      */
-    val translationEngine: TranslationEngine = TranslationEngine.CASCADE_AUTO,
+    val translationEngine: TranslationEngine = TranslationEngine.SERVER_VOICE,
     /** Cascade echo-residue gate: Moonshine lines with RMS below this are
      *  dropped (F0 corpus: voice >= ~2200, residue <= ~1300). */
     val asrLineRmsThreshold: Double = 1800.0,
