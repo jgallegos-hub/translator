@@ -39,7 +39,8 @@ class CascadeAstEngine(
      *  stayed <= 2453 once the canceller had heard ~6 s of it. */
     private val isEchoConverging: () -> Boolean = { false },
     /** Diagnostics: saves each chunk with its outcome (see [ChunkDump]). */
-    private val chunkDump: ChunkDump? = null,
+    /** Read per chunk, so turning the dump on or off needs no router restart. */
+    private val chunkDump: () -> ChunkDump? = { null },
     /** Speaker gate in shadow mode: scored in parallel with ASR, logged, never blocks (2026-11-10). */
     private val speakerShadow: () -> com.travel2chicago.gemmapipeline.gate.SpeakerShadow? = { null },
 ) : GemmaAstEngine {
@@ -78,7 +79,7 @@ class CascadeAstEngine(
         // Enforced gate (2026-11-10): not Abraham's voice -> nothing reaches the translator. Fails open:
         // no profile / no model / an error gives no verdict, and the chunk goes on as before.
         if (enforce && verdict != null && verdict.wouldBlock) {
-            chunkDump?.record(wavBytes, samples.size * 1000L / 16_000, ttsActive, lineRmsThreshold,
+            chunkDump()?.record(wavBytes, samples.size * 1000L / 16_000, ttsActive, lineRmsThreshold,
                 lines.map { "${"%.0f".format(it.rms)}:${it.text}" }, "", "", "speaker_blocked", verdict.similarity)
             return@coroutineScope AstResult("", asrMs, backendUsed)
         }
@@ -100,7 +101,7 @@ class CascadeAstEngine(
         val lineInfo = lines.map { "${"%.0f".format(it.rms)}:${it.text}" }
         if (spanish.isEmpty()) {
             Log.i(TAG, "CASCADE asrMs=$asrMs empty transcript (lines=${lines.size}) — nothing to translate $spk")
-            chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, "", "",
+            chunkDump()?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, "", "",
                 if (lines.isEmpty()) "no_speech" else "below_gate", verdict?.similarity)
             return@coroutineScope AstResult("", asrMs, backendUsed)
         }
@@ -132,7 +133,7 @@ class CascadeAstEngine(
             "CASCADE mt=${(mt as? com.travel2chicago.gemmapipeline.mt.FallbackTranslator)?.lastUsed ?: mt.name} words=$words asrMs=$asrMs mtFirstMs=$mtFirstMs totalMs=$totalMs " +
                 "lineRms=${kept.joinToString(",") { "%.0f".format(it.rms) }} $spk verified=$verified es='$spanish' en='$english'",
         )
-        chunkDump?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, spanish, english,
+        chunkDump()?.record(wavBytes, chunkMs, ttsActive, gate, lineInfo, spanish, english,
             if (english.isBlank()) "silenced" else "spoken", verdict?.similarity)
         AstResult(english, totalMs, backendUsed)
     }

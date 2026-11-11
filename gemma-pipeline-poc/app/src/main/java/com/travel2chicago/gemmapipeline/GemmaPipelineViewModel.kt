@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "GemmaPipelineVM"
 private const val TRANSLATION_HISTORY_CAP = 50
+private const val PREF_CHUNK_DUMP = "chunk_dump"
 
 data class GemmaPipelineUiState(
     // Devices + permissions
@@ -326,6 +327,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         checkModelFileExists()
         // Speaker gate (shadow): on whenever the CAM++ model is on the phone, so a process restart keeps it.
         viewModelScope.launch(Dispatchers.IO) { ensureSpeakerShadow() }
+        if (diagPrefs().getBoolean(PREF_CHUNK_DUMP, false)) openChunkDump(true)
 
         viewModelScope.launch(Dispatchers.Default) {
             bus.events.collect { event -> handleEvent(event) }
@@ -1163,7 +1165,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                 isTtsActive = { chunkMs -> ttsPlayer.playedWithinMs(chunkMs + 300) },
                 convergingLineRmsThreshold = astConfig.asrLineRmsThresholdEchoConverging,
                 isEchoConverging = { ttsPlayer.spokenMs < astConfig.echoConvergedAfterSpeechMs },
-                chunkDump = chunkDump,
+                chunkDump = { chunkDump },
                 speakerShadow = { speakerShadow },
             )
             cfg = astConfig.copy(useOfficialAstPrompt = false, skipNonSpanish = false, eagerSentenceEmit = true)
@@ -1188,13 +1190,23 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     /** Dev hook: `am start ... --ez dump_chunks true|false`. Saves every cascade chunk + outcome to
      *  `<externalFiles>/chunk_dump/<timestamp>/` from the next router (re)start. */
     fun setChunkDump(enabled: Boolean) {
+        // Persisted (2026-11-11): MIUI's swipe-clean kills the process mid-round and the dump was lost
+        // twice (r30, r31). The engine reads it per chunk, so no router restart (that lost a phrase in r29).
+        diagPrefs().edit().putBoolean(PREF_CHUNK_DUMP, enabled).apply()
+        openChunkDump(enabled)
+    }
+
+    // A function, not a property: it is used from init, which runs before later property initialisers.
+    private fun diagPrefs() =
+        getApplication<Application>().getSharedPreferences("diagnostics", android.content.Context.MODE_PRIVATE)
+
+    private fun openChunkDump(enabled: Boolean) {
         chunkDump = if (!enabled) null else {
             val base = getApplication<Application>().getExternalFilesDir(null) ?: return
             val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
             com.travel2chicago.gemmapipeline.ast.ChunkDump(File(base, "chunk_dump/$stamp"))
         }
-        log("Chunk dump ${if (enabled) "ON" else "OFF"}")
-        restartAstRouter("chunkDump=$enabled")
+        log("Chunk dump ${if (enabled) "ON (persists across restarts)" else "OFF"}")
     }
 
     /** Speaker gate, shadow mode (see [com.travel2chicago.gemmapipeline.gate.SpeakerShadow]). Loaded on
