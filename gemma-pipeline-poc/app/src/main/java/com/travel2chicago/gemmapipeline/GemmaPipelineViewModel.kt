@@ -343,6 +343,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        ListeningService.stop(getApplication())
         // onCleared is not suspendable — use the synchronous hard cancel.
         // Any chunks in flight at this moment (rotation / process death)
         // are lost; that's an accepted trade-off here.
@@ -680,6 +681,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         log("Pipeline + AST router + TTS router started")
+        chunkDump?.event("start", "engine=${astConfig.translationEngine}")
+        ListeningService.start(getApplication())
     }
 
     fun stopPipeline() {
@@ -718,6 +721,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         log("Pipeline + AST router + TTS router stopped (drain in progress)")
+        chunkDump?.event("stop")
+        ListeningService.stop(getApplication())
     }
 
     fun startPlayback() {
@@ -1241,6 +1246,20 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** "✗ esa no" (field use): marks the last spoken translation as wrong in the session record. */
+    fun flagLastTranslation() {
+        val d = chunkDump
+        if (d == null) { log("[WARN] flag: session record is off"); return }
+        log("FLAG ✗ ${d.flagLast()}")
+    }
+
+    /** Speaker keep-awake tone; adb `--ez speaker_wake false`, `--ei speaker_wake_every_s 30` for a test. */
+    fun setSpeakerWake(enabled: Boolean, everySeconds: Int = 0) {
+        ttsPlayer.speakerWakeEnabled = enabled
+        if (everySeconds > 0) ttsPlayer.speakerWakeEveryMs = everySeconds * 1000L
+        log("Speaker keep-awake ${if (enabled) "ON" else "OFF"} every ${ttsPlayer.speakerWakeEveryMs / 1000} s")
+    }
+
     fun setSpeakerEnforce(enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val sh = ensureSpeakerShadow() ?: return@launch
@@ -1594,10 +1613,12 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
             }
             is AudioEvent.DeviceConnected -> {
                 log("Device connected: ${event.info.productName} (id=${event.info.id}, input=${event.isInput})")
+                if (!event.isInput) chunkDump?.event("output_connected", "${event.info.productName} (id=${event.info.id})")
                 refreshDevices()
             }
             is AudioEvent.DeviceDisconnected -> {
                 log("Device disconnected: ${event.description} (id=${event.deviceId})")
+                chunkDump?.event("device_disconnected", "${event.description} (id=${event.deviceId})")
                 refreshDevices()
             }
             is AudioEvent.EngineStatus -> {

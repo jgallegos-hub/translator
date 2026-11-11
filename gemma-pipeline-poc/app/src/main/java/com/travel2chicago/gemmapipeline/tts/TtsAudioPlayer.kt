@@ -16,6 +16,13 @@ import java.util.concurrent.atomic.AtomicInteger
 private const val TAG = "TtsAudioPlayer"
 private const val KEEPALIVE_CHUNK_MS = 20
 private const val KEEPALIVE_MAX_QUEUED_MS = 40
+/** Speaker keep-awake tone (2026-11-11): every 3 min of quiet, 1 s of 20 Hz at -40 dBFS with 100 ms fades
+ *  (25 Hz at -30 dBFS was faintly audible, "like a cat purring", device r35). */
+private const val SPEAKER_WAKE_EVERY_MS = 180_000L
+private const val SPEAKER_WAKE_MS = 1_000
+private const val SPEAKER_WAKE_FADE_MS = 100
+private const val SPEAKER_WAKE_HZ = 20.0
+private const val SPEAKER_WAKE_AMPLITUDE = 330.0
 /** Speaker→mic latency margin after the queue drains. 350 ms (AEC3 pre-delay) was not enough
  *  for the JBL over Bluetooth: device r22 still caught the last words as "¿y algún tipo? Roder.". */
 private const val UNMUTE_TAIL_MS = 800L
@@ -142,6 +149,11 @@ class TtsAudioPlayer(
     private val unmuteScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "tts-unmute").apply { isDaemon = true }
     }
+
+    /** Speaker keep-awake tone (see [startKeepAlive]); adb: --ez speaker_wake false to turn it off. */
+    @Volatile var speakerWakeEnabled: Boolean = true
+    @Volatile var speakerWakeEveryMs: Long = SPEAKER_WAKE_EVERY_MS
+    @Volatile private var lastWakeNs: Long = System.nanoTime()
 
     fun setKeepAlive(enabled: Boolean) {
         keepAliveEnabled = enabled
@@ -291,6 +303,27 @@ class TtsAudioPlayer(
         // lost and the next one arrived 1.2 s late instead of ~0.5 s).
         val rnd = java.util.Random(1)
         val silence = ShortArray(sampleRate * KEEPALIVE_CHUNK_MS / 1000) { (rnd.nextInt(5) - 2).toShort() }
+        // Speaker keep-awake (2026-11-11): the JBL powers itself off after a long silence even with the
+        // dither above (first phrase after ~22 min was lost, device r33). Every SPEAKER_WAKE_EVERY_MS without
+        // speech, play SPEAKER_WAKE_MS of a 25 Hz tone instead: far below what a small speaker reproduces
+        // (inaudible) but a clear signal for its silence detector. Not speech: no VAD mute, no AEC reference.
+        // Generated per chunk with a running sample index, so the sine stays continuous across chunks (a tone
+        // restarted every 20 ms would be a 50 Hz buzz) and fades in/out over SPEAKER_WAKE_FADE_MS (no clicks).
+        val wakeTone = ShortArray(silence.size)
+        val toneTotal = sampleRate * SPEAKER_WAKE_MS / 1000
+        val fade = sampleRate * SPEAKER_WAKE_FADE_MS / 1000
+        var toneIndex = toneTotal // >= toneTotal: no tone in progress
+        fun fillTone(): Boolean {
+            if (toneIndex >= toneTotal) return false
+            for (i in wakeTone.indices) {
+                val k = toneIndex + i
+                if (k >= toneTotal) { wakeTone[i] = 0; continue }
+                val edge = minOf(k, toneTotal - 1 - k)
+                val env = if (edge >= fade) 1.0 else 0.5 - 0.5 * kotlin.math.cos(Math.PI * edge / fade)
+                wakeTone[i] = (SPEAKER_WAKE_AMPLITUDE * env * kotlin.math.sin(2 * Math.PI * SPEAKER_WAKE_HZ * k / sampleRate)).toInt().toShort()
+            }
+            return true
+        }
         val maxQueued = sampleRate.toLong() * KEEPALIVE_MAX_QUEUED_MS / 1000
         keepAliveThread = Thread({
             while (!Thread.currentThread().isInterrupted) {
@@ -306,8 +339,19 @@ class TtsAudioPlayer(
                 try {
                     val played = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
                     if (framesWritten - played < maxQueued) {
-                        val n = t.write(silence, 0, silence.size, AudioTrack.WRITE_NON_BLOCKING)
+                        val sinceSpeechMs = (System.nanoTime() - maxOf(lastPlaybackEndNs, lastWakeNs)) / 1_000_000
+                        if (toneIndex >= toneTotal && speakerWakeEnabled && !ttsPlaying.get() && sinceSpeechMs > speakerWakeEveryMs) {
+                            toneIndex = 0
+                            Log.i(TAG, "speaker keep-awake: ${SPEAKER_WAKE_MS} ms of ${SPEAKER_WAKE_HZ} Hz after ${sinceSpeechMs / 1000} s quiet")
+                        }
+                        val tone = fillTone()
+                        val buf = if (tone) wakeTone else silence
+                        val n = t.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING)
                         if (n > 0) framesWritten += n
+                        if (tone && n > 0) {
+                            toneIndex += n
+                            if (toneIndex >= toneTotal) lastWakeNs = System.nanoTime()
+                        }
                     }
                 } catch (e: Throwable) {
                     Log.w(TAG, "keep-alive write failed: ${e.message}")

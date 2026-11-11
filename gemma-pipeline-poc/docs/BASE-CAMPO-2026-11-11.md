@@ -38,6 +38,30 @@ filtro de volumen, reproducción, fragmento mezclado), lo que dijo, lo que se oy
 esperado y el estado. Sirve para ver qué se repite más y decidir en qué elemento del sistema actuar. Plan de
 registro y calibración: [`propuesta-registro-calibracion-2026-11.md`](propuesta-registro-calibracion-2026-11.md).
 
+## Uso en campo (etiqueta `campo-v1-2026-11-11`, misma tarde)
+
+Encima de la base se agregó lo necesario para llevarlo a la calle y al trabajo (probado en r35):
+
+| Qué | Cómo funciona |
+|---|---|
+| **Sigue oyendo con la pantalla apagada u otra app al frente** | servicio en primer plano de tipo micrófono (`ListeningService`): notificación fija "Traductor escuchando" con botón **Detener**; se enciende con Start y se apaga con Stop. r35: frases traducidas con pantalla apagada y con otra app al frente |
+| **Una sola copia del traductor** | `launchMode="singleTask"`: tocar la notificación desde otra app ya no abre una segunda copia (antes se cargaban dos traductores) |
+| **Pantalla dividida** | entrar a pantalla dividida ya no recrea la pantalla (`configChanges`) |
+| **Botón "✗ Esa no"** | arriba de todo mientras traduce; marca la última frase dicha por Eric en `events.tsv` para revisarla primero |
+| **Bocina despierta** | cada 3 min de silencio, 1 s de tono de 20 Hz a −40 dBFS (antes sólo ruido a −84 dBFS, que no evitaba que la JBL se apagara). 25 Hz a −30 dBFS se oía "como ronroneo"; se bajó. No mueve el detector de voz (r35: 4 tonos, 0 reacciones). Si la bocina se apaga, queda como `device_disconnected` en `events.tsv` |
+| **Registro de cada salida** | `index.tsv` ahora con `asrMs`, `mtFirstMs`, `totalMs`, motor usado (servidor o respaldo) y `verified`; `events.tsv` con inicio, fin, bocina conectada/desconectada y marcas ✗ |
+| **Privacidad** | de lo bloqueado por el filtro de voz (otras personas, eco) sólo quedan números: sin audio ni texto |
+
+En el teléfono de Abraham: batería de la app en "Sin restricciones" (hecho). El inicio automático no hace falta:
+la app se abre a mano y el servicio la mantiene viva mientras traduce. Después de "Detener", MIUI puede cerrarla
+para liberar memoria (r35); basta con volver a abrirla.
+
+Después de cada salida: con el teléfono en el Wi-Fi de casa, Claude baja la carpeta del día
+(`Android/data/com.travel2chicago.gemmapipeline/files/chunk_dump/<fecha_hora>/`) por adb y la analiza.
+
+Pendiente: la página de revisión en la PC (marcar cada frase), y confirmar en campo que el tono mantiene la
+bocina encendida.
+
 ## Cómo regresar a esta base
 
 - App: `git checkout campo-base-2026-11-11`, compilar e instalar.

@@ -66,6 +66,23 @@ fun GemmaPipelineScreen(
             .statusBarsPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // Field use (2026-11-11): while translating, the "wrong" mark and Stop sit at the very top, so they stay
+        // reachable in split screen. The mark goes to the session record (events.tsv) for the review.
+        if (state.pipelineRunning) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { viewModel.flagLastTranslation() },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                        modifier = Modifier.weight(2f).height(72.dp),
+                    ) { Text("✗ Esa no", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+                    OutlinedButton(
+                        onClick = { viewModel.stopPipeline() },
+                        modifier = Modifier.weight(1f).height(72.dp),
+                    ) { Text("Detener") }
+                }
+            }
+        }
         item {
             Text("Gemma Pipeline POC", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(

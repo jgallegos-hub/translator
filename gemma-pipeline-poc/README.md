@@ -8,6 +8,9 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Listo para campo `campo-v1-2026-11-11`** — sigue traduciendo con la pantalla apagada u otra app al
+  frente (notificación "Traductor escuchando"), botón "✗ Esa no", bocina despierta en silencios largos y registro
+  de cada salida con latencias y privacidad de otras voces. Uso y detalles: `docs/BASE-CAMPO-2026-11-11.md`.
 - ✅ **Base para pruebas en campo `campo-base-2026-11-11`** — confirmada por Abraham en una plática de trabajo
   de 7 min (33/33 frases suyas traducidas, 0 calladas, ecos bloqueados, primer audio 0.98 s). Servidor es el
   modo por defecto. De aquí en adelante los ajustes se deciden en sesiones de calibración con su

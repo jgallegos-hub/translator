@@ -2209,3 +2209,12 @@ re-enrolar con frases cortas.
 - Visión de Abraham: herramienta de traducción personalizable por persona y oficio, ajustada en sesiones de
   calibración que midan qué errores se repiten y en qué capa nacen (`tools/calibracion/errores.tsv`).
 
+## Listo para campo (11 noviembre 2026, tarde) — etiqueta `campo-v1-2026-11-11`
+
+- Servicio en primer plano (micrófono): traduce con la pantalla apagada y con otra app al frente (r35).
+- Una sola copia de la pantalla (`singleTask`); antes la notificación podía abrir un segundo traductor.
+- Botón "✗ Esa no", registro con latencias y motor usado, `events.tsv`, privacidad de lo bloqueado.
+- Bocina despierta: tono de 20 Hz a −40 dBFS cada 3 min de silencio (25 Hz a −30 dBFS se percibía).
+- Siguiente: primera salida real (Walmart) y el viernes en el trabajo; página de revisión; sesión de
+  calibración con las marcas de Abraham (`docs/propuesta-registro-calibracion-2026-11.md`).
+

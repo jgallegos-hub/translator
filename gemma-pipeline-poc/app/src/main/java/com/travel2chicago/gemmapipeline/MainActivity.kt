@@ -23,6 +23,10 @@ import com.travel2chicago.gemmapipeline.ui.theme.GemmaPipelineTheme
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_STOP_PIPELINE = "stop_pipeline"
+    }
+
     private val viewModel: GemmaPipelineViewModel by viewModels()
 
     private val permissionLauncher = registerForActivityResult(
@@ -77,8 +81,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra("kokoro_bench_live", false)) viewModel.runKokoroBench(live = true)
+        if (intent.getBooleanExtra(EXTRA_STOP_PIPELINE, false)) viewModel.stopPipeline() // notification "Detener"
         if (intent.hasExtra("dump_chunks")) viewModel.setChunkDump(intent.getBooleanExtra("dump_chunks", false))
         if (intent.hasExtra("speaker_shadow")) viewModel.setSpeakerShadow(intent.getBooleanExtra("speaker_shadow", false))
+        if (intent.hasExtra("speaker_wake") || intent.hasExtra("speaker_wake_every_s")) {
+            viewModel.setSpeakerWake(intent.getBooleanExtra("speaker_wake", true), intent.getIntExtra("speaker_wake_every_s", 0))
+        }
+        if (intent.getBooleanExtra("flag_last", false)) viewModel.flagLastTranslation()
         if (intent.hasExtra("speaker_enforce")) viewModel.setSpeakerEnforce(intent.getBooleanExtra("speaker_enforce", true))
         if (intent.hasExtra("enroll_speaker")) {
             viewModel.setSpeakerEnrolment(
@@ -111,6 +120,11 @@ class MainActivity : ComponentActivity() {
             !hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
         ) {
             toRequest += Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            toRequest += Manifest.permission.POST_NOTIFICATIONS // "Traductor escuchando" notification
         }
         if (toRequest.isNotEmpty()) {
             permissionLauncher.launch(toRequest.toTypedArray())
