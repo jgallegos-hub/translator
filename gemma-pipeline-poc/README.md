@@ -8,6 +8,11 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Base para pruebas en campo `campo-base-2026-11-11`** — confirmada por Abraham en una plática de trabajo
+  de 7 min (33/33 frases suyas traducidas, 0 calladas, ecos bloqueados, primer audio 0.98 s). Servidor es el
+  modo por defecto. De aquí en adelante los ajustes se deciden en sesiones de calibración con su
+  retroalimentación: **[`docs/BASE-CAMPO-2026-11-11.md`](docs/BASE-CAMPO-2026-11-11.md)**, registro de errores en
+  `tools/calibracion/errores.tsv`.
 - ✅ **Versión estable `stable-2026-11-10-gate` — filtro de voz antes del traductor** — la huella de
   voz CAM++ (en el teléfono, en paralelo con Moonshine) deja pasar sólo a Abraham: música, inglés de otros,
   eco de Eric y risas no llegan a Haiku, y lo suyo va con un prompt que ya no calla frases raras (r30: 24/24

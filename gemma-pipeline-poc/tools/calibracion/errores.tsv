@@ -1,0 +1,13 @@
+id	fecha	ronda	capa	dijo	oyo_moonshine	dijo_eric	esperado	estado	accion
+E001	2026-11-11	r31	haiku	Si ya revisaste el sistema (tras "quería preguntarte")	Si ya revisaste el sistema de entrenamiento.	I wanted to ask you, did you already check...	if you already checked the system	corregido	relay v8: no repetir palabras ya dichas (tools/r31_bench.py)
+E002	2026-11-11	r31	haiku	la pizza de Lou Malnati's	la pizza de la oma unatis	Giordano's	Lou Malnati's	corregido	relay v8: nombres de Chicago sólo si suenan igual
+E003	2026-11-11	r32,r33	moonshine+haiku	y también las UPS	Upsis / supereses / sopeses	the supers / the switchgear	UPS	corregido	relay v10: formas mal oídas de UPS ligadas al equipo
+E004	2026-11-11	r33	moonshine	un burrito de asada	un burrito de azara / burrito de azada	burrito de azara	carne asada / steak burrito	abierto	glosario por oficio (comida); "azada" ya sale steak burrito, "azara" no
+E005	2026-11-11	r34	moonshine	nivel senior	(...han sido mal en el evento,) señor	sir	senior	abierto	perfil de oficio: "señor" -> senior cuando habla de niveles o puestos
+E006	2026-11-11	r34	moonshine	de México a Estados Unidos	de Amazon y Koamas a Estados Unidos	from Amazon and Koamas to the United States	from Mexico to the United States	abierto	forma mal oída de "México"; revisar audio
+E007	2026-11-11	r34	moonshine	? (no recuerda)	esta forma como desflorado	brushing it off	?	sin_dato	sin referencia: no se puede corregir
+E008	2026-11-11	r34	filtro_volumen	...enormes contribuciones	contribuciones (rms 2554, umbral 3000 con Eric sonando)	(se perdió)	contributions	abierto	colas en voz baja mientras suena Eric; mismo patrón que r32 "y también las UPS", "¿sí?"
+E009	2026-11-11	r32,r33	filtro_voz	No, no. / Sí. (con video de fondo)	no, no. / sí	(bloqueado, 0.38)	No, no. / Yes.	abierto	palabras cortas con ruido en el límite de la huella; re-enrolar con frases cortas y ruido
+E010	2026-11-11	r33-extra	reproduccion	Hola Jason, quiero hablar contigo (primera frase tras ~22 min)	hola jason quiero hablar contigo	(no sonó; el servidor sí la mandó)	Hi Jason, I want to talk to you.	abierto	bocina Bluetooth dormida; despertar más largo tras mucho silencio
+E011	2026-11-11	r32	fragmento_mezclado	¿Cómo les fue el fin de semana? (al arrancar el video)	Me fui, güey... ¿Cómo les fue el fin de semana?	I'm out, dude...	How was your weekend?	en_espera	escaneo por ventanas en rama exp/speaker-scan (+65 ms); medir frecuencia en campo
+E012	2026-11-11	r33	haiku	yo creo que	yo creo que	(callado)	I think that	vigilar	1 vez en vivo, 0/15 en bench; vigilar si se repite

@@ -2197,3 +2197,15 @@ Plan detallado en `docs/ESTADO-ESTABLE-2026-11-10-filtro-voz.md` §7: set etique
 comparar offline continuación / zona dudosa decidida por Haiku con contexto / cortar menos en el VAD, con
 criterio de no sumar latencia ni invención; luego frases coladas sin sentido, contexto de sesión para Haiku,
 re-enrolar con frases cortas.
+
+## Base para pruebas en campo (11 noviembre 2026)
+
+- Rondas r31–r33 con guion de pausas (`tools/rounds/r31_guion_colas.md`): ninguna frase suya bloqueada por el
+  filtro de voz en r31; Haiku repetía palabras ya dichas y cambiaba nombres (Giordano's por Lou Malnati's) y
+  equipos (switchgear por UPS) → corregido en el prompt, medido con `tools/r31_bench.py`.
+- Volcado de fragmentos persistente (MIUI cierra la app al deslizarla y se perdía la ronda).
+- Regla A descartada (+6 ajenas); escaneo por ventanas guardado en `exp/speaker-scan` (+65 ms percibidos).
+- r34, plática de trabajo de 7 min: 33/33 traducidas, 0 calladas. **Etiqueta `campo-base-2026-11-11`.**
+- Visión de Abraham: herramienta de traducción personalizable por persona y oficio, ajustada en sesiones de
+  calibración que midan qué errores se repiten y en qué capa nacen (`tools/calibracion/errores.tsv`).
+
