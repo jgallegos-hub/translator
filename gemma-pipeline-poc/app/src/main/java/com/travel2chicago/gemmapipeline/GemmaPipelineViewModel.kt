@@ -325,6 +325,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         deviceManager.register()
         refreshDevices()
         checkModelFileExists()
+        // Screen on/off -> player (E013: no near-silent stream with the screen off) and the session record.
+        registerScreenReceiver()
         // Speaker gate (shadow): on whenever the CAM++ model is on the phone, so a process restart keeps it.
         viewModelScope.launch(Dispatchers.IO) { ensureSpeakerShadow() }
         if (diagPrefs().getBoolean(PREF_CHUNK_DUMP, false)) openChunkDump(true)
@@ -344,6 +346,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         ListeningService.stop(getApplication())
+        if (::screenReceiver.isInitialized) runCatching { getApplication<Application>().unregisterReceiver(screenReceiver) }
         // onCleared is not suspendable — use the synchronous hard cancel.
         // Any chunks in flight at this moment (rotation / process death)
         // are lost; that's an accepted trade-off here.
@@ -1246,6 +1249,30 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // lateinit, created in registerScreenReceiver(): it is called from init, which runs before any initialiser
+    // written down here (a val or a `by lazy` here would still be null then).
+    private lateinit var screenReceiver: android.content.BroadcastReceiver
+
+    private fun newScreenReceiver() = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            val on = intent?.action == android.content.Intent.ACTION_SCREEN_ON
+            ttsPlayer.screenOn = on
+            chunkDump?.event(if (on) "screen_on" else "screen_off")
+            log("Screen ${if (on) "ON" else "OFF"}")
+        }
+    }
+
+    private fun registerScreenReceiver() {
+        val app = getApplication<Application>()
+        ttsPlayer.screenOn = (app.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager).isInteractive
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+            addAction(android.content.Intent.ACTION_SCREEN_OFF)
+        }
+        screenReceiver = newScreenReceiver()
+        androidx.core.content.ContextCompat.registerReceiver(app, screenReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
     /** "✗ esa no" (field use): marks the last spoken translation as wrong in the session record. */
     fun flagLastTranslation() {
         val d = chunkDump
@@ -1254,6 +1281,11 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Speaker keep-awake tone; adb `--ez speaker_wake false`, `--ei speaker_wake_every_s 30` for a test. */
+    fun setScreenOffAmplitude(amp: Int) {
+        ttsPlayer.screenOffAmplitude = amp.coerceIn(0, 2000)
+        log("Screen-off keep-alive amplitude = ${ttsPlayer.screenOffAmplitude}")
+    }
+
     fun setSpeakerWake(enabled: Boolean, everySeconds: Int = 0) {
         ttsPlayer.speakerWakeEnabled = enabled
         if (everySeconds > 0) ttsPlayer.speakerWakeEveryMs = everySeconds * 1000L

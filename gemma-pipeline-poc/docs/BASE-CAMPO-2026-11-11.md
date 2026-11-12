@@ -59,8 +59,16 @@ para liberar memoria (r35); basta con volver a abrirla.
 Después de cada salida: con el teléfono en el Wi-Fi de casa, Claude baja la carpeta del día
 (`Android/data/com.travel2chicago.gemmapipeline/files/chunk_dump/<fecha_hora>/`) por adb y la analiza.
 
-Pendiente: la página de revisión en la PC (marcar cada frase), y confirmar en campo que el tono mantiene la
-bocina encendida.
+**Corrección 12-nov (`campo-v1.1-2026-11-12`), tras Walmart e IKEA:** con la pantalla bloqueada un rato, Eric se
+quedaba callado y todo salía junto al desbloquear. Causa encontrada en el registro del sistema: **MIUI PowerKeeper
+silencia la salida y el micrófono** de una app que, con la pantalla apagada, escribe audio casi en cero durante 60 s
+(`isLongTimeZeroData` → `notifyMuteAudioInNeed`); nuestro ruido de mantenimiento (amplitud 2) lo provocaba.
+Ahora, con la pantalla apagada, la app manda un tono continuo de 20 Hz a amplitud 80 (−52 dBFS, inaudible; MIUI lo
+cuenta como audio real, "fine"); el servicio también se declara de reproducción y pide el foco de audio. Prueba
+r37: 9.5 min bloqueado, 0 silenciamientos, tono de la bocina cada 3 min, todas las frases sonaron (la primera,
+~0.5 s más tarde por la conexión fría: E017). `events.tsv` registra también `screen_on` / `screen_off`.
+
+Pendiente: la página de revisión en la PC (marcar cada frase).
 
 ## Cómo regresar a esta base
 

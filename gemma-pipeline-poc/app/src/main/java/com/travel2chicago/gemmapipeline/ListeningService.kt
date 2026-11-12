@@ -8,6 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -28,6 +31,25 @@ private const val NOTIFICATION_ID = 1
 class ListeningService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var focusRequest: AudioFocusRequest? = null
+
+    /** Tells the system we are an app that plays audio (E013), the same way a music player does. */
+    private fun requestAudioFocus() {
+        if (focusRequest != null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setWillPauseWhenDucked(false)
+            .setOnAudioFocusChangeListener { Log.i(TAG, "audio focus change: $it") }
+            .build()
+        val r = (getSystemService(Context.AUDIO_SERVICE) as AudioManager).requestAudioFocus(req)
+        focusRequest = req
+        Log.i(TAG, "audio focus request -> $r (1 = granted)")
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -54,7 +76,12 @@ class ListeningService : Service() {
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            // Microphone AND media playback (E013, 2026-11-12): declared as microphone only, the mic and the server
+            // kept working with the screen locked, but Eric's audio stayed queued until the phone was unlocked.
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -63,11 +90,14 @@ class ListeningService : Service() {
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gemmapipeline:listening")
                 .apply { setReferenceCounted(false); acquire(MAX_WAKE_MS) }
         }
-        Log.i(TAG, "foreground service ON (microphone)")
+        requestAudioFocus()
+        Log.i(TAG, "foreground service ON (microphone + media playback)")
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        focusRequest?.let { (getSystemService(Context.AUDIO_SERVICE) as AudioManager).abandonAudioFocusRequest(it) }
+        focusRequest = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         Log.i(TAG, "foreground service OFF")

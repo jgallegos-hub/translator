@@ -23,6 +23,11 @@ private const val SPEAKER_WAKE_MS = 1_000
 private const val SPEAKER_WAKE_FADE_MS = 100
 private const val SPEAKER_WAKE_HZ = 20.0
 private const val SPEAKER_WAKE_AMPLITUDE = 330.0
+/** Screen off (E013): speech after this much silence starts with a short 20 Hz tone to wake the Bluetooth link. */
+private const val WAKE_LEAD_IN_AFTER_IDLE_MS = 1_500L
+private const val WAKE_LEAD_IN_MS = 500
+/** Screen-off continuous 20 Hz keep-alive amplitude (int16): MIUI counted a peak of 55 as real audio. */
+private const val SCREEN_OFF_AMPLITUDE = 80
 /** Speaker→mic latency margin after the queue drains. 350 ms (AEC3 pre-delay) was not enough
  *  for the JBL over Bluetooth: device r22 still caught the last words as "¿y algún tipo? Roder.". */
 private const val UNMUTE_TAIL_MS = 800L
@@ -155,6 +160,35 @@ class TtsAudioPlayer(
     @Volatile var speakerWakeEveryMs: Long = SPEAKER_WAKE_EVERY_MS
     @Volatile private var lastWakeNs: Long = System.nanoTime()
 
+    /**
+     * Screen state, set by the ViewModel (2026-11-12, E013). With the screen off, MIUI's PowerKeeper mutes an
+     * app that writes near-silent audio for 60 s ("isLongTimeZeroData ... noteMuteAudioInNeed"): it cut Eric AND
+     * the microphone ~1 min after locking, in Walmart, IKEA and the lock test. So with the screen off the dither
+     * stream stops; only the 20 Hz keep-awake tone is written, and speech after a pause starts with
+     * [WAKE_LEAD_IN_MS] of that tone to wake the Bluetooth link instead.
+     */
+    @Volatile var screenOn: Boolean = true
+    @Volatile private var lastWriteNs: Long = 0L
+
+    /**
+     * Screen-off keep-alive (2026-11-12, lock test r37): with nothing written the output went to standby
+     * ("disabled due to previous underrun"), the Bluetooth link slept and the first phrase after the lock was
+     * lost. MIUI labels each second of audio zero / small / fine and only mutes long zero/small runs; a window
+     * peaking at 55 was already "fine". So with the screen off we stream a continuous 20 Hz sine at this
+     * amplitude (about -52 dBFS, far below the 25 Hz / 1000 "purr" Abraham heard). adb: --ei screen_off_amp N.
+     */
+    @Volatile var screenOffAmplitude: Int = SCREEN_OFF_AMPLITUDE
+
+    /** Fade-in 20 Hz tone, the length of [WAKE_LEAD_IN_MS]: wakes the A2DP link before speech, inaudible. */
+    private val wakeLeadIn: ShortArray by lazy {
+        val n = sampleRate * WAKE_LEAD_IN_MS / 1000
+        val fade = sampleRate * SPEAKER_WAKE_FADE_MS / 1000
+        ShortArray(n) { k ->
+            val env = if (k >= fade) 1.0 else 0.5 - 0.5 * kotlin.math.cos(Math.PI * k / fade)
+            (SPEAKER_WAKE_AMPLITUDE * env * kotlin.math.sin(2 * Math.PI * SPEAKER_WAKE_HZ * k / sampleRate)).toInt().toShort()
+        }
+    }
+
     fun setKeepAlive(enabled: Boolean) {
         keepAliveEnabled = enabled
         Log.i(TAG, "BT keep-alive → $enabled")
@@ -271,6 +305,12 @@ class TtsAudioPlayer(
         // manage the flag per call, exactly like Fase 5.
         val standalone = utteranceDepth.get() == 0
         if (standalone) ttsPlaying.set(true)
+        // Screen off and nothing written for a while: the Bluetooth link may be asleep (no dither stream then).
+        if (!screenOn && (System.nanoTime() - lastWriteNs) / 1_000_000 > WAKE_LEAD_IN_AFTER_IDLE_MS) {
+            val n = t.write(wakeLeadIn, 0, wakeLeadIn.size)
+            if (n > 0) framesWritten += n
+            Log.i(TAG, "screen off: ${WAKE_LEAD_IN_MS} ms wake lead-in before speech")
+        }
         try {
             // Write in ~100 ms chunks so a cancellation lands within ~100 ms.
             val chunkSize = (sampleRate / 10).coerceAtLeast(256)
@@ -289,6 +329,7 @@ class TtsAudioPlayer(
                 off += written
                 framesWritten += written
                 speechFrames += written
+                lastWriteNs = System.nanoTime()
             }
         } finally {
             if (standalone) { ttsPlaying.set(false); lastPlaybackEndNs = System.nanoTime() }
@@ -313,6 +354,17 @@ class TtsAudioPlayer(
         val toneTotal = sampleRate * SPEAKER_WAKE_MS / 1000
         val fade = sampleRate * SPEAKER_WAKE_FADE_MS / 1000
         var toneIndex = toneTotal // >= toneTotal: no tone in progress
+        val lowTone = ShortArray(silence.size)
+        val lowPeriod = (sampleRate / SPEAKER_WAKE_HZ).toInt()
+        var lowIndex = 0
+        var lastHead = -1L
+        var lastHeadMoveNs = System.nanoTime()
+        fun fillLow() {
+            val a = screenOffAmplitude.toDouble()
+            for (i in lowTone.indices) {
+                lowTone[i] = (a * kotlin.math.sin(2 * Math.PI * ((lowIndex + i) % lowPeriod) / lowPeriod)).toInt().toShort()
+            }
+        }
         fun fillTone(): Boolean {
             if (toneIndex >= toneTotal) return false
             for (i in wakeTone.indices) {
@@ -338,16 +390,27 @@ class TtsAudioPlayer(
                 if (!mutex.tryLock()) continue
                 try {
                     val played = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-                    if (framesWritten - played < maxQueued) {
+                    val nowNs = System.nanoTime()
+                    if (played != lastHead) { lastHead = played; lastHeadMoveNs = nowNs }
+                    // Keep the queue short (speech must not wait behind keep-alive audio). Exception: with the
+                    // screen off a head that has not moved for 300 ms means the output stalled ("disabled due to
+                    // previous underrun", r37) - one write restarts it.
+                    val stalled = !screenOn && (nowNs - lastHeadMoveNs) > 300_000_000L
+                    if (framesWritten - played < maxQueued || stalled) {
                         val sinceSpeechMs = (System.nanoTime() - maxOf(lastPlaybackEndNs, lastWakeNs)) / 1_000_000
                         if (toneIndex >= toneTotal && speakerWakeEnabled && !ttsPlaying.get() && sinceSpeechMs > speakerWakeEveryMs) {
                             toneIndex = 0
                             Log.i(TAG, "speaker keep-awake: ${SPEAKER_WAKE_MS} ms of ${SPEAKER_WAKE_HZ} Hz after ${sinceSpeechMs / 1000} s quiet")
                         }
                         val tone = fillTone()
-                        val buf = if (tone) wakeTone else silence
+                        // Screen off: never the near-silent dither (MIUI PowerKeeper mutes it after 60 s, E013);
+                        // the continuous low 20 Hz sine instead, which MIUI counts as real audio.
+                        val low = !tone && !screenOn
+                        if (low) fillLow()
+                        val buf = if (tone) wakeTone else if (low) lowTone else silence
                         val n = t.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING)
-                        if (n > 0) framesWritten += n
+                        if (n > 0) { framesWritten += n; lastWriteNs = System.nanoTime() }
+                        if (low && n > 0) lowIndex = (lowIndex + n) % lowPeriod
                         if (tone && n > 0) {
                             toneIndex += n
                             if (toneIndex >= toneTotal) lastWakeNs = System.nanoTime()

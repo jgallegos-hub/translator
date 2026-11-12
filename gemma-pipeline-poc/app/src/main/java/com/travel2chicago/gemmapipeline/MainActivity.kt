@@ -88,6 +88,7 @@ class MainActivity : ComponentActivity() {
             viewModel.setSpeakerWake(intent.getBooleanExtra("speaker_wake", true), intent.getIntExtra("speaker_wake_every_s", 0))
         }
         if (intent.getBooleanExtra("flag_last", false)) viewModel.flagLastTranslation()
+        if (intent.hasExtra("screen_off_amp")) viewModel.setScreenOffAmplitude(intent.getIntExtra("screen_off_amp", 80))
         if (intent.hasExtra("speaker_enforce")) viewModel.setSpeakerEnforce(intent.getBooleanExtra("speaker_enforce", true))
         if (intent.hasExtra("enroll_speaker")) {
             viewModel.setSpeakerEnrolment(

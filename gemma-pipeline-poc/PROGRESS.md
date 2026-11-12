@@ -2218,3 +2218,13 @@ re-enrolar con frases cortas.
 - Siguiente: primera salida real (Walmart) y el viernes en el trabajo; página de revisión; sesión de
   calibración con las marcas de Abraham (`docs/propuesta-registro-calibracion-2026-11.md`).
 
+## Primeras salidas a campo: Walmart (11-nov) e IKEA (12-nov) — `campo-v1.1-2026-11-12`
+
+- Abraham habló sus impresiones como notas: el ruido, voces en inglés, exhalar, carraspear, muletillas y risas no
+  se tradujeron; la bocina no se apagó en 1.5 h; primer audio mediana ~1 s; primera interacción real (cajera).
+- Falla principal (E013): con la pantalla bloqueada un rato, MIUI PowerKeeper silenciaba la app (audio casi en
+  cero 60 s). Corregido con un tono continuo de 20 Hz a −52 dBFS con la pantalla apagada; prueba de 9.5 min OK.
+- Pendientes de calibración: "sí"/"ok" cortos con ruido bloqueados (E009), persona muy cerca del micrófono
+  (E014, mezclados), eco por la bocina junto al micrófono (E015: hombro + micrófono de collar), groserías por
+  perfil y lugar, conexión fría tras mucho silencio (E017).
+
