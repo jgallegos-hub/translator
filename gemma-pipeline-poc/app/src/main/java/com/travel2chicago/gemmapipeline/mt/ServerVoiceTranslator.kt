@@ -77,9 +77,30 @@ class ServerVoiceTranslator(
         }
     }
 
+    /** Last request to the server (speak or warm-up), for [prewarmIfIdle]. */
+    @Volatile private var lastRequestNs: Long = 0L
+
+    /**
+     * E017 (2026-11-12, lock test r37): after ~9 min unused, the first phrase took 1.38 s to first audio instead
+     * of ~0.9 s - the radio, DNS and the server's own upstream connections had gone cold. Called when Abraham
+     * starts speaking: if nothing was sent for [IDLE_PREWARM_AFTER_MS], warm everything up while he is still
+     * talking (the chunk reaches the server 1-3 s later). Costs nothing on phrases in a running conversation.
+     */
+    fun prewarmIfIdle() {
+        val now = System.nanoTime()
+        if ((now - lastRequestNs) / 1_000_000 < IDLE_PREWARM_AFTER_MS) return
+        lastRequestNs = now
+        playScope.launch {
+            val t = System.nanoTime()
+            warmUp()
+            Log.i(TAG, "prewarm on speech start after idle: ${(System.nanoTime() - t) / 1_000_000} ms")
+        }
+    }
+
     override suspend fun translate(spanish: String, onToken: suspend (String) -> Unit): Pair<String, Long> =
         withContext(Dispatchers.IO) {
             val t0 = System.nanoTime()
+            lastRequestNs = t0
             val payload = JSONObject()
                 .put("text", spanish)
                 .put("history", JSONArray(synchronized(history) { history.toList() }))
@@ -160,6 +181,7 @@ class ServerVoiceTranslator(
 
     companion object {
         private const val IDLE_LEAD_IN_AFTER_NS = 3_000_000_000L
+        private const val IDLE_PREWARM_AFTER_MS = 45_000L
         /** 300 ms of inaudible dither (±2 LSB) at 24 kHz (150 ms still clipped "Hey", r22). */
         private val leadIn = ShortArray(7_200) { if (it % 2 == 0) 2 else -2 }
 

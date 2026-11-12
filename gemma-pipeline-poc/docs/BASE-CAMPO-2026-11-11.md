@@ -66,7 +66,8 @@ silencia la salida y el micrófono** de una app que, con la pantalla apagada, es
 Ahora, con la pantalla apagada, la app manda un tono continuo de 20 Hz a amplitud 80 (−52 dBFS, inaudible; MIUI lo
 cuenta como audio real, "fine"); el servicio también se declara de reproducción y pide el foco de audio. Prueba
 r37: 9.5 min bloqueado, 0 silenciamientos, tono de la bocina cada 3 min, todas las frases sonaron (la primera,
-~0.5 s más tarde por la conexión fría: E017). `events.tsv` registra también `screen_on` / `screen_off`.
+~0.5 s más tarde por la conexión fría: E017). E017 corregido el mismo día: al empezar a hablar tras >45 s sin
+pedir nada, la app calienta el camino al servidor mientras él habla (r38: 0.99 s en vez de 1.38 s). `events.tsv` registra también `screen_on` / `screen_off`.
 
 Pendiente: la página de revisión en la PC (marcar cada frase).
 

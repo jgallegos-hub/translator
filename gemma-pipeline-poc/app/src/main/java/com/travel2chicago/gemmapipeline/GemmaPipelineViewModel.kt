@@ -1529,6 +1529,10 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(vadState = event.state, vadProbability = event.probability)
                 }
                 log("VAD → ${event.state} (p=${"%.3f".format(event.probability)})")
+                // E017: he started talking after a while -> warm the server path while he speaks.
+                if (event.state == com.travel2chicago.gemmapipeline.audio.VadState.SPEECH &&
+                    astConfig.translationEngine == com.travel2chicago.gemmapipeline.ast.TranslationEngine.SERVER_VOICE
+                ) serverVoice?.prewarmIfIdle()
             }
             is AudioEvent.ChunkReady -> {
                 val r = router
