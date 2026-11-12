@@ -2227,4 +2227,9 @@ re-enrolar con frases cortas.
 - Pendientes de calibración: "sí"/"ok" cortos con ruido bloqueados (E009), persona muy cerca del micrófono
   (E014, mezclados), eco por la bocina junto al micrófono (E015: hombro + micrófono de collar), groserías por
   perfil y lugar, conexión fría tras mucho silencio (E017).
+- Conexión fría corregida (E017): al empezar a hablar tras >45 s, la app calienta el camino al servidor (r38:
+  0.99 s en vez de 1.38 s).
+- Idea de Abraham para producción: correr en el teléfono del usuario (retos por fabricante, iPhone, potencia,
+  batería, datos, costo, privacidad) y un **diario del día** (eventos, compromisos, recordatorios, ánimo, frases en
+  inglés) que además sirva de revisión de calibración: `docs/analisis-telefono-usuario-y-diario-2026-11.md`.
 

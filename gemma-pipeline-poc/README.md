@@ -8,6 +8,10 @@ per-sentence streaming (Fase 6) that cuts audible latency from ~14 s to
 a target ≤ 3 s.
 
 **Status:**
+- ✅ **Primeras salidas a campo (Walmart, IKEA) y `campo-v1.1-2026-11-12`** — funciona con el teléfono bloqueado
+  en la bolsa (MIUI PowerKeeper silenciaba la app; corregido) y calienta la conexión al empezar a hablar tras un
+  silencio. Análisis para producción en el teléfono del usuario y del diario del día:
+  [`docs/analisis-telefono-usuario-y-diario-2026-11.md`](docs/analisis-telefono-usuario-y-diario-2026-11.md).
 - ✅ **Listo para campo `campo-v1-2026-11-11`** — sigue traduciendo con la pantalla apagada u otra app al
   frente (notificación "Traductor escuchando"), botón "✗ Esa no", bocina despierta en silencios largos y registro
   de cada salida con latencias y privacidad de otras voces. Uso y detalles: `docs/BASE-CAMPO-2026-11-11.md`.
