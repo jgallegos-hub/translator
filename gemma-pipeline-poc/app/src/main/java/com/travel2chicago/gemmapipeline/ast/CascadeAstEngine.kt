@@ -73,8 +73,9 @@ class CascadeAstEngine(
         val blockTag = if (enforce) " BLOCKED" else " WOULD_BLOCK"
         val spk = verdict?.let { "sim=${"%.2f".format(it.similarity)}${if (it.wouldBlock) blockTag else ""} spkMs=${it.ms}" } ?: ""
         if (verdict != null) {
-            Log.i("SpeakerGate", "GATE $spk durMs=${samples.size * 1000L / 16_000} ttsActive=$ttsActive " +
-                "asr='${lines.joinToString(" | ") { it.text }}'")
+            // Privacy: a chunk the gate rejects is someone else (or echo): never write its words to the log.
+            val asrText = if (verdict.wouldBlock) "(oculto)" else lines.joinToString(" | ") { it.text }
+            Log.i("SpeakerGate", "GATE $spk durMs=${samples.size * 1000L / 16_000} ttsActive=$ttsActive asr='$asrText'")
         }
         // Enforced gate (2026-11-10): not Abraham's voice -> nothing reaches the translator. Fails open:
         // no profile / no model / an error gives no verdict, and the chunk goes on as before.

@@ -28,6 +28,10 @@ private const val WAKE_LEAD_IN_AFTER_IDLE_MS = 1_500L
 private const val WAKE_LEAD_IN_MS = 500
 /** Screen-off continuous 20 Hz keep-alive amplitude (int16): MIUI counted a peak of 55 as real audio. */
 private const val SCREEN_OFF_AMPLITUDE = 80
+/** Watchdog 1: the speaker consumed nothing for this long while we had audio for it -> output stuck. */
+private const val PLAYBACK_STALL_MS = 3_000L
+/** Watchdog 2: "speaking" with no speech written for this long -> bookkeeping stuck (normally off in 1-2 s). */
+private const val TTS_STUCK_MS = 30_000L
 /** Speaker→mic latency margin after the queue drains. 350 ms (AEC3 pre-delay) was not enough
  *  for the JBL over Bluetooth: device r22 still caught the last words as "¿y algún tipo? Roder.". */
 private const val UNMUTE_TAIL_MS = 800L
@@ -179,6 +183,12 @@ class TtsAudioPlayer(
      */
     @Volatile var screenOffAmplitude: Int = SCREEN_OFF_AMPLITUDE
 
+    /** Session-record hook (events.tsv): speaker_wake, playback_stall, tts_reset. Set by the ViewModel. */
+    @Volatile var onEvent: ((kind: String, detail: String) -> Unit)? = null
+
+    /** Last write of real speech (not keep-alive), for the stuck-state watchdog. */
+    @Volatile private var lastSpeechWriteNs: Long = 0L
+
     /** Fade-in 20 Hz tone, the length of [WAKE_LEAD_IN_MS]: wakes the A2DP link before speech, inaudible. */
     private val wakeLeadIn: ShortArray by lazy {
         val n = sampleRate * WAKE_LEAD_IN_MS / 1000
@@ -244,6 +254,7 @@ class TtsAudioPlayer(
      * speaking.
      */
     override fun beginUtterance() {
+        lastSpeechWriteNs = System.nanoTime()
         unmuteGeneration.incrementAndGet() // cancel a pending delayed un-mute
         val newDepth = utteranceDepth.incrementAndGet()
         if (newDepth == 1) {
@@ -307,9 +318,8 @@ class TtsAudioPlayer(
         if (standalone) ttsPlaying.set(true)
         // Screen off and nothing written for a while: the Bluetooth link may be asleep (no dither stream then).
         if (!screenOn && (System.nanoTime() - lastWriteNs) / 1_000_000 > WAKE_LEAD_IN_AFTER_IDLE_MS) {
-            val n = t.write(wakeLeadIn, 0, wakeLeadIn.size)
-            if (n > 0) framesWritten += n
             Log.i(TAG, "screen off: ${WAKE_LEAD_IN_MS} ms wake lead-in before speech")
+            if (!writeWatched(t, wakeLeadIn, speech = false)) return@withLock
         }
         try {
             // Write in ~100 ms chunks so a cancellation lands within ~100 ms.
@@ -321,19 +331,79 @@ class TtsAudioPlayer(
                     return@withLock
                 }
                 val n = minOf(chunkSize, pcm.size - off)
-                val written = t.write(pcm, off, n)
+                val written = t.write(pcm, off, n, AudioTrack.WRITE_NON_BLOCKING)
                 if (written < 0) {
                     Log.e(TAG, "AudioTrack.write returned $written — aborting")
                     return@withLock
                 }
+                if (written == 0) {
+                    // Buffer full: wait for the speaker to consume. Watchdog 1 (2026-11-14): if it consumes
+                    // nothing for PLAYBACK_STALL_MS, the output is stuck (the night of 13-nov the app stayed
+                    // "speaking" for 1.5 h, mic muted and no keep-awake tone) -> drop the rest and restart it.
+                    if (stalledSince(t) > PLAYBACK_STALL_MS) {
+                        recoverStall(t, "speech $off/${pcm.size}")
+                        return@withLock
+                    }
+                    kotlinx.coroutines.delay(10)
+                    continue
+                }
                 off += written
                 framesWritten += written
                 speechFrames += written
-                lastWriteNs = System.nanoTime()
+                val now = System.nanoTime()
+                lastWriteNs = now
+                lastSpeechWriteNs = now
             }
         } finally {
             if (standalone) { ttsPlaying.set(false); lastPlaybackEndNs = System.nanoTime() }
         }
+    }
+
+    /** Playback-head progress, for watchdog 1 (head frozen while we still have audio queued). */
+    @Volatile private var watchHead = -1L
+    @Volatile private var watchHeadMoveNs = 0L
+
+    /** ms the playback head has not moved (0 right after it moved). */
+    private fun stalledSince(t: AudioTrack): Long {
+        val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        val now = System.nanoTime()
+        if (head != watchHead || watchHeadMoveNs == 0L) {
+            watchHead = head
+            watchHeadMoveNs = now
+        }
+        return (now - watchHeadMoveNs) / 1_000_000
+    }
+
+    /** Non-blocking write of [buf] that gives up (and recovers) if the output stalls. False = stalled. */
+    private suspend fun writeWatched(t: AudioTrack, buf: ShortArray, speech: Boolean): Boolean {
+        var off = 0
+        while (off < buf.size) {
+            val w = t.write(buf, off, buf.size - off, AudioTrack.WRITE_NON_BLOCKING)
+            if (w < 0) return false
+            if (w == 0) {
+                if (stalledSince(t) > PLAYBACK_STALL_MS) {
+                    recoverStall(t, "lead-in")
+                    return false
+                }
+                kotlinx.coroutines.delay(10)
+                continue
+            }
+            off += w
+            framesWritten += w
+            if (speech) speechFrames += w
+            lastWriteNs = System.nanoTime()
+        }
+        return true
+    }
+
+    /** Watchdog 1 recovery: flush and restart the output; called with [mutex] held. */
+    private fun recoverStall(t: AudioTrack, where: String) {
+        Log.w(TAG, "PLAYBACK STALL: speaker consumed nothing for $PLAYBACK_STALL_MS ms ($where), restarting output")
+        onEvent?.invoke("playback_stall", where)
+        runCatching { t.pause(); t.flush(); t.play() }
+        framesWritten = 0L
+        watchHead = -1L
+        watchHeadMoveNs = 0L
     }
 
     private fun startKeepAlive() {
@@ -385,6 +455,19 @@ class TtsAudioPlayer(
                     break
                 }
                 val t = track ?: continue
+                // Watchdog 2 (2026-11-14): "Eric is speaking" with no speech written for TTS_STUCK_MS means the
+                // utterance bookkeeping got stuck; that keeps the mic muted and blocks the keep-awake tone.
+                if (ttsPlaying.get() && lastSpeechWriteNs != 0L &&
+                    (System.nanoTime() - lastSpeechWriteNs) / 1_000_000 > TTS_STUCK_MS
+                ) {
+                    Log.w(TAG, "TTS STUCK: speaking state on with no speech for $TTS_STUCK_MS ms, resetting (depth=${utteranceDepth.get()})")
+                    onEvent?.invoke("tts_reset", "depth=${utteranceDepth.get()}")
+                    utteranceDepth.set(0)
+                    unmuteGeneration.incrementAndGet()
+                    ttsPlaying.set(false)
+                    lastPlaybackEndNs = System.nanoTime()
+                    lastSpeechWriteNs = 0L
+                }
                 if (!keepAliveEnabled) continue
                 // Never block a real play(): skip this tick if it holds the lock.
                 if (!mutex.tryLock()) continue
@@ -401,6 +484,7 @@ class TtsAudioPlayer(
                         if (toneIndex >= toneTotal && speakerWakeEnabled && !ttsPlaying.get() && sinceSpeechMs > speakerWakeEveryMs) {
                             toneIndex = 0
                             Log.i(TAG, "speaker keep-awake: ${SPEAKER_WAKE_MS} ms of ${SPEAKER_WAKE_HZ} Hz after ${sinceSpeechMs / 1000} s quiet")
+                            onEvent?.invoke("speaker_wake", "after ${sinceSpeechMs / 1000} s quiet")
                         }
                         val tone = fillTone()
                         // Screen off: never the near-silent dither (MIUI PowerKeeper mutes it after 60 s, E013);

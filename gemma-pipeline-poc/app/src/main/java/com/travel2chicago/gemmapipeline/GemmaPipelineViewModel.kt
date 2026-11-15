@@ -327,6 +327,8 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         checkModelFileExists()
         // Screen on/off -> player (E013: no near-silent stream with the screen off) and the session record.
         registerScreenReceiver()
+        // Player watchdogs and keep-awake tones -> session record (events.tsv).
+        ttsPlayer.onEvent = { kind, detail -> chunkDump?.event(kind, detail) }
         // Speaker gate (shadow): on whenever the CAM++ model is on the phone, so a process restart keeps it.
         viewModelScope.launch(Dispatchers.IO) { ensureSpeakerShadow() }
         if (diagPrefs().getBoolean(PREF_CHUNK_DUMP, false)) openChunkDump(true)
@@ -1209,6 +1211,7 @@ class GemmaPipelineViewModel(app: Application) : AndroidViewModel(app) {
         getApplication<Application>().getSharedPreferences("diagnostics", android.content.Context.MODE_PRIVATE)
 
     private fun openChunkDump(enabled: Boolean) {
+        chunkDump?.close()
         chunkDump = if (!enabled) null else {
             val base = getApplication<Application>().getExternalFilesDir(null) ?: return
             val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())

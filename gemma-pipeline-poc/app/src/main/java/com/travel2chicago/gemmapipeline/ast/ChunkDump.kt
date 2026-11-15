@@ -29,6 +29,9 @@ class ChunkDump(private val dir: File) {
         private set
     @Volatile private var lastSpokenEnglish: String = ""
 
+    // Declared before init: init starts it (an initialiser below init would reset it to null afterwards).
+    private var appLog: Process? = null
+
     init {
         dir.mkdirs()
         if (!index.exists()) {
@@ -39,6 +42,27 @@ class ChunkDump(private val dir: File) {
         }
         if (!events.exists()) events.writeText("time\tevent\tdetail\n")
         Log.i(TAG, "dumping chunks to ${dir.absolutePath}")
+        startAppLog()
+    }
+
+    /**
+     * The app's own log (2026-11-14), so a field session can be diagnosed without the PC cable: this process only
+     * (Android lets an app read its own log), rotated at 4 x 10 MB. Blocked chunks log no text (see the engine).
+     */
+    private fun startAppLog() {
+        appLog = runCatching {
+            Runtime.getRuntime().exec(
+                arrayOf(
+                    "logcat", "-v", "time", "--pid", android.os.Process.myPid().toString(),
+                    "-f", File(dir, "app.log").absolutePath, "-r", "10240", "-n", "4",
+                ),
+            )
+        }.onFailure { Log.w(TAG, "app log not started: ${it.message}") }.getOrNull()
+    }
+
+    fun close() {
+        appLog?.destroy()
+        appLog = null
     }
 
     /** Per-chunk timings and the translator actually used (server or local fallback). */
