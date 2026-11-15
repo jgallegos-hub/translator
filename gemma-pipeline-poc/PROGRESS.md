@@ -2233,3 +2233,22 @@ re-enrolar con frases cortas.
   batería, datos, costo, privacidad) y un **diario del día** (eventos, compromisos, recordatorios, ánimo, frases en
   inglés) que además sirva de revisión de calibración: `docs/analisis-telefono-usuario-y-diario-2026-11.md`.
 
+## Primer turno de trabajo real (13-nov) y cierre de semana (14-nov)
+
+- Turno de ~8 h (18:15 -> 02:03): 202 frases traducidas, pantalla bloqueada hasta 6 h seguidas, ruido de
+  generadores y chillers; los compañeros quedaron impresionados. Errores nuevos E019-E025 (chiller -> "chile",
+  bocina -> "handset", Claude -> "Cloud", totopos -> "UPS" por la regla de UPS, groserías inconsistentes,
+  percepción de lentitud) e ideas F001 (pausar con un toque) y F002 (collar: bocina atrás, micrófono al frente).
+- Estructura acordada del perfil: tres capas (usuario / oficio / lugar), cada renglón con formas mal oídas,
+  salida esperada, cuándo aplica, hallazgo de origen y su prueba. Se mide la latencia antes de adoptarlo.
+- E026: esa noche la app se quedó "hablando" (micrófono silenciado, sin tono, bocina apagada). Se descartó el
+  mute del micrófono (r39). Vigilantes de reproducción + eventos + `app.log` por sesión (`be3bbec`); por verificar.
+- ElevenLabs: el plan Starter de la cuenta (30K créditos/mes, con acumulados) cubre la API del traductor; Flash
+  cobra 0.5 créditos por carácter; un turno ~4K créditos; uso diario (~20 turnos) pediría Creator. Voz clonada del
+  usuario: posible y gran diferenciador, se pospone (riesgo: el eco con su propia voz pasaría el filtro de voz).
+
+### Siguiente sesión
+- Prueba A/B de **ElevenLabs v4 Turbo** contra Flash (naturalidad y latencia), en casa.
+- Verificar los vigilantes en uso real (`events.tsv`: speaker_wake, playback_stall, tts_reset; `app.log`).
+- Perfil de oficio y usuario (primero: totopos/UPS por contexto, chiller, bocina, nombres) con su bench.
+
